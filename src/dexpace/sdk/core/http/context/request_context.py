@@ -23,9 +23,9 @@ class RequestContext(CallContext):
     """
 
     instrumentation_context: InstrumentationContext
-    request: "Request"
+    request: Request
 
-    def to_exchange_context(self, response: "Response") -> "ExchangeContext":
+    def to_exchange_context(self, response: Response) -> ExchangeContext:
         """Promote into an :class:`ExchangeContext` bound to ``response``.
 
         Stores the new context in :data:`ContextStore` keyed by trace id.

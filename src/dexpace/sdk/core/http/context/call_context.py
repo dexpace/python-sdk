@@ -1,7 +1,8 @@
 """Base type for in-flight call contexts."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from types import TracebackType
+from typing import TYPE_CHECKING, Self
 
 if TYPE_CHECKING:
     from ...instrumentation import InstrumentationContext
@@ -20,7 +21,7 @@ class CallContext:
     trace ids can be promoted concurrently without external synchronisation.
     """
 
-    instrumentation_context: "InstrumentationContext"  # supplied by subclasses
+    instrumentation_context: InstrumentationContext  # supplied by subclasses
 
     def close(self) -> None:
         """Remove this context from :data:`ContextStore` (idempotent)."""
@@ -28,10 +29,15 @@ class CallContext:
 
         ContextStore.remove(self.instrumentation_context.trace_id.value)
 
-    def __enter__(self) -> "CallContext":
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         self.close()
 
 

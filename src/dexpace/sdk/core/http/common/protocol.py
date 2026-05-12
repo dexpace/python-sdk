@@ -1,10 +1,11 @@
 """HTTP protocol versions describable on a :class:`Response`."""
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
+from typing import Self
 
 
-class Protocol(Enum):
+class Protocol(StrEnum):
     """Wire-protocol identifier negotiated for an HTTP exchange.
 
     The wire form (returned by ``__str__`` and consumed by :meth:`parse`) is
@@ -17,11 +18,8 @@ class Protocol(Enum):
     H2_PRIOR_KNOWLEDGE = "h2_prior_knowledge"
     QUIC = "quic"
 
-    def __str__(self) -> str:
-        return self.value
-
     @classmethod
-    def parse(cls, value: str) -> "Protocol":
+    def parse(cls, value: str) -> Self:
         """Parse a protocol identifier case-insensitively.
 
         Accepts the canonical forms emitted by ``__str__`` plus the alternative

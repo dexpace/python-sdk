@@ -1,3 +1,7 @@
+# Local-only vendored references (study material, not part of the repo)
+azure-sdk-for-python/
+styleguide/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

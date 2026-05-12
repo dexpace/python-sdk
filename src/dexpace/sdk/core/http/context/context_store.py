@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import threading
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .call_context import CallContext
@@ -21,17 +21,17 @@ class _ContextStore:
     guards the put/get/check-and-set sequence in :meth:`put`.
     """
 
-    __slots__ = ("_lock", "_contexts")
+    __slots__ = ("_contexts", "_lock")
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._contexts: Dict[str, "CallContext"] = {}
+        self._contexts: dict[str, CallContext] = {}
 
-    def get(self, trace_id: str) -> Optional["CallContext"]:
+    def get(self, trace_id: str) -> CallContext | None:
         """Return the context registered under ``trace_id``, or ``None``."""
         return self._contexts.get(trace_id)
 
-    def put(self, trace_id: str, context: "CallContext") -> None:
+    def put(self, trace_id: str, context: CallContext) -> None:
         """Register ``context`` under ``trace_id``; reject duplicate ids.
 
         Raises:
@@ -42,7 +42,7 @@ class _ContextStore:
                 raise ValueError(f"trace_id already registered: {trace_id!r}")
             self._contexts[trace_id] = context
 
-    def set(self, trace_id: str, context: "CallContext") -> None:
+    def set(self, trace_id: str, context: CallContext) -> None:
         """Unconditionally store ``context`` under ``trace_id``.
 
         Used by the promotion chain, where the first promotion installs the

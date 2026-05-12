@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from ...instrumentation import NOOP_INSTRUMENTATION_CONTEXT, InstrumentationContext
 from .call_context import CallContext
@@ -25,7 +25,7 @@ class DispatchContext(CallContext):
 
     instrumentation_context: InstrumentationContext
 
-    def to_request_context(self, request: "Request") -> "RequestContext":
+    def to_request_context(self, request: Request) -> RequestContext:
         """Promote into a :class:`RequestContext` bound to ``request``.
 
         Stores the new context in :data:`ContextStore` keyed by trace id.
@@ -41,7 +41,7 @@ class DispatchContext(CallContext):
         return promoted
 
     @classmethod
-    def noop(cls) -> "DispatchContext":
+    def noop(cls) -> Self:
         """Dispatch context with a no-op instrumentation context.
 
         Used when tracing is disabled.

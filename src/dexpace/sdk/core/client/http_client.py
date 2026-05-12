@@ -1,12 +1,7 @@
 """:class:`HttpClient` Protocol."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-try:  # pragma: no cover - stdlib feature detection
-    from typing import Protocol, runtime_checkable
-except ImportError:  # pragma: no cover - Protocol exists from 3.8 onward
-    from typing_extensions import Protocol, runtime_checkable  # type: ignore[no-redef]
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from ..http.request import Request
@@ -27,7 +22,7 @@ class HttpClient(Protocol):
     callers are responsible for closing it.
     """
 
-    def execute(self, request: "Request") -> "Response": ...
+    def execute(self, request: Request) -> Response: ...
 
 
 __all__ = ["HttpClient"]

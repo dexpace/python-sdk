@@ -1,7 +1,7 @@
 """No-op singletons for tracing-disabled code paths."""
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Final
 
 from .identifiers import SpanId, TraceFlags, TraceId, TraceIdType, TraceState
 from .instrumentation_context import InstrumentationContext
@@ -36,25 +36,25 @@ class _NoopSpan(Span):
     def context(self) -> InstrumentationContext:
         return NOOP_INSTRUMENTATION_CONTEXT
 
-    def set_attribute(self, key: str, value: Any) -> Span:
+    def set_attribute(self, key: str, value: Any) -> _NoopSpan:
         return self
 
-    def set_error(self, error_type: str) -> Span:
+    def set_error(self, error_type: str) -> _NoopSpan:
         return self
 
     def make_current(self) -> TracingScope:
         return _NOOP_SCOPE
 
-    def end(self, error: Optional[BaseException] = None) -> None:
+    def end(self, error: BaseException | None = None) -> None:
         return None
 
 
 #: Shared no-op :class:`Span` singleton. Use when tracing is disabled.
-NOOP_SPAN: Span = _NoopSpan()
+NOOP_SPAN: Final[Span] = _NoopSpan()
 
 
 #: Shared no-op :class:`InstrumentationContext` singleton.
-NOOP_INSTRUMENTATION_CONTEXT: InstrumentationContext = InstrumentationContext(
+NOOP_INSTRUMENTATION_CONTEXT: Final[InstrumentationContext] = InstrumentationContext(
     trace_id_type=TraceIdType.NOOP,
     trace_id=TraceId.NOOP,
     span_id=SpanId.NOOP,
@@ -71,13 +71,13 @@ class _NoopTracer(Tracer):
     def start_span(
         self,
         name: str,
-        parent: Optional[InstrumentationContext] = None,
+        parent: InstrumentationContext | None = None,
     ) -> Span:
         return NOOP_SPAN
 
 
 #: Shared no-op :class:`Tracer` singleton.
-NOOP_TRACER: Tracer = _NoopTracer()
+NOOP_TRACER: Final[Tracer] = _NoopTracer()
 
 
 __all__ = ["NOOP_INSTRUMENTATION_CONTEXT", "NOOP_SPAN", "NOOP_TRACER"]

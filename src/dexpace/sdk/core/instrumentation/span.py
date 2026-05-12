@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Self
 
 if TYPE_CHECKING:
     from .instrumentation_context import InstrumentationContext
@@ -28,19 +28,19 @@ class Span(ABC):
 
     @property
     @abstractmethod
-    def context(self) -> "InstrumentationContext":
+    def context(self) -> InstrumentationContext:
         """Trace-related metadata for propagation and lookup."""
 
     @abstractmethod
-    def set_attribute(self, key: str, value: Any) -> "Span":
+    def set_attribute(self, key: str, value: Any) -> Self:
         """Attach a key/value attribute. Returns ``self`` for chaining."""
 
     @abstractmethod
-    def set_error(self, error_type: str) -> "Span":
+    def set_error(self, error_type: str) -> Self:
         """Mark this span as having encountered an error of the given type."""
 
     @abstractmethod
-    def make_current(self) -> "TracingScope":
+    def make_current(self) -> TracingScope:
         """Make this span the active span for the current execution context.
 
         Returns a :class:`TracingScope` whose ``close()`` restores the
@@ -48,7 +48,7 @@ class Span(ABC):
         """
 
     @abstractmethod
-    def end(self, error: Optional[BaseException] = None) -> None:
+    def end(self, error: BaseException | None = None) -> None:
         """Finish the span.
 
         Pass ``error`` to record an exception as the cause. Calling :meth:`end`

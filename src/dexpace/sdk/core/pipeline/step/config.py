@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple, Type
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class StepMetadata:
     """Human-readable identification for a pipeline step.
 
@@ -17,10 +16,10 @@ class StepMetadata:
     name: str = "Default name"
     description: str = "Default description"
     version: str = "Default version"
-    tags: Tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RetryConfig:
     """Configuration describing how a step should be retried on failure.
 
@@ -37,7 +36,7 @@ class RetryConfig:
     max_backoff_ms: int = 10_000
     multiplier: float = 2.0
     max_retries: int = 3
-    retry_on: Tuple[Type[BaseException], ...] = (OSError, TimeoutError)
+    retry_on: tuple[type[BaseException], ...] = (OSError, TimeoutError)
 
 
 __all__ = ["RetryConfig", "StepMetadata"]

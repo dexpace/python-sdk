@@ -16,11 +16,11 @@ from .tracer import Tracer
 from .tracing_scope import TracingScope
 
 __all__ = [
-    "InstrumentationContext",
-    "LogLevel",
     "NOOP_INSTRUMENTATION_CONTEXT",
     "NOOP_SPAN",
     "NOOP_TRACER",
+    "InstrumentationContext",
+    "LogLevel",
     "Span",
     "SpanId",
     "TraceFlags",

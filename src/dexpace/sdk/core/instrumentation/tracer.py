@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .instrumentation_context import InstrumentationContext
@@ -21,8 +21,8 @@ class Tracer(ABC):
     def start_span(
         self,
         name: str,
-        parent: Optional["InstrumentationContext"] = None,
-    ) -> "Span":
+        parent: InstrumentationContext | None = None,
+    ) -> Span:
         """Start and return a new span.
 
         ``parent`` carries the trace identifiers to inherit; when ``None``, the

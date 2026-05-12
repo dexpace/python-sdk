@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from .span import Span
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class InstrumentationContext:
     """Metadata carried with every traced operation.
 
@@ -26,7 +26,7 @@ class InstrumentationContext:
     trace_id_type: TraceIdType
     trace_id: TraceId
     span_id: SpanId
-    span: "Span"
+    span: Span
     trace_flags: TraceFlags = TraceFlags.NOOP
     trace_state: TraceState = TraceState.NOOP
     is_remote: bool = False

@@ -1,11 +1,12 @@
 """RFC 7231 media type model."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping, Optional, Tuple
+from typing import Self
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MediaType:
     """An HTTP media type (RFC 7231 §3.1.1.1).
 
@@ -18,7 +19,7 @@ class MediaType:
 
     type: str
     subtype: str
-    parameters: Tuple[Tuple[str, str], ...] = ()
+    parameters: tuple[tuple[str, str], ...] = ()
 
     @property
     def full_type(self) -> str:
@@ -26,14 +27,14 @@ class MediaType:
         return f"{self.type}/{self.subtype}"
 
     @property
-    def charset(self) -> Optional[str]:
+    def charset(self) -> str | None:
         """The ``charset`` parameter, or ``None`` if absent."""
         for key, value in self.parameters:
             if key == "charset":
                 return value
         return None
 
-    def includes(self, other: "MediaType") -> bool:
+    def includes(self, other: MediaType) -> bool:
         """True when this media type pattern matches ``other``.
 
         Treats ``*`` in either the type or subtype position as a wildcard.
@@ -54,8 +55,8 @@ class MediaType:
         cls,
         type: str,
         subtype: str,
-        parameters: Optional[Mapping[str, str]] = None,
-    ) -> "MediaType":
+        parameters: Mapping[str, str] | None = None,
+    ) -> Self:
         """Construct a media type from explicit parts.
 
         Validates that ``type`` and ``subtype`` are non-blank and that a
@@ -83,7 +84,7 @@ class MediaType:
         return cls(normalized_type, normalized_subtype, params)
 
     @classmethod
-    def parse(cls, value: str) -> "MediaType":
+    def parse(cls, value: str) -> Self:
         """Parse a wire-form media type string (e.g. ``application/json;charset=utf-8``).
 
         Raises:
@@ -98,7 +99,7 @@ class MediaType:
             raise ValueError(f"Invalid media type: {value!r}")
         type_ = mime[:slash].strip()
         subtype = mime[slash + 1 :].strip()
-        parameters_map = {}
+        parameters_map: dict[str, str] = {}
         for segment in segments[1:]:
             if not segment:
                 continue

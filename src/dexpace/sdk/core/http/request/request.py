@@ -2,16 +2,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Self
 
 from ..common.headers import Headers
+from ..common.http_header_name import HttpHeaderName
 from .method import Method
 
 if TYPE_CHECKING:
     from .request_body import RequestBody
 
+type _Name = str | HttpHeaderName
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, slots=True)
 class Request:
     """Immutable HTTP request handed to a transport.
 
@@ -25,29 +28,29 @@ class Request:
     method: Method
     url: str
     headers: Headers = field(default_factory=Headers)
-    body: Optional["RequestBody"] = None
+    body: RequestBody | None = None
 
-    def with_method(self, method: Method) -> "Request":
+    def with_method(self, method: Method) -> Self:
         return replace(self, method=method)
 
-    def with_url(self, url: str) -> "Request":
+    def with_url(self, url: str) -> Self:
         return replace(self, url=url)
 
-    def with_headers(self, headers: Headers) -> "Request":
+    def with_headers(self, headers: Headers) -> Self:
         return replace(self, headers=headers)
 
-    def with_body(self, body: Optional["RequestBody"]) -> "Request":
+    def with_body(self, body: RequestBody | None) -> Self:
         return replace(self, body=body)
 
-    def with_header(self, name: str, value: str) -> "Request":
+    def with_header(self, name: _Name, value: str) -> Self:
         """Replace any existing values for ``name`` with the single ``value``."""
         return replace(self, headers=self.headers.with_set(name, value))
 
-    def with_added_header(self, name: str, value: str) -> "Request":
+    def with_added_header(self, name: _Name, value: str) -> Self:
         """Append ``value`` to ``name``'s existing values."""
         return replace(self, headers=self.headers.with_added(name, value))
 
-    def without_header(self, name: str) -> "Request":
+    def without_header(self, name: _Name) -> Self:
         return replace(self, headers=self.headers.without(name))
 
 

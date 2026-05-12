@@ -1,12 +1,7 @@
 """:class:`Serde`, :class:`Serializer`, :class:`Deserializer` Protocols."""
 from __future__ import annotations
 
-from typing import Any, BinaryIO
-
-try:  # pragma: no cover - stdlib feature detection
-    from typing import Protocol, runtime_checkable
-except ImportError:  # pragma: no cover - Protocol exists from 3.8 onward
-    from typing_extensions import Protocol, runtime_checkable  # type: ignore[no-redef]
+from typing import Any, BinaryIO, Protocol, runtime_checkable
 
 
 @runtime_checkable

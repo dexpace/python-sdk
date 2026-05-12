@@ -1,14 +1,15 @@
 """HTTP request methods."""
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class Method(str, Enum):
+class Method(StrEnum):
     """HTTP request methods recognized by the SDK.
 
-    Subclasses ``str`` so callers can interpolate values directly into a
-    request line and compare against plain strings: ``Method.GET == "GET"``.
+    :class:`enum.StrEnum` (3.11+) gives string-valued members whose ``str()``
+    *is* the wire form, so callers can interpolate or compare against bare
+    strings: ``Method.GET == "GET"``.
     """
 
     GET = "GET"
@@ -20,9 +21,6 @@ class Method(str, Enum):
     OPTIONS = "OPTIONS"
     TRACE = "TRACE"
     CONNECT = "CONNECT"
-
-    def __str__(self) -> str:
-        return self.value
 
 
 __all__ = ["Method"]

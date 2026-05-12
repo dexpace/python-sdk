@@ -5,56 +5,58 @@ media-type string on hot paths.
 """
 from __future__ import annotations
 
+from typing import Final
+
 from .media_type import MediaType
 
-TEXT_PLAIN = MediaType.of("text", "plain")
-TEXT_HTML = MediaType.of("text", "html")
-TEXT_CSS = MediaType.of("text", "css")
-TEXT_JAVASCRIPT = MediaType.of("text", "javascript")
-TEXT_CSV = MediaType.of("text", "csv")
+TEXT_PLAIN: Final = MediaType.of("text", "plain")
+TEXT_HTML: Final = MediaType.of("text", "html")
+TEXT_CSS: Final = MediaType.of("text", "css")
+TEXT_JAVASCRIPT: Final = MediaType.of("text", "javascript")
+TEXT_CSV: Final = MediaType.of("text", "csv")
 
-APPLICATION_JSON = MediaType.of("application", "json")
-APPLICATION_XML = MediaType.of("application", "xml")
-APPLICATION_FORM_URLENCODED = MediaType.of("application", "x-www-form-urlencoded")
-APPLICATION_OCTET_STREAM = MediaType.of("application", "octet-stream")
-APPLICATION_PDF = MediaType.of("application", "pdf")
-APPLICATION_ZIP = MediaType.of("application", "zip")
-APPLICATION_VND_API_JSON = MediaType.of("application", "vnd.api+json")
-APPLICATION_HAL_JSON = MediaType.of("application", "hal+json")
-APPLICATION_PROBLEM_JSON = MediaType.of("application", "problem+json")
+APPLICATION_JSON: Final = MediaType.of("application", "json")
+APPLICATION_XML: Final = MediaType.of("application", "xml")
+APPLICATION_FORM_URLENCODED: Final = MediaType.of("application", "x-www-form-urlencoded")
+APPLICATION_OCTET_STREAM: Final = MediaType.of("application", "octet-stream")
+APPLICATION_PDF: Final = MediaType.of("application", "pdf")
+APPLICATION_ZIP: Final = MediaType.of("application", "zip")
+APPLICATION_VND_API_JSON: Final = MediaType.of("application", "vnd.api+json")
+APPLICATION_HAL_JSON: Final = MediaType.of("application", "hal+json")
+APPLICATION_PROBLEM_JSON: Final = MediaType.of("application", "problem+json")
 
-IMAGE_JPEG = MediaType.of("image", "jpeg")
-IMAGE_PNG = MediaType.of("image", "png")
-IMAGE_GIF = MediaType.of("image", "gif")
-IMAGE_SVG_XML = MediaType.of("image", "svg+xml")
+IMAGE_JPEG: Final = MediaType.of("image", "jpeg")
+IMAGE_PNG: Final = MediaType.of("image", "png")
+IMAGE_GIF: Final = MediaType.of("image", "gif")
+IMAGE_SVG_XML: Final = MediaType.of("image", "svg+xml")
 
-AUDIO_MPEG = MediaType.of("audio", "mpeg")
-VIDEO_MP4 = MediaType.of("video", "mp4")
+AUDIO_MPEG: Final = MediaType.of("audio", "mpeg")
+VIDEO_MP4: Final = MediaType.of("video", "mp4")
 
-MULTIPART_FORM_DATA = MediaType.of("multipart", "form-data")
-MULTIPART_BYTERANGES = MediaType.of("multipart", "byteranges")
+MULTIPART_FORM_DATA: Final = MediaType.of("multipart", "form-data")
+MULTIPART_BYTERANGES: Final = MediaType.of("multipart", "byteranges")
 
 __all__ = [
-    "TEXT_PLAIN",
-    "TEXT_HTML",
-    "TEXT_CSS",
-    "TEXT_JAVASCRIPT",
-    "TEXT_CSV",
-    "APPLICATION_JSON",
-    "APPLICATION_XML",
     "APPLICATION_FORM_URLENCODED",
+    "APPLICATION_HAL_JSON",
+    "APPLICATION_JSON",
     "APPLICATION_OCTET_STREAM",
     "APPLICATION_PDF",
-    "APPLICATION_ZIP",
-    "APPLICATION_VND_API_JSON",
-    "APPLICATION_HAL_JSON",
     "APPLICATION_PROBLEM_JSON",
+    "APPLICATION_VND_API_JSON",
+    "APPLICATION_XML",
+    "APPLICATION_ZIP",
+    "AUDIO_MPEG",
+    "IMAGE_GIF",
     "IMAGE_JPEG",
     "IMAGE_PNG",
-    "IMAGE_GIF",
     "IMAGE_SVG_XML",
-    "AUDIO_MPEG",
-    "VIDEO_MP4",
-    "MULTIPART_FORM_DATA",
     "MULTIPART_BYTERANGES",
+    "MULTIPART_FORM_DATA",
+    "TEXT_CSS",
+    "TEXT_CSV",
+    "TEXT_HTML",
+    "TEXT_JAVASCRIPT",
+    "TEXT_PLAIN",
+    "VIDEO_MP4",
 ]

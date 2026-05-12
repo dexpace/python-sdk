@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import ClassVar
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TraceId:
     """Identifier shared by every span in the same logical trace.
 
@@ -16,13 +16,13 @@ class TraceId:
 
     value: str
 
-    NOOP: ClassVar["TraceId"]
+    NOOP: ClassVar[TraceId]
 
 
-TraceId.NOOP = TraceId("0" * 32)  # type: ignore[misc]
+TraceId.NOOP = TraceId("0" * 32)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SpanId:
     """Identifier of the current span within its parent trace.
 
@@ -31,37 +31,37 @@ class SpanId:
 
     value: str
 
-    NOOP: ClassVar["SpanId"]
+    NOOP: ClassVar[SpanId]
 
 
-SpanId.NOOP = SpanId("0" * 16)  # type: ignore[misc]
+SpanId.NOOP = SpanId("0" * 16)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TraceFlags:
     """W3C trace-flags — a two-character hex string carrying span-level bits."""
 
     value: str
 
-    NOOP: ClassVar["TraceFlags"]
+    NOOP: ClassVar[TraceFlags]
 
 
-TraceFlags.NOOP = TraceFlags("00")  # type: ignore[misc]
+TraceFlags.NOOP = TraceFlags("00")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TraceState:
     """W3C trace-state — vendor-specific key=value list propagated alongside context."""
 
     value: str
 
-    NOOP: ClassVar["TraceState"]
+    NOOP: ClassVar[TraceState]
 
 
-TraceState.NOOP = TraceState("")  # type: ignore[misc]
+TraceState.NOOP = TraceState("")
 
 
-class TraceIdType(Enum):
+class TraceIdType(StrEnum):
     """Encoding flavour of a :class:`TraceId`.
 
     Different backends expect different wire formats (W3C hex vs Datadog

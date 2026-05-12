@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from types import TracebackType
 
 
 class TracingScope(ABC):
@@ -17,10 +18,15 @@ class TracingScope(ABC):
     def close(self) -> None:
         """Restore the previously active span. Idempotent."""
 
-    def __enter__(self) -> "TracingScope":
+    def __enter__(self) -> TracingScope:
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         self.close()
 
 
