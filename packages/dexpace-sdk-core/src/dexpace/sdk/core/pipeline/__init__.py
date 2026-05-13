@@ -6,6 +6,7 @@ from .async_pipeline import AsyncPipeline
 from .async_policy import AsyncPolicy
 from .async_staged_builder import AsyncStagedPipelineBuilder
 from .context import PipelineContext
+from .defaults import default_async_pipeline, default_pipeline
 from .pipeline import Pipeline
 from .policy import Policy
 from .stage import Stage
@@ -27,4 +28,6 @@ __all__ = [
     "Stage",
     "StagedPipelineBuilder",
     "StepMetadata",
+    "default_async_pipeline",
+    "default_pipeline",
 ]
