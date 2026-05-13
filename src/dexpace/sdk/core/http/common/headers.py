@@ -170,6 +170,20 @@ class Headers:
             merged[key] = merged.get(key, ()) + values
         return _construct(type(self), tuple(merged.items()))
 
+    def __or__(self, other: Headers) -> Self:
+        """Return ``self.with_merged(other)`` — enables ``a | b`` syntax.
+
+        Args:
+            other: Another :class:`Headers` whose entries are appended.
+
+        Returns:
+            A new :class:`Headers` combining both sides; ``self``'s values for
+            each name appear before ``other``'s.
+        """
+        if not isinstance(other, Headers):
+            return NotImplemented
+        return self.with_merged(other)
+
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Headers):
             return NotImplemented

@@ -94,6 +94,34 @@ class TestImmutability:
         assert result.get("x-other") == "1"
 
 
+class TestOrMerge:
+    def test_or_merges_headers(self) -> None:
+        a = Headers([("Vary", "Accept")])
+        b = Headers([("Vary", "Accept-Encoding"), ("X-Other", "1")])
+        result = a | b
+        assert result.values("vary") == ("Accept", "Accept-Encoding")
+        assert result.get("x-other") == "1"
+
+    def test_or_preserves_self_values(self) -> None:
+        a = Headers([("X-Order", "first"), ("X-Only-A", "a")])
+        b = Headers([("X-Order", "second"), ("X-Only-B", "b")])
+        result = a | b
+        # self's values appear before other's
+        assert result.values("x-order") == ("first", "second")
+        assert result.get("x-only-a") == "a"
+        assert result.get("x-only-b") == "b"
+        # originals are untouched
+        assert a.values("x-order") == ("first",)
+        assert b.values("x-order") == ("second",)
+
+    def test_or_with_non_headers_raises_or_NotImplemented(self) -> None:  # noqa: N802
+        a = Headers([("X-Foo", "1")])
+        with pytest.raises(TypeError):
+            _ = a | "not-headers"  # type: ignore[operator]
+        with pytest.raises(TypeError):
+            _ = a | 42  # type: ignore[operator]
+
+
 class TestEqualityAndHashing:
     def test_equality_is_case_insensitive(self) -> None:
         a = Headers([("Content-Type", "json")])
