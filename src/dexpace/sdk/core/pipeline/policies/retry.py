@@ -17,6 +17,7 @@ out of retries pay no memory cost.
 from __future__ import annotations
 
 import logging
+import random
 import re
 import time
 from collections.abc import Callable, Iterable
@@ -100,6 +101,20 @@ class RetryPolicy(Policy):
         retry_on_status_codes: Status codes that trigger a retry.
         respect_retry_after: When ``True``, sleep for the ``Retry-After``
             header value (if present) instead of the computed backoff.
+        jitter: Fractional band applied to each computed backoff to break
+            thundering herds. ``0.25`` multiplies the backoff by a random
+            sample in ``[0.75, 1.25]``. Set to ``0`` for deterministic
+            backoff.
+
+    Example:
+        ```python
+        RetryPolicy(
+            total_retries=3,
+            backoff_factor=0.5,
+            backoff_max=30,
+            retry_on_status_codes={429, 500, 502, 503, 504},
+        )
+        ```
     """
 
     def __init__(
@@ -116,7 +131,9 @@ class RetryPolicy(Policy):
         method_allowlist: Iterable[str] = _DEFAULT_METHOD_ALLOWLIST,
         retry_on_status_codes: Iterable[int] = _DEFAULT_STATUS_RETRIES,
         respect_retry_after: bool = True,
+        jitter: float = 0.25,
         sleep: Callable[[float], None] = time.sleep,
+        rand: random.Random | None = None,
     ) -> None:
         self.total_retries = total_retries
         self.connect_retries = connect_retries
@@ -129,7 +146,9 @@ class RetryPolicy(Policy):
         self.method_allowlist = frozenset(m.upper() for m in method_allowlist)
         self.retry_on_status_codes = frozenset(retry_on_status_codes)
         self.respect_retry_after = respect_retry_after
+        self._jitter = jitter
         self._sleep = sleep
+        self._rand = rand if rand is not None else random.Random()
 
     # ----- public sentinel ------------------------------------------------
 
@@ -147,7 +166,6 @@ class RetryPolicy(Policy):
         absolute_deadline = time.monotonic() + settings["timeout"]
         history: list[RequestHistory] = settings["history"]
         while True:
-            ctx.data["retry_count"] = len(history)
             try:
                 response = self.next.send(request, ctx)
                 if not self._is_retry(settings, request, response):
@@ -157,6 +175,7 @@ class RetryPolicy(Policy):
                 if not self._decrement_status(settings):
                     ctx.data["retry_history"] = tuple(history)
                     return response
+                ctx.data["retry_count"] = len(history)
                 self._sleep_for(settings, response, absolute_deadline)
                 continue
             except ClientAuthenticationError:
@@ -166,8 +185,9 @@ class RetryPolicy(Policy):
                 if not self._decrement_for_error(settings, err):
                     ctx.data["retry_history"] = tuple(history)
                     raise
+                ctx.data["retry_count"] = len(history)
                 self._sleep_for(settings, None, absolute_deadline)
-                _LOGGER.debug("Retrying after %s", err)
+                _LOGGER.debug("retrying after %s: %s", type(err).__name__, err)
                 continue
 
     # ----- configuration --------------------------------------------------
@@ -273,7 +293,10 @@ class RetryPolicy(Policy):
             backoff = float(settings["backoff"])
         else:
             backoff = float(settings["backoff"]) * (2 ** (attempts - 1))
-        return min(float(settings["max_backoff"]), backoff)
+        bounded = min(float(settings["max_backoff"]), backoff)
+        if self._jitter == 0:
+            return bounded
+        return bounded * self._rand.uniform(1 - self._jitter, 1 + self._jitter)
 
     def _sleep_bounded(self, duration: float, absolute_deadline: float) -> None:
         if duration <= 0:

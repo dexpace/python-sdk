@@ -9,6 +9,7 @@ helper (using an async sleep callable).
 from __future__ import annotations
 
 import logging
+import random
 import time
 from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Any
@@ -59,7 +60,9 @@ class AsyncRetryPolicy(AsyncPolicy):
         method_allowlist: Iterable[str] | None = None,
         retry_on_status_codes: Iterable[int] | None = None,
         respect_retry_after: bool = True,
+        jitter: float = 0.25,
         sleep: Callable[[float], Awaitable[None]] = asyncio_sleep,
+        rand: random.Random | None = None,
     ) -> None:
         kwargs: dict[str, Any] = {
             "total_retries": total_retries,
@@ -71,11 +74,14 @@ class AsyncRetryPolicy(AsyncPolicy):
             "retry_mode": retry_mode,
             "timeout": timeout,
             "respect_retry_after": respect_retry_after,
+            "jitter": jitter,
         }
         if method_allowlist is not None:
             kwargs["method_allowlist"] = method_allowlist
         if retry_on_status_codes is not None:
             kwargs["retry_on_status_codes"] = retry_on_status_codes
+        if rand is not None:
+            kwargs["rand"] = rand
         self.config = RetryPolicy(**kwargs)
         self._sleep = sleep
 
@@ -91,7 +97,6 @@ class AsyncRetryPolicy(AsyncPolicy):
         absolute_deadline = time.monotonic() + settings["timeout"]
         history: list[RequestHistory] = settings["history"]
         while True:
-            ctx.data["retry_count"] = len(history)
             try:
                 response = await self.next.send(request, ctx)
                 if not cfg._is_retry(settings, request, response):
@@ -101,6 +106,7 @@ class AsyncRetryPolicy(AsyncPolicy):
                 if not cfg._decrement_status(settings):
                     ctx.data["retry_history"] = tuple(history)
                     return response
+                ctx.data["retry_count"] = len(history)
                 await self._sleep_after_status(settings, response, absolute_deadline)
                 continue
             except ClientAuthenticationError:
@@ -110,8 +116,9 @@ class AsyncRetryPolicy(AsyncPolicy):
                 if not cfg._decrement_for_error(settings, err):
                     ctx.data["retry_history"] = tuple(history)
                     raise
+                ctx.data["retry_count"] = len(history)
                 await self._sleep_after_error(settings, absolute_deadline)
-                _LOGGER.debug("Async retrying after %s", err)
+                _LOGGER.debug("retrying after %s: %s", type(err).__name__, err)
                 continue
 
     async def _sleep_after_status(

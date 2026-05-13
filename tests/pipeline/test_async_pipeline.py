@@ -189,6 +189,40 @@ async def test_async_retry_with_single_use_body_auto_replays() -> None:
     assert consumed == [b"helloworld", b"helloworld", b"helloworld"]
 
 
+async def test_async_retry_count_not_set_when_no_retry_happens() -> None:
+    captured: dict[str, object] = {}
+
+    class _Probe(AsyncPolicy):
+        async def send(self, request: Request, ctx: PipelineContext) -> AsyncResponse:
+            response = await self.next.send(request, ctx)
+            captured["retry_count"] = ctx.data.get("retry_count")
+            return response
+
+    client = _StubAsyncClient()
+    retry = AsyncRetryPolicy(sleep=_no_sleep)
+    async with AsyncPipeline(client, policies=[_Probe(), retry]) as p:
+        await p.run(_request(), DispatchContext(_instr("0" * 16 + "9")))
+    # First-attempt success — no retry decision is committed, so
+    # ``retry_count`` is never written.
+    assert captured["retry_count"] is None
+
+
+async def test_async_retry_count_set_when_retry_happens() -> None:
+    captured: dict[str, object] = {}
+
+    class _Probe(AsyncPolicy):
+        async def send(self, request: Request, ctx: PipelineContext) -> AsyncResponse:
+            response = await self.next.send(request, ctx)
+            captured["retry_count"] = ctx.data.get("retry_count")
+            return response
+
+    client = _StubAsyncClient(fail_first=True)
+    retry = AsyncRetryPolicy(sleep=_no_sleep)
+    async with AsyncPipeline(client, policies=[_Probe(), retry]) as p:
+        await p.run(_request(), DispatchContext(_instr("0" * 15 + "10")))
+    assert captured["retry_count"] == 1
+
+
 def test_invalid_step_raises_type_error() -> None:
     with pytest.raises(TypeError):
         AsyncPipeline(_StubAsyncClient(), policies=["not callable"])  # type: ignore[list-item]

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import random
 import time
 from collections.abc import Sequence
+from typing import Any
 
 import pytest
 
@@ -307,6 +309,87 @@ class TestRetryAutoReplaysBody:
         # transport receives is the original single-use instance.
         assert observed == [body]
         assert not body.is_replayable()
+
+
+class TestRetryJitter:
+    def test_jitter_varies_backoff(self) -> None:
+        retry = RetryPolicy(
+            backoff_factor=1.0,
+            backoff_max=1000.0,
+            jitter=0.25,
+            rand=random.Random(42),
+            sleep=_no_sleep,
+        )
+        # ``_backoff_seconds`` keys off the number of attempts in history; fake
+        # a long-running settings dict so the same exponent is sampled twice.
+        settings: dict[str, Any] = {
+            "backoff": 1.0,
+            "max_backoff": 1000.0,
+            "history": [None, None, None],
+        }
+        first = retry._backoff_seconds(settings)
+        second = retry._backoff_seconds(settings)
+        assert first != second
+        # Both samples land inside the ±25% band around the deterministic base.
+        base = float(settings["backoff"]) * (2 ** (len(settings["history"]) - 1))
+        assert 0.75 * base <= first <= 1.25 * base
+        assert 0.75 * base <= second <= 1.25 * base
+
+    def test_no_jitter_when_zero(self) -> None:
+        retry = RetryPolicy(
+            backoff_factor=1.0,
+            backoff_max=1000.0,
+            jitter=0.0,
+            rand=random.Random(42),
+            sleep=_no_sleep,
+        )
+        settings: dict[str, Any] = {
+            "backoff": 1.0,
+            "max_backoff": 1000.0,
+            "history": [None, None, None],
+        }
+        first = retry._backoff_seconds(settings)
+        second = retry._backoff_seconds(settings)
+        base = float(settings["backoff"]) * (2 ** (len(settings["history"]) - 1))
+        assert first == pytest.approx(base)
+        assert second == pytest.approx(base)
+
+
+class TestRetryCountTiming:
+    def test_retry_count_not_set_when_no_retry_happens(self) -> None:
+        from dexpace.sdk.core.pipeline import PipelineContext, Policy
+
+        captured: dict[str, object] = {}
+
+        class _Probe(Policy):
+            def send(self, request: Request, ctx: PipelineContext) -> Response:
+                response = self.next.send(request, ctx)
+                captured["retry_count"] = ctx.data.get("retry_count")
+                return response
+
+        client = _ScriptedClient([Status.OK])
+        with Pipeline(client, policies=[_Probe(), RetryPolicy(sleep=_no_sleep)]) as p:
+            p.run(_get(), DispatchContext(_instr("0" * 15 + "10")))
+        # When the request succeeds first time, no retry decision is made, so
+        # ``retry_count`` is never written into ``ctx.data``.
+        assert captured["retry_count"] is None
+
+    def test_retry_count_set_when_retry_happens(self) -> None:
+        from dexpace.sdk.core.pipeline import PipelineContext, Policy
+
+        captured: dict[str, object] = {}
+
+        class _Probe(Policy):
+            def send(self, request: Request, ctx: PipelineContext) -> Response:
+                response = self.next.send(request, ctx)
+                captured["retry_count"] = ctx.data.get("retry_count")
+                return response
+
+        client = _ScriptedClient([Status.SERVICE_UNAVAILABLE, Status.OK])
+        with Pipeline(client, policies=[_Probe(), RetryPolicy(sleep=_no_sleep)]) as p:
+            p.run(_get(), DispatchContext(_instr("0" * 15 + "11")))
+        # One retry occurred — the count reflects the single failed attempt.
+        assert captured["retry_count"] == 1
 
 
 # Sanity: time.monotonic available for the budget arithmetic used internally.
