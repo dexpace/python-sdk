@@ -14,9 +14,9 @@ class StepMetadata:
     back-compatible way.
     """
 
-    name: str = "Default name"
-    description: str = "Default description"
-    version: str = "Default version"
+    name: str
+    description: str = ""
+    version: str = ""
     tags: tuple[str, ...] = ()
 
 
