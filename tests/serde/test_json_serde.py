@@ -1,6 +1,8 @@
 """Tests for the JSON ``Serde``."""
+
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from io import BytesIO
 
@@ -85,3 +87,29 @@ def test_serde_uses_provided_components() -> None:
 def test_bytes_encoded_as_utf8_text() -> None:
     text = JSON_SERDE.serializer.serialize({"raw": b"abc"})
     assert '"raw":"abc"' in text
+
+
+def test_deserialize_bytes_invalid_utf8_raises_deserialization_error() -> None:
+    with pytest.raises(DeserializationError):
+        JsonDeserializer().deserialize_bytes(b"\xff\xfe")
+
+
+def test_serialize_invalid_utf8_bytes_raises_serialization_error() -> None:
+    with pytest.raises(SerializationError):
+        JsonSerializer().serialize({"k": b"\xff\xfe"})
+
+
+def test_allow_nan_false_rejects_nan() -> None:
+    with pytest.raises(SerializationError):
+        JsonSerializer().serialize({"v": math.nan})
+
+
+def test_allow_nan_false_rejects_inf() -> None:
+    with pytest.raises(SerializationError):
+        JsonSerializer().serialize({"v": math.inf})
+
+
+def test_allow_nan_true_emits_nan() -> None:
+    ser = JsonSerializer(allow_nan=True)
+    text = ser.serialize({"v": math.nan})
+    assert "NaN" in text

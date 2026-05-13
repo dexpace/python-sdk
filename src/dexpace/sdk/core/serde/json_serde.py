@@ -1,4 +1,5 @@
 """Stdlib-backed ``Serde`` for JSON payloads."""
+
 from __future__ import annotations
 
 import json
@@ -27,13 +28,14 @@ class _JsonEncoder(json.JSONEncoder):
 class JsonSerializer:
     """Serialise Python values into JSON strings / bytes / streams."""
 
-    __slots__ = ("_default", "_encoder_cls", "_sort_keys")
+    __slots__ = ("_allow_nan", "_default", "_encoder_cls", "_sort_keys")
 
     def __init__(
         self,
         *,
         default: Callable[[Any], Any] | None = None,
         sort_keys: bool = False,
+        allow_nan: bool = False,
         encoder_cls: type[json.JSONEncoder] = _JsonEncoder,
     ) -> None:
         """Configure the serializer.
@@ -42,10 +44,14 @@ class JsonSerializer:
             default: Optional ``default`` callable forwarded to ``json.dumps``.
             sort_keys: When ``True``, object keys are emitted in sorted order
                 (useful for stable hashes).
+            allow_nan: When ``False`` (the default), ``NaN`` / ``Infinity`` /
+                ``-Infinity`` raise ``SerializationError`` instead of emitting
+                non-standard JSON tokens.
             encoder_cls: ``json.JSONEncoder`` subclass to use.
         """
         self._default = default
         self._sort_keys = sort_keys
+        self._allow_nan = allow_nan
         self._encoder_cls = encoder_cls
 
     def serialize(self, value: Any) -> str:
@@ -60,9 +66,10 @@ class JsonSerializer:
                 cls=self._encoder_cls,
                 default=self._default,
                 sort_keys=self._sort_keys,
+                allow_nan=self._allow_nan,
                 separators=(",", ":"),
             )
-        except (TypeError, ValueError) as err:
+        except (TypeError, ValueError, UnicodeDecodeError) as err:
             raise SerializationError(str(err), error=err) from err
 
     def serialize_to_bytes(self, value: Any) -> bytes:
@@ -103,8 +110,17 @@ class JsonDeserializer:
             raise DeserializationError(str(err), error=err) from err
 
     def deserialize_bytes(self, value: bytes) -> Any:
-        """Deserialise a JSON-encoded ``bytes`` payload."""
-        return self.deserialize(value.decode("utf-8"))
+        """Deserialise a JSON-encoded ``bytes`` payload.
+
+        Raises:
+            DeserializationError: If ``value`` is not valid UTF-8 or its
+                decoded text is not valid JSON.
+        """
+        try:
+            text = value.decode("utf-8")
+        except UnicodeDecodeError as err:
+            raise DeserializationError(str(err), error=err) from err
+        return self.deserialize(text)
 
     def deserialize_stream(self, stream: BinaryIO) -> Any:
         """Drain ``stream`` to EOF and deserialise its contents."""
