@@ -127,3 +127,19 @@ def test_fake_clock_advance(fake_clock: FakeClock) -> None:
 def test_fake_clock_satisfies_clock_protocol(fake_clock: FakeClock) -> None:
     """``FakeClock`` is structurally a :class:`Clock`."""
     assert isinstance(fake_clock, Clock)
+
+
+def test_fake_clock_monotonic_does_not_decrease_on_negative_advance() -> None:
+    """``advance(-delta)`` moves wall back but monotonic is preserved."""
+    clock = FakeClock(start=10.0)
+    clock.advance(-3.0)
+    assert clock.now() == pytest.approx(7.0)
+    # Monotonic time never goes backwards on real systems.
+    assert clock.monotonic() == pytest.approx(10.0)
+
+
+def test_fake_clock_sleep_advances_both_wall_and_monotonic() -> None:
+    clock = FakeClock()
+    clock.sleep(5.0)
+    assert clock.now() == pytest.approx(5.0)
+    assert clock.monotonic() == pytest.approx(5.0)

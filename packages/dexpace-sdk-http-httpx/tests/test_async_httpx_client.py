@@ -185,3 +185,25 @@ async def test_async_reason_phrase_propagated() -> None:
         request = Request(method=Method.GET, url=Url.parse("http://example.test/"))
         async with await client.execute(request) as response:
             assert response.reason == "OK"
+
+
+async def test_async_unknown_status_closes_response() -> None:
+    """When Status() rejects an unknown code, the response must be released."""
+    from dexpace.sdk.core.errors import ServiceResponseError
+
+    closed = {"yes": False}
+
+    class _TrackedResponse(httpx.Response):
+        async def aclose(self) -> None:
+            closed["yes"] = True
+            await super().aclose()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _TrackedResponse(999, content=b"")
+
+    transport = httpx.MockTransport(handler)
+    async with AsyncHttpxHttpClient(transport=transport) as client:
+        request = Request(method=Method.GET, url=Url.parse("http://example.test/"))
+        with pytest.raises(ServiceResponseError):
+            await client.execute(request)
+    assert closed["yes"], "Response should be closed when status mapping fails"

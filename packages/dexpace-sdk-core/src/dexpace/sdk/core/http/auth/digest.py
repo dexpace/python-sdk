@@ -159,7 +159,10 @@ class DigestChallengeHandler:
 
     def _next_nc(self) -> str:
         with self._lock:
-            self._counter += 1
+            # Clamp to 32 bits — ``nc`` is rendered as 8 hex digits per
+            # RFC 7616, and wrapping after 2**32-1 is acceptable since the
+            # server hashes the value (no monotonic check).
+            self._counter = (self._counter + 1) & 0xFFFFFFFF
             value = self._counter
         return f"{value:08x}"
 

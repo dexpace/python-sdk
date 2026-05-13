@@ -111,7 +111,7 @@ class AsyncHttpxHttpClient:
             raise ServiceRequestError(str(err), error=err) from err
         except httpx.RequestError as err:
             raise ServiceRequestError(str(err), error=err) from err
-        return _build_async_response(request, httpx_response)
+        return await _build_async_response(request, httpx_response)
 
     def _build_request(self, request: Request) -> httpx.Request:
         headers = _headers_to_pairs(request.headers)
@@ -200,13 +200,13 @@ class _AsyncHttpxStreamAdapter:
         await self._response.aclose()
 
 
-def _build_async_response(request: Request, httpx_response: httpx.Response) -> AsyncResponse:
+async def _build_async_response(request: Request, httpx_response: httpx.Response) -> AsyncResponse:
     try:
         status = Status(int(httpx_response.status_code))
     except ValueError as err:
-        # ``aclose`` is async; schedule a synchronous close fallback via
-        # the underlying response's ``close`` since we cannot await here.
-        # Best effort — the failing status code is the user-visible signal.
+        # Release the underlying socket back to the pool; httpx async
+        # responses reject sync ``close``, so use ``aclose``.
+        await httpx_response.aclose()
         raise ServiceResponseError(
             f"Unknown status code: {httpx_response.status_code}", error=err
         ) from err

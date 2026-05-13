@@ -28,32 +28,43 @@ def _clean_context_store() -> Iterator[None]:
 class FakeClock:
     """Deterministic :class:`~dexpace.sdk.core.util.Clock` for unit tests.
 
-    Wall-clock and monotonic readings are backed by the same internal
-    counter, which advances only via :meth:`sleep` (clamped at zero) or
-    explicit :meth:`advance` calls. No real time elapses.
+    Wall-clock (``now``) and monotonic readings are tracked independently so
+    tests can model the real divergence between them (system clock jumps vs
+    monotonic uptime). ``sleep`` advances both. ``advance`` advances wall-
+    clock by the (possibly negative) delta but only ever advances monotonic
+    forward — monotonic is, by contract, non-decreasing.
     """
 
-    __slots__ = ("_t",)
+    __slots__ = ("_monotonic", "_wall")
 
     def __init__(self, start: float = 0.0) -> None:
-        """Initialise the fake clock at ``start`` seconds."""
-        self._t = start
+        """Initialise both clocks at ``start`` seconds."""
+        self._wall = start
+        self._monotonic = start
 
     def now(self) -> float:
         """Return the current simulated wall-clock time, in seconds."""
-        return self._t
+        return self._wall
 
     def monotonic(self) -> float:
         """Return the current simulated monotonic reading, in seconds."""
-        return self._t
+        return self._monotonic
 
     def sleep(self, duration: float) -> None:
-        """Advance the clock by ``duration`` seconds, clamped at zero."""
-        self._t += max(0.0, duration)
+        """Advance both wall and monotonic by ``duration`` (clamped at zero)."""
+        delta = max(0.0, duration)
+        self._wall += delta
+        self._monotonic += delta
 
     def advance(self, duration: float) -> None:
-        """Advance the clock by ``duration`` seconds (may be negative)."""
-        self._t += duration
+        """Advance wall-clock by ``duration`` (may be negative).
+
+        Monotonic is only advanced when ``duration`` is positive — modelling
+        the platform guarantee that monotonic time never goes backwards.
+        """
+        self._wall += duration
+        if duration > 0:
+            self._monotonic += duration
 
 
 @pytest.fixture

@@ -190,3 +190,19 @@ def test_default_env_is_os_environ(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DEXPACE_TEST_CONFIG_KEY", "value-from-os")
     cfg = Configuration()
     assert cfg.get("DEXPACE_TEST_CONFIG_KEY", None) == "value-from-os"
+
+
+class TestOverrideImmutability:
+    def test_external_mutation_of_overrides_does_not_leak(self) -> None:
+        """A defensive copy means callers can't mutate config after construction."""
+        original = {"KEY": "initial"}
+        cfg = Configuration(overrides=original)
+        original["KEY"] = "mutated-after-construction"
+        assert cfg.get("KEY") == "initial"
+
+    def test_builder_build_takes_defensive_copy(self) -> None:
+        builder = Configuration.builder().put("KEY", "v1")
+        cfg = builder.build()
+        builder.put("KEY", "v2")
+        # The originally-built config should not see subsequent builder edits.
+        assert cfg.get("KEY") == "v1"

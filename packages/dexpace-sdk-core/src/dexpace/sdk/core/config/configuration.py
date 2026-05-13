@@ -56,6 +56,13 @@ class Configuration:
     overrides: dict[str, str] = field(default_factory=dict)
     env: EnvSource = field(default=os.environ.get, repr=False)
 
+    def __post_init__(self) -> None:
+        # Defensive copy: ``frozen=True`` protects the attribute binding, not
+        # the dict's contents. Without this, external callers can mutate
+        # ``overrides`` after construction and observe the change through
+        # ``get``.
+        object.__setattr__(self, "overrides", dict(self.overrides))
+
     # Well-known keys — mirror Java SDK constants where they apply.
     # ``ClassVar`` keeps these off the dataclass field list and out of ``__slots__``.
     MAX_RETRY_ATTEMPTS: ClassVar[str] = "MAX_RETRY_ATTEMPTS"

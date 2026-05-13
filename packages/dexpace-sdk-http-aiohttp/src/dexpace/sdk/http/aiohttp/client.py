@@ -78,7 +78,7 @@ class AiohttpHttpClient:
         try:
             ctx = session.request(
                 method=str(request.method),
-                url=str(request.url),
+                url=request.url.wire_form(),
                 headers=_request_headers(request.headers),
                 data=data,
                 timeout=timeout_cfg,
@@ -161,7 +161,10 @@ def _wrap_response(request: Request, aio_response: aiohttp.ClientResponse) -> As
         ) from err
     headers = Headers(tuple(aio_response.headers.items()))
     reason = aio_response.reason
-    body = AsyncResponseBody.from_async_stream(_StreamReaderAdapter(aio_response))
+    content_length = _content_length(aio_response)
+    body = AsyncResponseBody.from_async_stream(
+        _StreamReaderAdapter(aio_response), content_length=content_length
+    )
     return AsyncResponse(
         request=request,
         protocol=Protocol.HTTP_1_1,
@@ -202,6 +205,17 @@ class _StreamReaderAdapter:
             return
         self._closed = True
         self._response.release()
+
+
+def _content_length(aio_response: aiohttp.ClientResponse) -> int:
+    """Extract ``Content-Length`` from the response, or ``-1`` when absent/invalid."""
+    raw = aio_response.headers.get("Content-Length")
+    if raw is None:
+        return -1
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return -1
 
 
 __all__ = ["AiohttpHttpClient"]

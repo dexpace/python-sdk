@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 from ...http.request.method import Method
 from ..async_policy import AsyncPolicy
 from ..stage import Stage
-from .redirect import RedirectPolicy
+from .redirect import _REDIRECT_STATUSES, RedirectPolicy
 
 if TYPE_CHECKING:
     from ...http.request.request import Request
@@ -65,7 +65,7 @@ class AsyncRedirectPolicy(AsyncPolicy):
             if hops >= cfg.max_hops:
                 return response
             status = int(response.status)
-            if status not in {301, 302, 303, 307, 308}:
+            if status not in _REDIRECT_STATUSES:
                 return response
             location = response.headers.get("Location")
             if location is None or not location.strip():

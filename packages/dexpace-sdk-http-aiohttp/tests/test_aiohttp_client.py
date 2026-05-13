@@ -157,3 +157,13 @@ async def test_shared_session_is_not_closed_on_aclose() -> None:
         assert not session.closed
     finally:
         await session.close()
+
+
+async def test_content_length_extracted_from_response(base_url: str) -> None:
+    """Aiohttp client should populate AsyncResponseBody.content_length from headers."""
+    async with AiohttpHttpClient() as client:
+        request = Request(method=Method.GET, url=Url.parse(f"{base_url}/ok"))
+        async with await client.execute(request) as response:
+            assert response.body is not None
+            # /ok returns a small JSON; Content-Length should be set by aiohttp.
+            assert response.body.content_length() > 0
