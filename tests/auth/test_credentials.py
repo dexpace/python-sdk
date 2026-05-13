@@ -28,7 +28,7 @@ class TestAccessTokenInfo:
 
     def test_needs_refresh_within_leeway(self) -> None:
         token = AccessTokenInfo(token="t", expires_on=int(time.time()) + 60)
-        assert token.needs_refresh(leeway=300)
+        assert token.needs_refresh(leeway_seconds=300)
 
     def test_needs_refresh_via_refresh_on(self) -> None:
         now = int(time.time())

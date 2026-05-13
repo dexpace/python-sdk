@@ -46,22 +46,22 @@ class AccessTokenInfo:
         """Return ``True`` when the token's ``expires_on`` is in the past."""
         return (now if now is not None else time.time()) >= self.expires_on
 
-    def needs_refresh(self, *, now: float | None = None, leeway: int = 300) -> bool:
+    def needs_refresh(self, *, now: float | None = None, leeway_seconds: int = 300) -> bool:
         """Return ``True`` when the token is close to (or past) expiry.
 
         Args:
             now: Reference time (Unix seconds); defaults to ``time.time()``.
-            leeway: Seconds before ``expires_on`` to consider the token
-                "near-expired" (default 5 minutes).
+            leeway_seconds: Refresh when token expires within this many
+                seconds (default 5 minutes).
 
         Returns:
             ``True`` when either ``refresh_on`` has passed or
-            ``expires_on - leeway`` has passed.
+            ``expires_on - leeway_seconds`` has passed.
         """
         current = now if now is not None else time.time()
         if self.refresh_on is not None and current >= self.refresh_on:
             return True
-        return current >= (self.expires_on - leeway)
+        return current >= (self.expires_on - leeway_seconds)
 
     def __repr__(self) -> str:
         # Redact the token in repr — useful for logging.
