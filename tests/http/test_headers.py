@@ -1,4 +1,5 @@
 """Tests for ``Headers`` immutability, case-insensitivity, and multi-value semantics."""
+
 from __future__ import annotations
 
 import pytest
@@ -140,3 +141,15 @@ class TestHttpHeaderName:
         name = HttpHeaderName.of("X-Custom-Header")
         assert name.value == "x-custom-header"
         assert name.canonical_name == "X-Custom-Header"
+
+
+class TestValidation:
+    @pytest.mark.parametrize("name", ["X-Bad\r\n", " X-Bad ", "X Bad", ""])
+    def test_invalid_header_name_rejected(self, name: str) -> None:
+        with pytest.raises(ValueError, match="invalid header name"):
+            Headers([(name, "v")])
+
+    @pytest.mark.parametrize("value", ["v\r\nLoc: bad", "v\nbad", "v\0bad"])
+    def test_invalid_header_value_rejected(self, value: str) -> None:
+        with pytest.raises(ValueError, match="invalid header value"):
+            Headers([("X-Test", value)])

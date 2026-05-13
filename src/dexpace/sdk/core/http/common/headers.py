@@ -1,10 +1,17 @@
 """Immutable, case-insensitive, multi-valued HTTP headers."""
+
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Iterator, Mapping
-from typing import Self
+from typing import Final, Self
 
 from .http_header_name import HttpHeaderName
+
+# RFC 7230 token: 1*tchar where tchar is the set of ASCII characters allowed
+# in header field names. We match against the lower-cased name because header
+# names are case-insensitive and stored in lower form.
+_TOKEN: Final[re.Pattern[str]] = re.compile(r"^[!#$%&'*+\-.^_`|~0-9a-z]+$")
 
 type _Name = str | HttpHeaderName
 type _HeaderValue = str | Iterable[str]
@@ -43,10 +50,13 @@ class Headers:
             for name, value in items:
                 key = _normalize(name)
                 existing = data.get(key, ())
-                if isinstance(value, str):
-                    data[key] = (*existing, value)
-                else:
-                    data[key] = (*existing, *value)
+                new_values: tuple[str, ...] = (value,) if isinstance(value, str) else tuple(value)
+                for v in new_values:
+                    if "\r" in v or "\n" in v or "\0" in v:
+                        raise ValueError(
+                            f"invalid header value for {key!r}: contains control characters"
+                        )
+                data[key] = (*existing, *new_values)
         object.__setattr__(self, "_data", tuple(data.items()))
         object.__setattr__(self, "_hash", None)
 
@@ -182,7 +192,10 @@ def _normalize(name: _Name) -> str:
     # sufficient and casefold() is unnecessary overhead on the hot path.
     if isinstance(name, HttpHeaderName):
         return name.value
-    return name.lower().strip()
+    lowered = name.lower()
+    if not _TOKEN.match(lowered):
+        raise ValueError(f"invalid header name: {name!r}")
+    return lowered
 
 
 def _construct[H: Headers](
