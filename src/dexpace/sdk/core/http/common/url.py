@@ -207,11 +207,16 @@ class Url:
     fragment: str = ""
     userinfo: str | None = None
 
-    @property
-    def authority(self) -> str:
-        """``[userinfo@]host[:port]`` — the netloc component."""
+    def authority(self, *, with_userinfo: bool) -> str:
+        """``[userinfo@]host[:port]`` — the netloc component.
+
+        Args:
+            with_userinfo: When True, includes ``user[:password]@`` in the
+                result. Default callers (``__str__``) pass False to avoid
+                leaking credentials into logs.
+        """
         parts: list[str] = []
-        if self.userinfo is not None:
+        if with_userinfo and self.userinfo is not None:
             parts.append(self.userinfo + "@")
         parts.append(self.host)
         if self.port is not None:
@@ -220,7 +225,42 @@ class Url:
 
     def __str__(self) -> str:
         query_string = self.query.encode() if len(self.query) else ""
-        return urlunsplit((self.scheme, self.authority, self.path, query_string, self.fragment))
+        return urlunsplit(
+            (
+                self.scheme,
+                self.authority(with_userinfo=False),
+                self.path,
+                query_string,
+                self.fragment,
+            )
+        )
+
+    def wire_form(self) -> str:
+        """Serialise to wire form including ``userinfo`` if present.
+
+        Use this when building a literal request line that must carry
+        credentials; default ``str(url)`` redacts userinfo to avoid
+        accidental leakage through logging.
+        """
+        query_string = self.query.encode() if len(self.query) else ""
+        return urlunsplit(
+            (
+                self.scheme,
+                self.authority(with_userinfo=True),
+                self.path,
+                query_string,
+                self.fragment,
+            )
+        )
+
+    def __repr__(self) -> str:
+        userinfo = "[REDACTED]" if self.userinfo else None
+        return (
+            f"Url(scheme={self.scheme!r}, host={self.host!r}, "
+            f"path={self.path!r}, port={self.port!r}, "
+            f"query={self.query!r}, fragment={self.fragment!r}, "
+            f"userinfo={userinfo!r})"
+        )
 
     def with_path(self, path: str) -> Self:
         return replace(self, path=path)

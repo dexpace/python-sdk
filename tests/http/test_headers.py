@@ -153,3 +153,32 @@ class TestValidation:
     def test_invalid_header_value_rejected(self, value: str) -> None:
         with pytest.raises(ValueError, match="invalid header value"):
             Headers([("X-Test", value)])
+
+
+class TestRepr:
+    @pytest.mark.parametrize(
+        "name", ["authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key"]
+    )
+    def test_sensitive_header_values_redacted(self, name: str) -> None:
+        h = Headers([(name, "secret-token-value")])
+        rendered = repr(h)
+        assert "secret-token-value" not in rendered
+        assert "REDACTED" in rendered
+
+    def test_non_sensitive_headers_not_redacted(self) -> None:
+        h = Headers([("Content-Type", "application/json")])
+        rendered = repr(h)
+        assert "application/json" in rendered
+        assert "REDACTED" not in rendered
+
+    def test_mixed_headers_redact_only_sensitive(self) -> None:
+        h = Headers(
+            [
+                ("Content-Type", "application/json"),
+                ("Authorization", "Bearer abc"),
+            ]
+        )
+        rendered = repr(h)
+        assert "application/json" in rendered
+        assert "Bearer abc" not in rendered
+        assert "REDACTED" in rendered

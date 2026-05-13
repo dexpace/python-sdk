@@ -13,6 +13,12 @@ from .http_header_name import HttpHeaderName
 # names are case-insensitive and stored in lower form.
 _TOKEN: Final[re.Pattern[str]] = re.compile(r"^[!#$%&'*+\-.^_`|~0-9a-z]+$")
 
+# Headers whose values should be redacted in repr() to avoid accidental
+# credential leakage through logging or exception formatting.
+_SENSITIVE: Final[frozenset[str]] = frozenset(
+    {"authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key"}
+)
+
 type _Name = str | HttpHeaderName
 type _HeaderValue = str | Iterable[str]
 # ``Mapping[str, …]`` rather than ``Mapping[_Name, …]`` because ``dict[str, T]``
@@ -177,8 +183,14 @@ class Headers:
         return cached
 
     def __repr__(self) -> str:
-        parts = ", ".join(f"{key!r}: {list(values)!r}" for key, values in self._data)
-        return f"Headers({{{parts}}})"
+        rendered: list[str] = []
+        for key, values in self._data:
+            if key in _SENSITIVE:
+                shown: list[str] = ["[REDACTED]"] * len(values)
+            else:
+                shown = list(values)
+            rendered.append(f"{key!r}: {shown!r}")
+        return f"Headers({{{', '.join(rendered)}}})"
 
     @classmethod
     def empty(cls) -> Headers:

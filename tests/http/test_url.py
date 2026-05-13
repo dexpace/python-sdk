@@ -47,7 +47,32 @@ class TestUrl:
 
     def test_authority_includes_port(self) -> None:
         u = Url.parse("https://api.example.com:8443/")
-        assert u.authority == "api.example.com:8443"
+        assert u.authority(with_userinfo=False) == "api.example.com:8443"
+
+    def test_authority_with_userinfo_includes_credentials(self) -> None:
+        u = Url.parse("https://user:pass@api.example.com:8443/")
+        assert u.authority(with_userinfo=True) == "user:pass@api.example.com:8443"
+        assert u.authority(with_userinfo=False) == "api.example.com:8443"
+
+    def test_url_str_omits_userinfo(self) -> None:
+        u = Url(scheme="https", host="example.com", userinfo="user:secret")
+        rendered = str(u)
+        assert "secret" not in rendered
+        assert "user" not in rendered
+
+    def test_url_wire_form_includes_userinfo(self) -> None:
+        u = Url(scheme="https", host="example.com", userinfo="user:secret")
+        assert "user:secret@example.com" in u.wire_form()
+
+    def test_url_repr_redacts_userinfo(self) -> None:
+        u = Url(scheme="https", host="example.com", userinfo="user:secret")
+        rendered = repr(u)
+        assert "REDACTED" in rendered
+        assert "secret" not in rendered
+
+    def test_url_repr_omits_redaction_marker_when_no_userinfo(self) -> None:
+        u = Url(scheme="https", host="example.com")
+        assert "REDACTED" not in repr(u)
 
     def test_with_path(self) -> None:
         u = Url.parse("https://example.com/old")
