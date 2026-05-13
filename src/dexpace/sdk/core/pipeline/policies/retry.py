@@ -164,7 +164,7 @@ class RetryPolicy(Policy):
             request = request.with_body(request.body.to_replayable())
         settings = self._configure_settings(ctx.options)
         absolute_deadline = time.monotonic() + settings["timeout"]
-        history: list[RequestHistory] = settings["history"]
+        history: list[RequestHistory[Response]] = settings["history"]
         while True:
             try:
                 response = self.next.send(request, ctx)

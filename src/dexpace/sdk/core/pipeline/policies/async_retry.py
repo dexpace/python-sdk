@@ -95,7 +95,7 @@ class AsyncRetryPolicy(AsyncPolicy):
             request = request.with_body(request.body.to_replayable())
         settings = cfg._configure_settings(ctx.options)
         absolute_deadline = time.monotonic() + settings["timeout"]
-        history: list[RequestHistory] = settings["history"]
+        history: list[RequestHistory[AsyncResponse]] = settings["history"]
         while True:
             try:
                 response = await self.next.send(request, ctx)

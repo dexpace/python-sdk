@@ -392,6 +392,45 @@ class TestRetryCountTiming:
         assert captured["retry_count"] == 1
 
 
+class TestRequestHistoryTyping:
+    """``RequestHistory`` is parametrised by response type.
+
+    The real assertion is that ``mypy --strict`` accepts these annotations
+    — i.e. ``RequestHistory[Response].response`` is ``Response | None``,
+    not ``Response | AsyncResponse | None``. The runtime check below is a
+    smoke test that construction works.
+    """
+
+    def test_request_history_response_field_typed_as_response(self) -> None:
+        from dexpace.sdk.core.pipeline.policies._history import RequestHistory
+
+        request = _get()
+        response = Response(
+            request=request,
+            protocol=Protocol.HTTP_1_1,
+            status=Status.OK,
+        )
+        entry: RequestHistory[Response] = RequestHistory(
+            request=request,
+            response=response,
+        )
+        # mypy narrows ``entry.response`` to ``Response | None`` — no
+        # ``AsyncResponse`` branch to disambiguate at the call site.
+        assert entry.response is response
+        assert entry.error is None
+
+    def test_request_history_error_branch_has_none_response(self) -> None:
+        from dexpace.sdk.core.pipeline.policies._history import RequestHistory
+
+        request = _get()
+        entry: RequestHistory[Response] = RequestHistory(
+            request=request,
+            error=ServiceRequestError("boom"),
+        )
+        assert entry.response is None
+        assert isinstance(entry.error, ServiceRequestError)
+
+
 # Sanity: time.monotonic available for the budget arithmetic used internally.
 def test_monotonic_clock_available() -> None:
     assert time.monotonic() > 0
