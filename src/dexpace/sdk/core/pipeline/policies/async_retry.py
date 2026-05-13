@@ -18,7 +18,6 @@ from ...client.async_http_client import asyncio_sleep
 from ...errors import (
     ClientAuthenticationError,
     SdkError,
-    ServiceRequestTimeoutError,
     ServiceResponseTimeoutError,
 )
 from ..async_policy import AsyncPolicy
@@ -152,11 +151,20 @@ class AsyncRetryPolicy(AsyncPolicy):
         duration: float,
         absolute_deadline: float,
     ) -> None:
+        """Sleep up to ``duration`` seconds, bounded by ``absolute_deadline``.
+
+        Raises ``ServiceResponseTimeoutError`` when the retry budget is
+        exhausted — both before sleeping (deadline already past) and after
+        (deadline reached during sleep). The "response timeout" framing is
+        the more accurate label for "budget exhausted"; the prior split
+        between request- and response-timeout was a distinction without a
+        difference at this boundary.
+        """
         if duration <= 0:
             return
         remaining = absolute_deadline - time.monotonic()
         if remaining <= 0:
-            raise ServiceRequestTimeoutError("Retry budget exhausted (timeout reached)")
+            raise ServiceResponseTimeoutError("Retry budget exhausted (timeout reached)")
         actual = min(duration, remaining)
         await self._sleep(actual)
         if time.monotonic() >= absolute_deadline:
