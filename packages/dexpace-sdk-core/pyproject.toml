@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Zero-dependency Python SDK core for building HTTP client libraries."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { file = "../../LICENSE.md" }
+license = { file = "LICENSE.md" }
 authors = [{ name = "Omar Aljarrah", email = "o.mazari.om63@gmail.com" }]
 keywords = ["sdk", "http", "client", "toolkit"]
 classifiers = [

@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Reference stdlib HTTP transports (urllib + asyncio) for dexpace-sdk-core."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { file = "../../LICENSE.md" }
+license = { file = "LICENSE.md" }
 authors = [{ name = "Omar Aljarrah", email = "o.mazari.om63@gmail.com" }]
 keywords = ["sdk", "http", "client", "urllib", "asyncio"]
 classifiers = [
