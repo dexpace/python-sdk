@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dexpace-sdk-http-aiohttp"
+version = "0.1.0"
+description = "aiohttp-backed async HTTP transport for dexpace-sdk-core."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE.md" }
+authors = [{ name = "Omar Aljarrah", email = "o.mazari.om63@gmail.com" }]
+keywords = ["sdk", "http", "aiohttp", "async"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "License :: Other/Proprietary License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "dexpace-sdk-core>=0.1,<0.2",
+    "aiohttp>=3.9,<4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/dexpace/python-sdk"
+Repository = "https://github.com/dexpace/python-sdk"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dexpace/sdk/http/aiohttp"]
+sources = ["src"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "README.md"]

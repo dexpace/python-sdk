@@ -6,6 +6,9 @@ requires-python = ">=3.12"
 dependencies = [
     "dexpace-sdk-core",
     "dexpace-sdk-http-stdlib",
+    "dexpace-sdk-http-aiohttp",
+    "dexpace-sdk-http-httpx",
+    "dexpace-sdk-http-requests",
 ]
 
 [tool.uv.workspace]
@@ -14,6 +17,9 @@ members = ["packages/*"]
 [tool.uv.sources]
 dexpace-sdk-core = { workspace = true }
 dexpace-sdk-http-stdlib = { workspace = true }
+dexpace-sdk-http-aiohttp = { workspace = true }
+dexpace-sdk-http-httpx = { workspace = true }
+dexpace-sdk-http-requests = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -28,6 +34,9 @@ dev = [
 testpaths = [
     "packages/dexpace-sdk-core/tests",
     "packages/dexpace-sdk-http-stdlib/tests",
+    "packages/dexpace-sdk-http-aiohttp/tests",
+    "packages/dexpace-sdk-http-httpx/tests",
+    "packages/dexpace-sdk-http-requests/tests",
 ]
 addopts = "-ra --strict-markers"
 asyncio_mode = "auto"
@@ -40,7 +49,10 @@ filterwarnings = [
 line-length = 100
 target-version = "py312"
 src = ["packages/dexpace-sdk-core/src", "packages/dexpace-sdk-core/tests",
-       "packages/dexpace-sdk-http-stdlib/src", "packages/dexpace-sdk-http-stdlib/tests"]
+       "packages/dexpace-sdk-http-stdlib/src", "packages/dexpace-sdk-http-stdlib/tests",
+       "packages/dexpace-sdk-http-aiohttp/src", "packages/dexpace-sdk-http-aiohttp/tests",
+       "packages/dexpace-sdk-http-httpx/src", "packages/dexpace-sdk-http-httpx/tests",
+       "packages/dexpace-sdk-http-requests/src", "packages/dexpace-sdk-http-requests/tests"]
 
 [tool.ruff.lint]
 select = [
@@ -72,12 +84,24 @@ disallow_untyped_defs = true
 disallow_any_generics = true
 namespace_packages = true
 explicit_package_bases = true
-mypy_path = ["packages/dexpace-sdk-core/src", "packages/dexpace-sdk-http-stdlib/src"]
+mypy_path = [
+    "packages/dexpace-sdk-core/src",
+    "packages/dexpace-sdk-http-stdlib/src",
+    "packages/dexpace-sdk-http-aiohttp/src",
+    "packages/dexpace-sdk-http-httpx/src",
+    "packages/dexpace-sdk-http-requests/src",
+]
 files = [
     "packages/dexpace-sdk-core/src",
     "packages/dexpace-sdk-core/tests",
     "packages/dexpace-sdk-http-stdlib/src",
     "packages/dexpace-sdk-http-stdlib/tests",
+    "packages/dexpace-sdk-http-aiohttp/src",
+    "packages/dexpace-sdk-http-aiohttp/tests",
+    "packages/dexpace-sdk-http-httpx/src",
+    "packages/dexpace-sdk-http-httpx/tests",
+    "packages/dexpace-sdk-http-requests/src",
+    "packages/dexpace-sdk-http-requests/tests",
 ]
 
 [[tool.mypy.overrides]]
