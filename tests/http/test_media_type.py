@@ -35,6 +35,16 @@ class TestParse:
         with pytest.raises(ValueError):
             MediaType.parse("application/")
 
+    def test_parse_unquotes_charset(self) -> None:
+        mt = MediaType.parse('text/plain; charset="utf-8"')
+        assert mt.charset == "utf-8"
+
+    def test_parse_quoted_pair(self) -> None:
+        # Quoted-pair: a backslash escapes the following character per
+        # RFC 7230 §3.2.6. ``"a\"b"`` decodes to ``a"b``.
+        mt = MediaType.parse('text/plain; foo="a\\"b"')
+        assert dict(mt.parameters)["foo"] == 'a"b'
+
 
 class TestNormalisation:
     def test_lower_cases_type_and_subtype(self) -> None:
@@ -87,6 +97,13 @@ class TestSerialisation:
     def test_str_with_parameters(self) -> None:
         text = str(MediaType.of("text", "plain", {"charset": "utf-8"}))
         assert "charset=utf-8" in text
+
+    def test_str_quotes_boundary_with_spaces(self) -> None:
+        mt = MediaType.of("multipart", "form-data", {"boundary": "foo bar"})
+        rendered = str(mt)
+        assert 'boundary="foo bar"' in rendered
+        # Round-trip: parsing the rendered form recovers the original value.
+        assert MediaType.parse(rendered) == mt
 
     def test_equality_independent_of_param_order(self) -> None:
         a = MediaType.of("text", "plain", {"a": "1", "b": "2"})

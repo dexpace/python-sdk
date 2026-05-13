@@ -6,6 +6,49 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Self
 
+# RFC 7230 §3.2.6 — characters that are NOT valid in a ``token``. Any
+# parameter value containing one of these (or a non-printable byte) must be
+# rendered as a quoted-string. Space and HTAB are included because they
+# terminate a token even though they are valid inside quoted-strings.
+_TOKEN_SEPARATORS = frozenset('()<>@,;:\\"/[]?={} \t')
+
+
+def _unquote(s: str) -> str:
+    """Decode a quoted-string parameter value per RFC 7230 §3.2.6.
+
+    If ``s`` is wrapped in double quotes, the quotes are stripped and any
+    ``\\X`` quoted-pair inside is replaced with ``X``. Values that are not
+    quoted are returned unchanged.
+    """
+    if len(s) < 2 or not (s.startswith('"') and s.endswith('"')):
+        return s
+    inner = s[1:-1]
+    out: list[str] = []
+    i = 0
+    while i < len(inner):
+        ch = inner[i]
+        if ch == "\\" and i + 1 < len(inner):
+            out.append(inner[i + 1])
+            i += 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _quote_if_needed(s: str) -> str:
+    """Wrap ``s`` in a quoted-string when it is not a bare RFC 7230 token.
+
+    A token consists of visible ASCII characters excluding the separator
+    set. Any other character (space, ``;``, ``"``, control bytes, non-ASCII,
+    etc.) forces quoting. Inside the quoted form ``"`` and ``\\`` are
+    escaped with a leading backslash.
+    """
+    if s and all(ch.isascii() and ch.isprintable() and ch not in _TOKEN_SEPARATORS for ch in s):
+        return s
+    escaped = s.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
 
 @dataclass(frozen=True, slots=True)
 class MediaType:
@@ -48,7 +91,7 @@ class MediaType:
     def __str__(self) -> str:
         if not self.parameters:
             return f"{self.type}/{self.subtype}"
-        formatted = ";".join(f"{key}={value}" for key, value in self.parameters)
+        formatted = ";".join(f"{key}={_quote_if_needed(value)}" for key, value in self.parameters)
         return f"{self.type}/{self.subtype};{formatted}"
 
     @classmethod
@@ -109,7 +152,7 @@ class MediaType:
             param_value = segment[eq + 1 :].strip()
             if not key or not param_value:
                 raise ValueError(f"Invalid parameter: {segment!r}")
-            parameters_map[key] = param_value
+            parameters_map[key] = _unquote(param_value)
         return cls.of(type_, subtype, parameters_map)
 
 
