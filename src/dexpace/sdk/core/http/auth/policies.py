@@ -131,6 +131,16 @@ class BearerTokenPolicy(Policy):
         Returns:
             ``True`` to re-issue the request after acquiring a new token;
             ``False`` (the default) to surface the error to the caller.
+
+        Note:
+            By the time this hook runs, ``send`` has already replaced the
+            cached token for ``(scopes, audience)`` with an expired sentinel
+            (``token=""``, ``expires_on=0``). Subclasses that inspect the
+            ``TokenCache`` here will see that sentinel, not the original
+            token that was attached to ``request``. The sentinel is what
+            forces the subsequent ``_authorize`` call (when this hook
+            returns ``True``) to invoke the credential and acquire a fresh
+            token rather than reusing the rejected one.
         """
         del request, response
         return False
@@ -203,7 +213,18 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         request: Request,
         response: AsyncResponse,
     ) -> bool:
-        """Async version of ``BearerTokenPolicy.on_challenge``."""
+        """Async version of ``BearerTokenPolicy.on_challenge``.
+
+        Note:
+            By the time this hook runs, ``send`` has already replaced the
+            cached token for ``(scopes, audience)`` with an expired sentinel
+            (``token=""``, ``expires_on=0``). Subclasses that inspect the
+            ``TokenCache`` here will see that sentinel, not the original
+            token that was attached to ``request``. The sentinel is what
+            forces the subsequent ``_authorize`` call (when this hook
+            returns ``True``) to invoke the credential and acquire a fresh
+            token rather than reusing the rejected one.
+        """
         del request, response
         return False
 
