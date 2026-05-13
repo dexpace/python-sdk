@@ -6,7 +6,7 @@ import pytest
 
 from dexpace.sdk.core.client.async_http_client import AsyncHttpClient
 from dexpace.sdk.core.errors import PipelineAbortedError, ServiceRequestError
-from dexpace.sdk.core.http.common import Protocol
+from dexpace.sdk.core.http.common import Protocol, Url
 from dexpace.sdk.core.http.context import CallContext, DispatchContext
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.request.request_body import RequestBody
@@ -36,7 +36,7 @@ def _instr(trace: str) -> InstrumentationContext:
 
 
 def _request() -> Request:
-    return Request(method=Method.GET, url="https://example.com/")
+    return Request(method=Method.GET, url=Url.parse("https://example.com/"))
 
 
 class _StubAsyncClient(AsyncHttpClient):
@@ -180,7 +180,7 @@ async def test_async_retry_with_single_use_body_auto_replays() -> None:
             )
 
     body = RequestBody.from_iter(iter([b"hello", b"world"]))
-    request = Request(method=Method.POST, url="https://example.com/", body=body)
+    request = Request(method=Method.POST, url=Url.parse("https://example.com/"), body=body)
     client = _BodyRecordingAsyncClient()
     retry = AsyncRetryPolicy(total_retries=2, backoff_factor=0, sleep=_no_sleep)
     async with AsyncPipeline(client, policies=[retry]) as p:

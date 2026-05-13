@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import threading
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
 
 from ...errors import ClientAuthenticationError, ServiceRequestError
 from ...pipeline.async_policy import AsyncPolicy
@@ -21,6 +20,7 @@ from .token_cache import InMemoryTokenCache, TokenCache
 
 if TYPE_CHECKING:
     from ...pipeline.context import PipelineContext
+    from ..common.url import Url
     from ..request.request import Request
     from ..response.async_response import AsyncResponse
     from ..response.response import Response
@@ -231,9 +231,9 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         return request.with_header("Authorization", f"{token.token_type} {token.token}")
 
 
-def _is_https(url: str) -> bool:
-    """Return True if ``url`` parses to an ``https`` scheme (case-insensitive)."""
-    return urlsplit(url).scheme.lower() == "https"
+def _is_https(url: Url) -> bool:
+    """Return True if ``url``'s scheme is ``https`` (case-insensitive)."""
+    return url.scheme.lower() == "https"
 
 
 def _token_options(call_options: dict[str, Any]) -> TokenRequestOptions | None:

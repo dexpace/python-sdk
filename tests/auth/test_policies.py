@@ -20,7 +20,7 @@ from dexpace.sdk.core.http.auth import (
     KeyCredential,
     KeyCredentialPolicy,
 )
-from dexpace.sdk.core.http.common import Protocol
+from dexpace.sdk.core.http.common import Protocol, Url
 from dexpace.sdk.core.http.context import DispatchContext
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.response import AsyncResponse, Response, Status
@@ -48,7 +48,7 @@ def _instr(trace: str) -> InstrumentationContext:
 
 
 def _request(url: str = "https://api.example.com/") -> Request:
-    return Request(method=Method.GET, url=url)
+    return Request(method=Method.GET, url=Url.parse(url))
 
 
 class _CapturingClient(HttpClient):

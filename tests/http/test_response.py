@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dexpace.sdk.core.http.common import Headers, Protocol
+from dexpace.sdk.core.http.common import Headers, Protocol, Url
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.response import Response, ResponseBody, Status
 
 
 def _request() -> Request:
-    return Request(method=Method.GET, url="https://example.com/")
+    return Request(method=Method.GET, url=Url.parse("https://example.com/"))
 
 
 def test_is_success_property() -> None:

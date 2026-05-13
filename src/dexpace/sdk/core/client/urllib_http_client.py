@@ -107,7 +107,7 @@ def _build_urllib_request(request: Request) -> _UrllibRequest:
     # so the simple join is safe here.
     headers = {name: ", ".join(values) for name, values in request.headers.items()}
     return _UrllibRequest(
-        url=request.url,
+        url=request.url.wire_form(),
         data=body_bytes,
         headers=headers,
         method=str(request.method),

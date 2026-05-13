@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from urllib.parse import urlsplit
 
 from ...instrumentation import NOOP_TRACER, Tracer
 from ..policy import Policy
 
 if TYPE_CHECKING:
+    from ...http.common.url import Url
     from ...http.request.request import Request
     from ...http.response.response import Response
     from ..context import PipelineContext
@@ -43,7 +43,7 @@ class TracingPolicy(Policy):
         span = self._tracer.start_span(f"HTTP {request.method}", parent=parent)
         host, port = _split_host(request.url)
         span.set_attribute("http.request.method", str(request.method))
-        span.set_attribute("url.full", request.url)
+        span.set_attribute("url.full", str(request.url))
         if host:
             span.set_attribute("server.address", host)
         if port is not None:
@@ -63,12 +63,8 @@ class TracingPolicy(Policy):
         return response
 
 
-def _split_host(url: str) -> tuple[str | None, int | None]:
-    try:
-        parsed = urlsplit(url)
-    except ValueError:
-        return None, None
-    return parsed.hostname, parsed.port
+def _split_host(url: Url) -> tuple[str | None, int | None]:
+    return url.host or None, url.port
 
 
 __all__ = ["TracingPolicy"]

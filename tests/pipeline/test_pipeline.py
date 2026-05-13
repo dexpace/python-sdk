@@ -6,7 +6,7 @@ import pytest
 
 from dexpace.sdk.core.client.http_client import HttpClient
 from dexpace.sdk.core.errors import PipelineAbortedError
-from dexpace.sdk.core.http.common import Headers, Protocol
+from dexpace.sdk.core.http.common import Headers, Protocol, Url
 from dexpace.sdk.core.http.context import CallContext, DispatchContext
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.response import Response, Status
@@ -34,7 +34,7 @@ def _instr(trace: str) -> InstrumentationContext:
 
 
 def _request() -> Request:
-    return Request(method=Method.GET, url="https://example.com/")
+    return Request(method=Method.GET, url=Url.parse("https://example.com/"))
 
 
 def _ok_response(req: Request) -> Response:

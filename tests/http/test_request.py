@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from dexpace.sdk.core.http.common import Headers
+from dexpace.sdk.core.http.common import Headers, Url
 from dexpace.sdk.core.http.common.http_header_name import AUTHORIZATION, CONTENT_TYPE
 from dexpace.sdk.core.http.request import Method, Request, RequestBody
 
 
 def _request() -> Request:
-    return Request(method=Method.GET, url="https://example.com/")
+    return Request(method=Method.GET, url=Url.parse("https://example.com/"))
 
 
 def test_with_method_returns_new_instance() -> None:
@@ -20,11 +20,23 @@ def test_with_method_returns_new_instance() -> None:
     assert r.method is Method.GET
 
 
-def test_with_url_returns_new_instance() -> None:
+def test_with_url_accepts_string() -> None:
     r = _request()
     new = r.with_url("https://other.example.com/")
-    assert new.url == "https://other.example.com/"
-    assert r.url == "https://example.com/"
+    assert new.url == Url.parse("https://other.example.com/")
+    assert r.url == Url.parse("https://example.com/")
+
+
+def test_with_url_accepts_url_instance() -> None:
+    r = _request()
+    target = Url.parse("https://other.example.com/")
+    new = r.with_url(target)
+    assert new.url is target
+
+
+def test_url_is_url_type() -> None:
+    r = _request()
+    assert isinstance(r.url, Url)
 
 
 def test_with_header_accepts_http_header_name() -> None:
@@ -59,7 +71,7 @@ def test_frozen() -> None:
 
     r = _request()
     with pytest.raises(FrozenInstanceError):
-        r.url = "x"  # type: ignore[misc]
+        r.url = Url.parse("https://x/")  # type: ignore[misc]
 
 
 def test_default_headers_are_empty() -> None:

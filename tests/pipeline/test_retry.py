@@ -15,7 +15,7 @@ from dexpace.sdk.core.errors import (
     ServiceRequestError,
     ServiceResponseError,
 )
-from dexpace.sdk.core.http.common import Protocol
+from dexpace.sdk.core.http.common import Protocol, Url
 from dexpace.sdk.core.http.context import DispatchContext
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.request.request_body import RequestBody
@@ -46,11 +46,11 @@ def _instr(trace: str) -> InstrumentationContext:
 
 
 def _get() -> Request:
-    return Request(method=Method.GET, url="https://example.com/")
+    return Request(method=Method.GET, url=Url.parse("https://example.com/"))
 
 
 def _post() -> Request:
-    return Request(method=Method.POST, url="https://example.com/")
+    return Request(method=Method.POST, url=Url.parse("https://example.com/"))
 
 
 class _ScriptedClient(HttpClient):
@@ -279,7 +279,7 @@ class TestRetryAutoReplaysBody:
     def test_retry_with_single_use_body_auto_replays(self) -> None:
         consumed: list[bytes] = []
         body = RequestBody.from_iter(iter([b"hello", b"world"]))
-        request = Request(method=Method.POST, url="https://example.com/", body=body)
+        request = Request(method=Method.POST, url=Url.parse("https://example.com/"), body=body)
         client = _BodyRecordingClient(
             [Status.SERVICE_UNAVAILABLE, Status.SERVICE_UNAVAILABLE, Status.OK],
             consumed,
@@ -299,7 +299,7 @@ class TestRetryAutoReplaysBody:
                 return Response(request=request, protocol=Protocol.HTTP_1_1, status=Status.OK)
 
         body = RequestBody.from_iter(iter([b"hello", b"world"]))
-        request = Request(method=Method.POST, url="https://example.com/", body=body)
+        request = Request(method=Method.POST, url=Url.parse("https://example.com/"), body=body)
         retry = RetryPolicy.no_retries()
         retry._sleep = _no_sleep
         with Pipeline(_CapturingClient(), policies=[retry]) as p:

@@ -23,7 +23,6 @@ import contextlib
 import ssl as _ssl
 from types import TracebackType
 from typing import Final, Self
-from urllib.parse import urlsplit
 
 from ..errors import (
     ServiceRequestError,
@@ -32,6 +31,7 @@ from ..errors import (
 )
 from ..http.common.headers import Headers
 from ..http.common.protocol import Protocol
+from ..http.common.url import Url
 from ..http.request.request import Request
 from ..http.response.async_response import AsyncResponse
 from ..http.response.async_response_body import AsyncResponseBody
@@ -178,16 +178,15 @@ class AsyncioHttpClient:
         return Headers(entries)
 
 
-def _split_url(url: str) -> tuple[str, int, bool, str]:
-    parsed = urlsplit(url)
-    if not parsed.hostname:
+def _split_url(url: Url) -> tuple[str, int, bool, str]:
+    if not url.host:
         raise ServiceRequestError(f"URL missing host: {url!r}")
-    secure = parsed.scheme == "https"
-    port = parsed.port or (443 if secure else 80)
-    path = parsed.path or "/"
-    if parsed.query:
-        path = f"{path}?{parsed.query}"
-    return parsed.hostname, port, secure, path
+    secure = url.scheme == "https"
+    port = url.port or (443 if secure else 80)
+    path = url.path or "/"
+    if len(url.query):
+        path = f"{path}?{url.query.encode()}"
+    return url.host, port, secure, path
 
 
 def _content_length(headers: Headers) -> int:

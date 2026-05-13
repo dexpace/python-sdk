@@ -39,7 +39,7 @@ class LoggingPolicy(Policy):
     def send(self, request: Request, ctx: PipelineContext) -> Response:
         if not ctx.options.get("logging_enabled", True):
             return self.next.send(request, ctx)
-        url = self._redactor.redact(request.url)
+        url = self._redactor.redact(str(request.url))
         trace_id = ctx.call.instrumentation_context.trace_id.value
         self._logger.info(
             "http.request",

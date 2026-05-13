@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Self
 
 from ..common.headers import Headers
 from ..common.http_header_name import HttpHeaderName
+from ..common.url import Url
 from .method import Method
 
 if TYPE_CHECKING:
@@ -27,15 +28,16 @@ class Request:
     """
 
     method: Method
-    url: str
+    url: Url
     headers: Headers = field(default_factory=Headers)
     body: RequestBody | None = None
 
     def with_method(self, method: Method) -> Self:
         return replace(self, method=method)
 
-    def with_url(self, url: str) -> Self:
-        return replace(self, url=url)
+    def with_url(self, url: str | Url) -> Self:
+        parsed = Url.parse(url) if isinstance(url, str) else url
+        return replace(self, url=parsed)
 
     def with_headers(self, headers: Headers) -> Self:
         return replace(self, headers=headers)

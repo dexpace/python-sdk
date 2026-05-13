@@ -10,6 +10,7 @@ import pytest
 
 from dexpace.sdk.core.client import UrllibHttpClient
 from dexpace.sdk.core.errors import ServiceRequestError
+from dexpace.sdk.core.http.common import Url
 from dexpace.sdk.core.http.request import Method, Request, RequestBody
 from dexpace.sdk.core.http.response import Status
 
@@ -76,7 +77,7 @@ def echo_server() -> Iterator[str]:
 
 def test_get_round_trip(echo_server: str) -> None:
     client = UrllibHttpClient()
-    request = Request(method=Method.GET, url=f"{echo_server}/")
+    request = Request(method=Method.GET, url=Url.parse(f"{echo_server}/"))
     with client:
         response = client.execute(request)
     assert response.status is Status.OK
@@ -91,7 +92,7 @@ def test_post_with_body(echo_server: str) -> None:
     client = UrllibHttpClient()
     request = Request(
         method=Method.POST,
-        url=f"{echo_server}/",
+        url=Url.parse(f"{echo_server}/"),
         body=RequestBody.from_string("hello"),
     )
     with client:
@@ -107,7 +108,7 @@ def test_closed_client_raises() -> None:
     client = UrllibHttpClient()
     client.close()
     with pytest.raises(ServiceRequestError):
-        client.execute(Request(method=Method.GET, url="http://127.0.0.1:1/"))
+        client.execute(Request(method=Method.GET, url=Url.parse("http://127.0.0.1:1/")))
 
 
 def test_invalid_timeout_raises() -> None:
@@ -117,6 +118,6 @@ def test_invalid_timeout_raises() -> None:
 
 def test_connect_error_maps_to_service_request_error() -> None:
     client = UrllibHttpClient(timeout=1.0)
-    request = Request(method=Method.GET, url="http://127.0.0.1:1/")
+    request = Request(method=Method.GET, url=Url.parse("http://127.0.0.1:1/"))
     with pytest.raises(ServiceRequestError):
         client.execute(request)

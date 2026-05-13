@@ -23,13 +23,13 @@ from dexpace.sdk.core.errors import (
     StreamConsumedError,
     map_error,
 )
-from dexpace.sdk.core.http.common import Protocol
+from dexpace.sdk.core.http.common import Protocol, Url
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.response import Response, Status
 
 
 def _response(status: Status) -> Response:
-    request = Request(method=Method.GET, url="https://example.com/")
+    request = Request(method=Method.GET, url=Url.parse("https://example.com/"))
     return Response(request=request, protocol=Protocol.HTTP_1_1, status=status)
 
 

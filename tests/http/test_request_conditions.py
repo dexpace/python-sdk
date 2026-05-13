@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from dexpace.sdk.core.http.common import ETag, RequestConditions
+from dexpace.sdk.core.http.common import ETag, RequestConditions, Url
 from dexpace.sdk.core.http.request import Method, Request
 
 
 def _request() -> Request:
-    return Request(method=Method.GET, url="https://example.com/")
+    return Request(method=Method.GET, url=Url.parse("https://example.com/"))
 
 
 def test_if_match_single_etag() -> None:

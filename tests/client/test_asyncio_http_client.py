@@ -9,6 +9,7 @@ import pytest
 
 from dexpace.sdk.core.client import AsyncioHttpClient
 from dexpace.sdk.core.errors import ServiceRequestError
+from dexpace.sdk.core.http.common import Url
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.response import Status
 
@@ -50,7 +51,7 @@ async def server() -> AsyncIterator[str]:
 
 async def test_get_round_trip(server: str) -> None:
     async with AsyncioHttpClient(timeout=5.0) as client:
-        response = await client.execute(Request(method=Method.GET, url=f"{server}/"))
+        response = await client.execute(Request(method=Method.GET, url=Url.parse(f"{server}/")))
     assert response.status is Status.OK
     assert response.headers.get("content-type") == "application/json"
     body = response.body
@@ -62,7 +63,7 @@ async def test_get_round_trip(server: str) -> None:
 async def test_connect_failure() -> None:
     client = AsyncioHttpClient(timeout=1.0)
     with pytest.raises(ServiceRequestError):
-        await client.execute(Request(method=Method.GET, url="http://127.0.0.1:1/"))
+        await client.execute(Request(method=Method.GET, url=Url.parse("http://127.0.0.1:1/")))
 
 
 def test_invalid_timeout_raises() -> None:

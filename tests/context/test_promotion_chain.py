@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dexpace.sdk.core.http.common import Protocol
+from dexpace.sdk.core.http.common import Protocol, Url
 from dexpace.sdk.core.http.context import (
     ContextStore,
     DispatchContext,
@@ -35,7 +35,7 @@ def _instrumentation(trace_id_value: str) -> InstrumentationContext:
 
 
 def _request() -> Request:
-    return Request(method=Method.GET, url="https://example.com/")
+    return Request(method=Method.GET, url=Url.parse("https://example.com/"))
 
 
 def _response(request: Request) -> Response:
