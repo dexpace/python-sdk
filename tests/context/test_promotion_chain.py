@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from dexpace.sdk.core.http.common import Protocol, Url
@@ -88,6 +91,50 @@ def test_dispatch_noop_factory() -> None:
     # No-op trace id is invalid, but the context is constructible.
     assert isinstance(dispatch, DispatchContext)
     assert not dispatch.instrumentation_context.is_valid
+
+
+def test_context_store_concurrent_get_with_writes() -> None:
+    """``ContextStore.get`` must be safe under concurrent ``set``/``remove``.
+
+    The lock guarantees this on free-threaded CPython (PEP 703) and
+    non-CPython runtimes; under the GIL this test is mostly a correctness
+    demonstration.
+    """
+    instr = _instrumentation("0" * 16 + "6")
+    dispatch = DispatchContext(instrumentation_context=instr)
+    trace_id = instr.trace_id.value
+    ContextStore.put(trace_id, dispatch)
+
+    stop = threading.Event()
+
+    def writer() -> None:
+        i = 0
+        while not stop.is_set():
+            other_id = f"{i:032x}"[:32]
+            ContextStore.set(other_id, dispatch)
+            ContextStore.remove(other_id)
+            i += 1
+
+    def reader() -> list[bool]:
+        seen: list[bool] = []
+        for _ in range(500):
+            seen.append(ContextStore.get(trace_id) is dispatch)
+        return seen
+
+    try:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            writers = [pool.submit(writer) for _ in range(2)]
+            readers = [pool.submit(reader) for _ in range(4)]
+            try:
+                results = [f.result(timeout=5) for f in readers]
+            finally:
+                stop.set()
+                for f in writers:
+                    f.result(timeout=5)
+        for seen in results:
+            assert all(seen)
+    finally:
+        ContextStore.remove(trace_id)
 
 
 def test_exchange_context_carries_request_and_response() -> None:

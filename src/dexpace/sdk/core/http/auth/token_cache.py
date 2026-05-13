@@ -43,9 +43,9 @@ class InMemoryTokenCache:
     """Thread-safe in-process token cache keyed by ``(scopes, audience)``.
 
     The scope list is sorted before being keyed so ``["a", "b"]`` and
-    ``["b", "a"]`` map to the same entry. Concurrent reads are unsynchronised
-    (dict reads are atomic in CPython); writes go through a lock so a
-    concurrent get-and-set races safely.
+    ``["b", "a"]`` map to the same entry. Every operation acquires the lock
+    so the guarantee survives free-threaded CPython (PEP 703) and
+    non-CPython runtimes that do not guarantee atomic dict ops.
     """
 
     __slots__ = ("_entries", "_lock")
@@ -59,7 +59,8 @@ class InMemoryTokenCache:
         scopes: Sequence[str],
         audience: str | None = None,
     ) -> AccessTokenInfo | None:
-        return self._entries.get(_cache_key(scopes, audience))
+        with self._lock:
+            return self._entries.get(_cache_key(scopes, audience))
 
     def set(
         self,

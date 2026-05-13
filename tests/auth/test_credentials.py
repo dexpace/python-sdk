@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -115,3 +117,41 @@ class TestInMemoryTokenCache:
         cache.set(["s"], AccessTokenInfo(token="t", expires_on=0))
         cache.clear()
         assert cache.get(["s"]) is None
+
+    def test_concurrent_get_with_writes(self) -> None:
+        """``get`` must be safe under concurrent ``set`` calls.
+
+        The lock guarantees this on free-threaded CPython (PEP 703) and
+        non-CPython runtimes; under the GIL this test is mostly a
+        correctness demonstration.
+        """
+        cache = InMemoryTokenCache()
+        token = AccessTokenInfo(token="t", expires_on=0)
+        cache.set(["s"], token)
+
+        stop = threading.Event()
+
+        def writer() -> None:
+            i = 0
+            while not stop.is_set():
+                cache.set([f"s{i % 8}"], AccessTokenInfo(token=str(i), expires_on=0))
+                i += 1
+
+        def reader() -> list[AccessTokenInfo | None]:
+            seen: list[AccessTokenInfo | None] = []
+            for _ in range(500):
+                seen.append(cache.get(["s"]))
+            return seen
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            writers = [pool.submit(writer) for _ in range(2)]
+            readers = [pool.submit(reader) for _ in range(4)]
+            try:
+                results = [f.result(timeout=5) for f in readers]
+            finally:
+                stop.set()
+                for f in writers:
+                    f.result(timeout=5)
+
+        for seen in results:
+            assert all(entry is token for entry in seen)

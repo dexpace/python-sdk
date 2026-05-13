@@ -18,8 +18,9 @@ class _ContextStore:
     latest snapshot is visible to downstream observers keyed by trace id.
     Entries are removed when callers honour :meth:`CallContext.close`.
 
-    Thread-safe — dict ops in CPython are atomic under the GIL; the lock
-    guards the put/get/check-and-set sequence in :meth:`put`.
+    Thread-safe — every operation acquires the lock so the guarantee
+    survives free-threaded CPython (PEP 703) and non-CPython runtimes that
+    do not guarantee atomic dict ops.
     """
 
     __slots__ = ("_contexts", "_lock")
@@ -30,7 +31,8 @@ class _ContextStore:
 
     def get(self, trace_id: str) -> CallContext | None:
         """Return the context registered under ``trace_id``, or ``None``."""
-        return self._contexts.get(trace_id)
+        with self._lock:
+            return self._contexts.get(trace_id)
 
     def put(self, trace_id: str, context: CallContext) -> None:
         """Register ``context`` under ``trace_id``; reject duplicate ids.
