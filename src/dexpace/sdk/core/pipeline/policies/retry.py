@@ -4,6 +4,14 @@ Drives the request through ``self.next`` repeatedly until the response
 succeeds, the retry budget is exhausted, or a non-retryable error is
 raised. State is kept in ``ctx.data["retry_settings"]`` for the duration of
 one ``send`` call; per-attempt history lands in ``ctx.data["retry_history"]``.
+
+Single-use request bodies (``RequestBody.from_stream`` /
+``RequestBody.from_iter``) are auto-buffered at the top of ``send`` when
+``total_retries > 0``: the policy calls ``body.to_replayable()`` and swaps
+the result onto the request before the first attempt, so a retry can
+re-emit the same payload without raising ``RuntimeError``. The buffering
+step is skipped when ``total_retries == 0`` so callers who explicitly opt
+out of retries pay no memory cost.
 """
 from __future__ import annotations
 
@@ -131,6 +139,8 @@ class RetryPolicy(Policy):
     # ----- main loop ------------------------------------------------------
 
     def send(self, request: Request, ctx: PipelineContext) -> Response:
+        if self.total_retries > 0 and request.body is not None and not request.body.is_replayable():
+            request = request.with_body(request.body.to_replayable())
         settings = self._configure_settings(ctx.options)
         absolute_deadline = time.monotonic() + settings["timeout"]
         history: list[RequestHistory] = settings["history"]

@@ -15,6 +15,7 @@ from dexpace.sdk.core.errors import (
 from dexpace.sdk.core.http.common import Protocol
 from dexpace.sdk.core.http.context import DispatchContext
 from dexpace.sdk.core.http.request import Method, Request
+from dexpace.sdk.core.http.request.request_body import RequestBody
 from dexpace.sdk.core.http.response import Response, Status
 from dexpace.sdk.core.instrumentation import (
     InstrumentationContext,
@@ -246,6 +247,65 @@ class TestRetryTimeout:
         # 1 initial + 1 retry = 2 attempts.
         assert client.attempts == 2
         assert response.status is Status.SERVICE_UNAVAILABLE
+
+
+class _BodyRecordingClient(HttpClient):
+    """Scripted client that records the body bytes consumed on each attempt."""
+
+    def __init__(
+        self,
+        outcomes: Sequence[Status | BaseException],
+        consumed: list[bytes],
+    ) -> None:
+        self._outcomes = list(outcomes)
+        self._consumed = consumed
+        self.attempts = 0
+
+    def execute(self, request: Request) -> Response:
+        body = request.body
+        captured = b"".join(body.iter_bytes()) if body is not None else b""
+        self._consumed.append(captured)
+        outcome = self._outcomes[self.attempts]
+        self.attempts += 1
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return Response(request=request, protocol=Protocol.HTTP_1_1, status=outcome)
+
+
+class TestRetryAutoReplaysBody:
+    def test_retry_with_single_use_body_auto_replays(self) -> None:
+        consumed: list[bytes] = []
+        body = RequestBody.from_iter(iter([b"hello", b"world"]))
+        request = Request(method=Method.POST, url="https://example.com/", body=body)
+        client = _BodyRecordingClient(
+            [Status.SERVICE_UNAVAILABLE, Status.SERVICE_UNAVAILABLE, Status.OK],
+            consumed,
+        )
+        retry = RetryPolicy(total_retries=2, backoff_factor=0, sleep=_no_sleep)
+        with Pipeline(client, policies=[retry]) as p:
+            response = p.run(request, DispatchContext(_instr("0" * 16 + "e")))
+        assert response.is_success
+        assert consumed == [b"helloworld", b"helloworld", b"helloworld"]
+
+    def test_retry_no_retries_leaves_body_alone(self) -> None:
+        observed: list[RequestBody | None] = []
+
+        class _CapturingClient(HttpClient):
+            def execute(self, request: Request) -> Response:
+                observed.append(request.body)
+                return Response(request=request, protocol=Protocol.HTTP_1_1, status=Status.OK)
+
+        body = RequestBody.from_iter(iter([b"hello", b"world"]))
+        request = Request(method=Method.POST, url="https://example.com/", body=body)
+        retry = RetryPolicy.no_retries()
+        retry._sleep = _no_sleep
+        with Pipeline(_CapturingClient(), policies=[retry]) as p:
+            response = p.run(request, DispatchContext(_instr("0" * 16 + "f")))
+        assert response.is_success
+        # ``total_retries=0`` skips the auto-replay buffering — the body the
+        # transport receives is the original single-use instance.
+        assert observed == [body]
+        assert not body.is_replayable()
 
 
 # Sanity: time.monotonic available for the budget arithmetic used internally.

@@ -59,7 +59,7 @@ The chain runs in declaration order. For the example above:
 
 | Policy                              | Purpose                                                  |
 |-------------------------------------|----------------------------------------------------------|
-| `RetryPolicy` / `AsyncRetryPolicy`  | Retry transient failures with backoff + `Retry-After`.    |
+| `RetryPolicy` / `AsyncRetryPolicy`  | Retry transient failures with backoff + `Retry-After`. Auto-buffers single-use request bodies when `total_retries > 0`.    |
 | `LoggingPolicy`                     | Structured request/response logs with URL redaction.      |
 | `TracingPolicy`                     | Open a span per request; OTel semantic-conv attributes.   |
 | `BearerTokenPolicy` (auth)          | Acquire + cache + apply OAuth bearer tokens.              |
@@ -81,3 +81,23 @@ Per-call opt-outs follow a convention:
 `ctx.options["logging_enabled"] = False`,
 `ctx.options["tracing_enabled"] = False`,
 `ctx.options["enforce_https"] = False`.
+
+## Retry and single-use bodies
+
+`RequestBody.from_stream` and `RequestBody.from_iter` are single-use — the
+second `iter_bytes()` call raises `RuntimeError`. To keep retries safe
+without forcing every caller to remember `to_replayable()`, both
+`RetryPolicy.send` and `AsyncRetryPolicy.send` inspect the body up front
+and, when `total_retries > 0`, swap in a buffered replayable copy before
+the first attempt:
+
+```python
+if total_retries > 0 and request.body is not None and not request.body.is_replayable():
+    request = request.with_body(request.body.to_replayable())
+```
+
+`total_retries == 0` (e.g. `RetryPolicy.no_retries()`) skips the buffering
+step so callers who explicitly opt out of retries pay no memory cost for a
+copy they will never use. Already-replayable bodies (`from_bytes`,
+`from_string`, `from_form`) flow through untouched because
+`to_replayable()` returns `self`.

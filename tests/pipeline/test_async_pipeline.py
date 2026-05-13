@@ -8,6 +8,7 @@ from dexpace.sdk.core.errors import PipelineAbortedError, ServiceRequestError
 from dexpace.sdk.core.http.common import Protocol
 from dexpace.sdk.core.http.context import CallContext, DispatchContext
 from dexpace.sdk.core.http.request import Method, Request
+from dexpace.sdk.core.http.request.request_body import RequestBody
 from dexpace.sdk.core.http.response import AsyncResponse, Status
 from dexpace.sdk.core.instrumentation import (
     InstrumentationContext,
@@ -154,6 +155,37 @@ async def test_async_retry_on_503() -> None:
         response = await p.run(_request(), DispatchContext(_instr("0" * 16 + "7")))
     assert response.is_success
     assert client.attempts == 2
+
+
+async def test_async_retry_with_single_use_body_auto_replays() -> None:
+    consumed: list[bytes] = []
+
+    class _BodyRecordingAsyncClient(AsyncHttpClient):
+        def __init__(self) -> None:
+            self._statuses = iter(
+                [Status.SERVICE_UNAVAILABLE, Status.SERVICE_UNAVAILABLE, Status.OK]
+            )
+            self.attempts = 0
+
+        async def execute(self, request: Request) -> AsyncResponse:
+            body = request.body
+            captured = b"".join(body.iter_bytes()) if body is not None else b""
+            consumed.append(captured)
+            self.attempts += 1
+            return AsyncResponse(
+                request=request,
+                protocol=Protocol.HTTP_1_1,
+                status=next(self._statuses),
+            )
+
+    body = RequestBody.from_iter(iter([b"hello", b"world"]))
+    request = Request(method=Method.POST, url="https://example.com/", body=body)
+    client = _BodyRecordingAsyncClient()
+    retry = AsyncRetryPolicy(total_retries=2, backoff_factor=0, sleep=_no_sleep)
+    async with AsyncPipeline(client, policies=[retry]) as p:
+        response = await p.run(request, DispatchContext(_instr("0" * 16 + "8")))
+    assert response.is_success
+    assert consumed == [b"helloworld", b"helloworld", b"helloworld"]
 
 
 def test_invalid_step_raises_type_error() -> None:

@@ -84,6 +84,8 @@ class AsyncRetryPolicy(AsyncPolicy):
 
     async def send(self, request: Request, ctx: PipelineContext) -> AsyncResponse:
         cfg = self.config
+        if cfg.total_retries > 0 and request.body is not None and not request.body.is_replayable():
+            request = request.with_body(request.body.to_replayable())
         settings = cfg._configure_settings(ctx.options)
         absolute_deadline = time.monotonic() + settings["timeout"]
         history: list[RequestHistory] = settings["history"]
