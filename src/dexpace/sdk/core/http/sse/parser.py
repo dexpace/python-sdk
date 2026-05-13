@@ -43,7 +43,14 @@ class SseEvent:
         event: The event name (``"message"`` if the stream omitted ``event:``).
         id: The most recent ``id:`` value seen by the parser, sticky across
             events per the spec.
-        retry: Reconnect delay in milliseconds, when the server set one.
+        retry: The most recent ``retry:`` value seen by the parser, sticky
+            like ``id`` once observed. Although carried on each ``SseEvent``,
+            this field is **not** per-event: the WHATWG spec defines
+            ``retry`` as a connection-level reconnection-time setting that
+            persists until the server sends a new value, so subsequent
+            events repeat the last observed integer (milliseconds) until
+            superseded. ``None`` means no ``retry:`` line has been seen
+            yet on this stream.
     """
 
     data: str
