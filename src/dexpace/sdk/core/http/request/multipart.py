@@ -13,9 +13,27 @@ from __future__ import annotations
 import secrets
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
+from typing import Self
+from urllib.parse import quote
 
 from ..common.media_type import MediaType
 from .request_body import RequestBody, _check_chunk_size
+
+
+def _is_ascii(value: str) -> bool:
+    """Return ``True`` if ``value`` is pure ASCII (the safe HTTP header subset).
+
+    Although Latin-1 is the formal HTTP/1.1 header charset, many servers
+    and proxies still choke on bytes ``>= 0x80``. RFC 7578 §5.1 recommends
+    restricting multipart field names and filenames to US-ASCII and
+    escaping anything else via RFC 5987 (``filename*=UTF-8''…``).
+    """
+    return value.isascii()
+
+
+def _has_filename_star_header(headers: Sequence[tuple[str, str]]) -> bool:
+    """Return ``True`` if any header value mentions ``filename*=``."""
+    return any("filename*=" in v for _, v in headers)
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,12 +41,21 @@ class MultipartField:
     """One part of a ``multipart/form-data`` body.
 
     Attributes:
-        name: Form field name (mandatory).
+        name: Form field name (mandatory). Must be pure ASCII so the
+            generated ``Content-Disposition`` header is safe across the
+            full range of HTTP/1.1 parsers.
         value: Field content as bytes or string. Strings are UTF-8 encoded.
         filename: Optional filename for file parts; included in
-            ``Content-Disposition``.
+            ``Content-Disposition``. Must be pure ASCII unless the caller
+            has supplied a matching ``filename*`` parameter (e.g. via
+            ``with_utf8_filename`` or a custom header).
         media_type: Optional content type for the part.
         headers: Optional extra headers as ``(name, value)`` pairs.
+
+    Raises:
+        ValueError: If ``name`` is not ASCII, or if ``filename`` is not
+            ASCII and no ``filename*=`` parameter was provided through
+            ``headers``.
     """
 
     name: str
@@ -36,6 +63,77 @@ class MultipartField:
     filename: str | None = None
     media_type: MediaType | None = None
     headers: Sequence[tuple[str, str]] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        if not _is_ascii(self.name):
+            raise ValueError(f"multipart field name must be pure ASCII: {self.name!r}")
+        if (
+            self.filename is not None
+            and not _is_ascii(self.filename)
+            and not _has_filename_star_header(self.headers)
+        ):
+            raise ValueError(
+                "multipart filename is not ASCII; use "
+                "MultipartField.with_utf8_filename(...) or supply a "
+                f"filename*=UTF-8''… header: {self.filename!r}"
+            )
+
+    @classmethod
+    def with_utf8_filename(
+        cls,
+        *,
+        name: str,
+        value: bytes | str,
+        filename: str,
+        media_type: MediaType | None = None,
+        headers: Sequence[tuple[str, str]] = (),
+        ascii_fallback: str = "file",
+    ) -> Self:
+        """Construct a field whose filename is rendered as RFC 5987.
+
+        The emitted ``Content-Disposition`` will carry both a legacy
+        ``filename="…"`` parameter (using ``ascii_fallback`` so older
+        parsers see something stable) and a ``filename*=UTF-8''…``
+        parameter holding the percent-encoded UTF-8 form of ``filename``.
+
+        Args:
+            name: Form field name (must be ASCII).
+            value: Field content as bytes or string.
+            filename: The intended filename, possibly containing
+                non-ASCII characters.
+            media_type: Optional content type for the part.
+            headers: Optional extra headers as ``(name, value)`` pairs.
+            ascii_fallback: ASCII filename used in the legacy
+                ``filename="…"`` parameter when ``filename`` contains
+                non-ASCII characters. Defaults to ``"file"``.
+
+        Returns:
+            A ``MultipartField`` with the synthesised disposition stored
+            as an extra header. The dataclass ``filename`` attribute is
+            set to ``None`` so ``_build_part`` does not emit a second
+            disposition line.
+
+        Raises:
+            ValueError: If ``name`` is not ASCII.
+        """
+        legacy = filename if _is_ascii(filename) else ascii_fallback
+        encoded = quote(filename, safe="", encoding="utf-8")
+        disposition = (
+            f'form-data; name="{_escape_quoted(name)}"; '
+            f'filename="{_escape_quoted(legacy)}"; '
+            f"filename*=UTF-8''{encoded}"
+        )
+        new_headers: tuple[tuple[str, str], ...] = (
+            ("Content-Disposition", disposition),
+            *tuple(headers),
+        )
+        return cls(
+            name=name,
+            value=value,
+            filename=None,
+            media_type=media_type,
+            headers=new_headers,
+        )
 
 
 def _generate_boundary() -> str:
@@ -46,17 +144,24 @@ def _generate_boundary() -> str:
 def _build_part(part: MultipartField, boundary: str) -> bytes:
     """Render one part as bytes (terminating CRLF included).
 
-    Header lines are encoded as Latin-1 (the HTTP/1.1 wire-form charset);
-    non-ASCII characters in ``name`` / ``filename`` are tolerated as
-    best-effort Latin-1 rather than raising. Callers needing RFC 5987
-    compliance (``filename*=UTF-8''…``) should provide that header
-    explicitly via ``MultipartField.headers``.
+    Header lines are encoded as Latin-1 (the HTTP/1.1 wire-form charset).
+    ``MultipartField.__post_init__`` rejects names/filenames that are not
+    pure ASCII (unless the caller supplied a matching ``filename*=UTF-8''…``
+    parameter via ``headers`` or built the field through
+    ``with_utf8_filename``).
+
+    If any caller-supplied header already begins with ``Content-Disposition``
+    (case-insensitive), the auto-generated disposition is suppressed so the
+    custom one (typically carrying ``filename*=UTF-8''…``) is the only one
+    emitted.
     """
-    disposition = f'form-data; name="{_escape_quoted(part.name)}"'
-    if part.filename is not None:
-        disposition += f'; filename="{_escape_quoted(part.filename)}"'
+    custom_disposition = any(name.lower() == "content-disposition" for name, _ in part.headers)
     lines: list[bytes] = [f"--{boundary}".encode("latin-1")]
-    lines.append(f"Content-Disposition: {disposition}".encode("latin-1"))
+    if not custom_disposition:
+        disposition = f'form-data; name="{_escape_quoted(part.name)}"'
+        if part.filename is not None:
+            disposition += f'; filename="{_escape_quoted(part.filename)}"'
+        lines.append(f"Content-Disposition: {disposition}".encode("latin-1"))
     if part.media_type is not None:
         lines.append(f"Content-Type: {part.media_type}".encode("latin-1"))
     for header_name, header_value in part.headers:
