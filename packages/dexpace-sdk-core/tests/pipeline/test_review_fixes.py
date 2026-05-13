@@ -19,6 +19,8 @@ from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import Pipeline
 from dexpace.sdk.core.pipeline.policies import RetryPolicy
 
+from ..conftest import FakeClock
+
 
 def _instr(trace: str) -> InstrumentationContext:
     return InstrumentationContext(
@@ -57,7 +59,7 @@ def test_retry_after_does_not_force_retry_on_non_allowlisted_status() -> None:
         Status.BAD_REQUEST,
         headers=Headers([("Retry-After", "5")]),
     )
-    retry = RetryPolicy(sleep=lambda _: None)
+    retry = RetryPolicy(clock=FakeClock())
     with Pipeline(client, policies=[retry]) as pipe:
         response = pipe.run(_get(), DispatchContext(_instr("0" * 16 + "1")))
     assert client.calls == 1
@@ -77,7 +79,7 @@ def test_retry_options_preserved_in_ctx_options() -> None:
             return response
 
     client = _ScriptedClient(Status.OK)
-    retry = RetryPolicy(sleep=lambda _: None)
+    retry = RetryPolicy(clock=FakeClock())
     with Pipeline(client, policies=[_Inspector(), retry]) as pipe:
         pipe.run(
             _get(),

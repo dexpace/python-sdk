@@ -10,16 +10,15 @@ from __future__ import annotations
 
 import logging
 import random
-import time
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
-from ...client.async_http_client import asyncio_sleep
 from ...errors import (
     ClientAuthenticationError,
     SdkError,
     ServiceResponseTimeoutError,
 )
+from ...util.clock import ASYNC_SYSTEM_CLOCK, AsyncClock
 from ..async_policy import AsyncPolicy
 from ._history import RequestHistory
 from .retry import RetryMode, RetryPolicy, _parse_retry_after
@@ -60,7 +59,7 @@ class AsyncRetryPolicy(AsyncPolicy):
         retry_on_status_codes: Iterable[int] | None = None,
         respect_retry_after: bool = True,
         jitter: float = 0.25,
-        sleep: Callable[[float], Awaitable[None]] = asyncio_sleep,
+        clock: AsyncClock = ASYNC_SYSTEM_CLOCK,
         rand: random.Random | None = None,
     ) -> None:
         kwargs: dict[str, Any] = {
@@ -82,7 +81,7 @@ class AsyncRetryPolicy(AsyncPolicy):
         if rand is not None:
             kwargs["rand"] = rand
         self.config = RetryPolicy(**kwargs)
-        self._sleep = sleep
+        self._clock = clock
 
     @classmethod
     def no_retries(cls) -> AsyncRetryPolicy:
@@ -93,7 +92,7 @@ class AsyncRetryPolicy(AsyncPolicy):
         if cfg.total_retries > 0 and request.body is not None and not request.body.is_replayable():
             request = request.with_body(request.body.to_replayable())
         settings = cfg._configure_settings(ctx.options)
-        absolute_deadline = time.monotonic() + settings["timeout"]
+        absolute_deadline = self._clock.monotonic() + settings["timeout"]
         history: list[RequestHistory[AsyncResponse]] = settings["history"]
         while True:
             try:
@@ -162,12 +161,12 @@ class AsyncRetryPolicy(AsyncPolicy):
         """
         if duration <= 0:
             return
-        remaining = absolute_deadline - time.monotonic()
+        remaining = absolute_deadline - self._clock.monotonic()
         if remaining <= 0:
             raise ServiceResponseTimeoutError("Retry budget exhausted (timeout reached)")
         actual = min(duration, remaining)
-        await self._sleep(actual)
-        if time.monotonic() >= absolute_deadline:
+        await self._clock.sleep(actual)
+        if self._clock.monotonic() >= absolute_deadline:
             raise ServiceResponseTimeoutError("Retry budget exhausted (timeout reached)")
 
 

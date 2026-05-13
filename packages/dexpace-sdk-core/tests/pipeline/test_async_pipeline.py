@@ -58,8 +58,27 @@ class _StubAsyncClient(AsyncHttpClient):
         )
 
 
-async def _no_sleep(_duration: float) -> None:
-    return None
+class _AsyncFakeClock:
+    """Deterministic ``AsyncClock`` mirror of :class:`FakeClock`.
+
+    Advances an internal counter on ``sleep`` (clamped at zero) without
+    yielding to the event loop or accruing real wall time. Used by every
+    async retry test to keep the suite fast and time-independent.
+    """
+
+    __slots__ = ("_t",)
+
+    def __init__(self, start: float = 0.0) -> None:
+        self._t = start
+
+    def now(self) -> float:
+        return self._t
+
+    def monotonic(self) -> float:
+        return self._t
+
+    async def sleep(self, duration: float) -> None:
+        self._t += max(0.0, duration)
 
 
 async def test_request_step_modifies_request() -> None:
@@ -129,7 +148,7 @@ async def test_policy_chain_order() -> None:
 
 async def test_async_retry_recovers_from_connect_error() -> None:
     client = _StubAsyncClient(fail_first=True)
-    retry = AsyncRetryPolicy(sleep=_no_sleep)
+    retry = AsyncRetryPolicy(clock=_AsyncFakeClock())
     async with AsyncPipeline(client, policies=[retry]) as p:
         response = await p.run(_request(), DispatchContext(_instr("0" * 16 + "6")))
     assert response.is_success
@@ -151,7 +170,7 @@ async def test_async_retry_on_503() -> None:
             )
 
     client = _ScriptedClient()
-    retry = AsyncRetryPolicy(sleep=_no_sleep)
+    retry = AsyncRetryPolicy(clock=_AsyncFakeClock())
     async with AsyncPipeline(client, policies=[retry]) as p:
         response = await p.run(_request(), DispatchContext(_instr("0" * 16 + "7")))
     assert response.is_success
@@ -182,7 +201,7 @@ async def test_async_retry_with_single_use_body_auto_replays() -> None:
     body = RequestBody.from_iter(iter([b"hello", b"world"]))
     request = Request(method=Method.POST, url=Url.parse("https://example.com/"), body=body)
     client = _BodyRecordingAsyncClient()
-    retry = AsyncRetryPolicy(total_retries=2, backoff_factor=0, sleep=_no_sleep)
+    retry = AsyncRetryPolicy(total_retries=2, backoff_factor=0, clock=_AsyncFakeClock())
     async with AsyncPipeline(client, policies=[retry]) as p:
         response = await p.run(request, DispatchContext(_instr("0" * 16 + "8")))
     assert response.is_success
@@ -199,7 +218,7 @@ async def test_async_retry_count_not_set_when_no_retry_happens() -> None:
             return response
 
     client = _StubAsyncClient()
-    retry = AsyncRetryPolicy(sleep=_no_sleep)
+    retry = AsyncRetryPolicy(clock=_AsyncFakeClock())
     async with AsyncPipeline(client, policies=[_Probe(), retry]) as p:
         await p.run(_request(), DispatchContext(_instr("0" * 16 + "9")))
     # First-attempt success — no retry decision is committed, so
@@ -217,7 +236,7 @@ async def test_async_retry_count_set_when_retry_happens() -> None:
             return response
 
     client = _StubAsyncClient(fail_first=True)
-    retry = AsyncRetryPolicy(sleep=_no_sleep)
+    retry = AsyncRetryPolicy(clock=_AsyncFakeClock())
     async with AsyncPipeline(client, policies=[_Probe(), retry]) as p:
         await p.run(_request(), DispatchContext(_instr("0" * 15 + "10")))
     assert captured["retry_count"] == 1

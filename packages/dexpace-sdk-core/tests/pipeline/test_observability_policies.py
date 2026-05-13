@@ -27,6 +27,8 @@ from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import Pipeline
 from dexpace.sdk.core.pipeline.policies import LoggingPolicy, RetryPolicy, TracingPolicy
 
+from ..conftest import FakeClock
+
 
 def _instr(trace: str) -> InstrumentationContext:
     return InstrumentationContext(
@@ -187,7 +189,7 @@ class TestTracingPolicy:
         tracer = _RecordingTracer()
         # Force a failure once via the retry policy.
         client = _OkClient(status=Status.SERVICE_UNAVAILABLE)
-        retry = RetryPolicy(status_retries=2, sleep=lambda _: None)
+        retry = RetryPolicy(status_retries=2, clock=FakeClock())
         with Pipeline(
             client,
             policies=[TracingPolicy(tracer=tracer), retry],

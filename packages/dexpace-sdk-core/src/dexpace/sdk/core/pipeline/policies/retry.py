@@ -20,7 +20,7 @@ import logging
 import random
 import re
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from email.utils import parsedate_to_datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
@@ -32,6 +32,7 @@ from ...errors import (
     ServiceResponseError,
     ServiceResponseTimeoutError,
 )
+from ...util.clock import SYSTEM_CLOCK, Clock
 from ..policy import Policy
 from ._history import RequestHistory
 
@@ -131,7 +132,7 @@ class RetryPolicy(Policy):
         retry_on_status_codes: Iterable[int] = _DEFAULT_STATUS_RETRIES,
         respect_retry_after: bool = True,
         jitter: float = 0.25,
-        sleep: Callable[[float], None] = time.sleep,
+        clock: Clock = SYSTEM_CLOCK,
         rand: random.Random | None = None,
     ) -> None:
         self.total_retries = total_retries
@@ -146,7 +147,7 @@ class RetryPolicy(Policy):
         self.retry_on_status_codes = frozenset(retry_on_status_codes)
         self.respect_retry_after = respect_retry_after
         self._jitter = jitter
-        self._sleep = sleep
+        self._clock = clock
         self._rand = rand if rand is not None else random.Random()
 
     # ----- public sentinel ------------------------------------------------
@@ -162,7 +163,7 @@ class RetryPolicy(Policy):
         if self.total_retries > 0 and request.body is not None and not request.body.is_replayable():
             request = request.with_body(request.body.to_replayable())
         settings = self._configure_settings(ctx.options)
-        absolute_deadline = time.monotonic() + settings["timeout"]
+        absolute_deadline = self._clock.monotonic() + settings["timeout"]
         history: list[RequestHistory[Response]] = settings["history"]
         while True:
             try:
@@ -311,7 +312,7 @@ class RetryPolicy(Policy):
         Args:
             duration: Desired sleep length in seconds. Non-positive values
                 return immediately.
-            absolute_deadline: ``time.monotonic()`` value beyond which the
+            absolute_deadline: ``Clock.monotonic()`` value beyond which the
                 retry budget is considered spent.
 
         Raises:
@@ -320,12 +321,12 @@ class RetryPolicy(Policy):
         """
         if duration <= 0:
             return
-        remaining = absolute_deadline - time.monotonic()
+        remaining = absolute_deadline - self._clock.monotonic()
         if remaining <= 0:
             raise ServiceResponseTimeoutError("Retry budget exhausted (timeout reached)")
         actual = min(duration, remaining)
-        self._sleep(actual)
-        if time.monotonic() >= absolute_deadline:
+        self._clock.sleep(actual)
+        if self._clock.monotonic() >= absolute_deadline:
             raise ServiceResponseTimeoutError("Retry budget exhausted (timeout reached)")
 
 

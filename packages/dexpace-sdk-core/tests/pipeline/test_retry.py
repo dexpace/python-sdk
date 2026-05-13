@@ -33,6 +33,8 @@ from dexpace.sdk.core.pipeline import Pipeline
 from dexpace.sdk.core.pipeline.policies import RetryPolicy
 from dexpace.sdk.core.pipeline.policies.retry import _parse_retry_after
 
+from ..conftest import FakeClock
+
 
 def _instr(trace: str) -> InstrumentationContext:
     return InstrumentationContext(
@@ -76,14 +78,10 @@ class _ScriptedClient(HttpClient):
         return response
 
 
-def _no_sleep(_duration: float) -> None:
-    return None
-
-
 class TestRetryOnStatus:
     def test_retries_503_on_get(self) -> None:
         client = _ScriptedClient([Status.SERVICE_UNAVAILABLE, Status.OK])
-        retry = RetryPolicy(sleep=_no_sleep)
+        retry = RetryPolicy(clock=FakeClock())
         with Pipeline(client, policies=[retry]) as p:
             response = p.run(_get(), DispatchContext(_instr("0" * 16 + "1")))
         assert response.status is Status.OK
@@ -91,7 +89,7 @@ class TestRetryOnStatus:
 
     def test_does_not_retry_404(self) -> None:
         client = _ScriptedClient([Status.NOT_FOUND])
-        retry = RetryPolicy(sleep=_no_sleep)
+        retry = RetryPolicy(clock=FakeClock())
         with Pipeline(client, policies=[retry]) as p:
             response = p.run(_get(), DispatchContext(_instr("0" * 16 + "2")))
         assert response.status is Status.NOT_FOUND
@@ -99,7 +97,7 @@ class TestRetryOnStatus:
 
     def test_post_retried_only_on_500_503_504(self) -> None:
         client = _ScriptedClient([Status.BAD_REQUEST])
-        retry = RetryPolicy(sleep=_no_sleep)
+        retry = RetryPolicy(clock=FakeClock())
         with Pipeline(client, policies=[retry]) as p:
             response = p.run(_post(), DispatchContext(_instr("0" * 16 + "3")))
         assert client.attempts == 1
@@ -107,7 +105,7 @@ class TestRetryOnStatus:
 
     def test_post_retried_on_503(self) -> None:
         client = _ScriptedClient([Status.SERVICE_UNAVAILABLE, Status.OK])
-        retry = RetryPolicy(sleep=_no_sleep)
+        retry = RetryPolicy(clock=FakeClock())
         with Pipeline(client, policies=[retry]) as p:
             response = p.run(_post(), DispatchContext(_instr("0" * 16 + "4")))
         assert client.attempts == 2
@@ -115,7 +113,7 @@ class TestRetryOnStatus:
 
     def test_status_retry_budget_exhausted(self) -> None:
         client = _ScriptedClient([Status.SERVICE_UNAVAILABLE] * 5)
-        retry = RetryPolicy(status_retries=2, sleep=_no_sleep)
+        retry = RetryPolicy(status_retries=2, clock=FakeClock())
         with Pipeline(client, policies=[retry]) as p:
             response = p.run(_get(), DispatchContext(_instr("0" * 16 + "5")))
         # 1 initial + 2 retries = 3 attempts before giving up.
@@ -128,7 +126,7 @@ class TestRetryOnError:
         client = _ScriptedClient(
             [ServiceRequestError("dns fail"), Status.OK],
         )
-        retry = RetryPolicy(sleep=_no_sleep)
+        retry = RetryPolicy(clock=FakeClock())
         with Pipeline(client, policies=[retry]) as p:
             response = p.run(_get(), DispatchContext(_instr("0" * 16 + "6")))
         assert response.is_success
@@ -138,7 +136,7 @@ class TestRetryOnError:
         client = _ScriptedClient(
             [ServiceResponseError("connection reset"), Status.OK],
         )
-        retry = RetryPolicy(sleep=_no_sleep)
+        retry = RetryPolicy(clock=FakeClock())
         with Pipeline(client, policies=[retry]) as p:
             response = p.run(_get(), DispatchContext(_instr("0" * 16 + "7")))
         assert response.is_success
@@ -150,7 +148,7 @@ class TestRetryOnError:
         client = _ScriptedClient(
             [ClientAuthenticationError(response=None), Status.OK],
         )
-        retry = RetryPolicy(sleep=_no_sleep)
+        retry = RetryPolicy(clock=FakeClock())
         with Pipeline(client, policies=[retry]) as p, pytest.raises(HttpResponseError):
             p.run(_get(), DispatchContext(_instr("0" * 16 + "8")))
         # Only one attempt — auth failures are not retried.
@@ -160,7 +158,7 @@ class TestRetryOnError:
         client = _ScriptedClient(
             [ServiceRequestError("fail")] * 5,
         )
-        retry = RetryPolicy(connect_retries=2, sleep=_no_sleep)
+        retry = RetryPolicy(connect_retries=2, clock=FakeClock())
         with Pipeline(client, policies=[retry]) as p, pytest.raises(ServiceRequestError):
             p.run(_get(), DispatchContext(_instr("0" * 16 + "9")))
         assert client.attempts == 3
@@ -190,14 +188,16 @@ class TestRetryAfterHeader:
     def test_respected_during_retry(self) -> None:
         sleeps: list[float] = []
 
-        def record(d: float) -> None:
-            sleeps.append(d)
+        class _RecordingClock(FakeClock):
+            def sleep(self, duration: float) -> None:
+                sleeps.append(duration)
+                super().sleep(duration)
 
         client = _ScriptedClient(
             [Status.SERVICE_UNAVAILABLE, Status.OK],
             retry_after="2",
         )
-        retry = RetryPolicy(sleep=record)
+        retry = RetryPolicy(clock=_RecordingClock())
         with Pipeline(client, policies=[retry]) as p:
             p.run(_get(), DispatchContext(_instr("0" * 16 + "a")))
         assert sleeps and sleeps[0] == pytest.approx(2.0)
@@ -216,7 +216,7 @@ class TestRetryHistory:
                 return response
 
         client = _ScriptedClient([Status.SERVICE_UNAVAILABLE, Status.OK])
-        with Pipeline(client, policies=[_Probe(), RetryPolicy(sleep=_no_sleep)]) as p:
+        with Pipeline(client, policies=[_Probe(), RetryPolicy(clock=FakeClock())]) as p:
             p.run(_get(), DispatchContext(_instr("0" * 16 + "b")))
         history = captured["history"]
         assert history is not None and len(history) == 1  # type: ignore[arg-type]
@@ -230,7 +230,7 @@ class TestRetryNoRetries:
     def test_no_retries_lets_first_failure_through(self) -> None:
         client = _ScriptedClient([Status.SERVICE_UNAVAILABLE])
         retry = RetryPolicy.no_retries()
-        retry._sleep = _no_sleep
+        retry._clock = FakeClock()
         with Pipeline(client, policies=[retry]) as p:
             response = p.run(_get(), DispatchContext(_instr("0" * 16 + "c")))
         assert client.attempts == 1
@@ -240,7 +240,7 @@ class TestRetryNoRetries:
 class TestRetryTimeout:
     def test_per_call_override_via_options(self) -> None:
         client = _ScriptedClient([Status.SERVICE_UNAVAILABLE] * 5)
-        retry = RetryPolicy(sleep=_no_sleep)
+        retry = RetryPolicy(clock=FakeClock())
         with Pipeline(client, policies=[retry]) as p:
             response = p.run(
                 _get(),
@@ -284,7 +284,7 @@ class TestRetryAutoReplaysBody:
             [Status.SERVICE_UNAVAILABLE, Status.SERVICE_UNAVAILABLE, Status.OK],
             consumed,
         )
-        retry = RetryPolicy(total_retries=2, backoff_factor=0, sleep=_no_sleep)
+        retry = RetryPolicy(total_retries=2, backoff_factor=0, clock=FakeClock())
         with Pipeline(client, policies=[retry]) as p:
             response = p.run(request, DispatchContext(_instr("0" * 16 + "e")))
         assert response.is_success
@@ -301,7 +301,7 @@ class TestRetryAutoReplaysBody:
         body = RequestBody.from_iter(iter([b"hello", b"world"]))
         request = Request(method=Method.POST, url=Url.parse("https://example.com/"), body=body)
         retry = RetryPolicy.no_retries()
-        retry._sleep = _no_sleep
+        retry._clock = FakeClock()
         with Pipeline(_CapturingClient(), policies=[retry]) as p:
             response = p.run(request, DispatchContext(_instr("0" * 16 + "f")))
         assert response.is_success
@@ -318,7 +318,7 @@ class TestRetryJitter:
             backoff_max=1000.0,
             jitter=0.25,
             rand=random.Random(42),
-            sleep=_no_sleep,
+            clock=FakeClock(),
         )
         # ``_backoff_seconds`` keys off the number of attempts in history; fake
         # a long-running settings dict so the same exponent is sampled twice.
@@ -341,7 +341,7 @@ class TestRetryJitter:
             backoff_max=1000.0,
             jitter=0.0,
             rand=random.Random(42),
-            sleep=_no_sleep,
+            clock=FakeClock(),
         )
         settings: dict[str, Any] = {
             "backoff": 1.0,
@@ -368,7 +368,7 @@ class TestRetryCountTiming:
                 return response
 
         client = _ScriptedClient([Status.OK])
-        with Pipeline(client, policies=[_Probe(), RetryPolicy(sleep=_no_sleep)]) as p:
+        with Pipeline(client, policies=[_Probe(), RetryPolicy(clock=FakeClock())]) as p:
             p.run(_get(), DispatchContext(_instr("0" * 15 + "10")))
         # When the request succeeds first time, no retry decision is made, so
         # ``retry_count`` is never written into ``ctx.data``.
@@ -386,7 +386,7 @@ class TestRetryCountTiming:
                 return response
 
         client = _ScriptedClient([Status.SERVICE_UNAVAILABLE, Status.OK])
-        with Pipeline(client, policies=[_Probe(), RetryPolicy(sleep=_no_sleep)]) as p:
+        with Pipeline(client, policies=[_Probe(), RetryPolicy(clock=FakeClock())]) as p:
             p.run(_get(), DispatchContext(_instr("0" * 15 + "11")))
         # One retry occurred — the count reflects the single failed attempt.
         assert captured["retry_count"] == 1
@@ -434,3 +434,63 @@ class TestRequestHistoryTyping:
 # Sanity: time.monotonic available for the budget arithmetic used internally.
 def test_monotonic_clock_available() -> None:
     assert time.monotonic() > 0
+
+
+def test_retry_advances_clock_by_backoff_seconds() -> None:
+    """``RetryPolicy`` advances the injected clock by the computed backoff.
+
+    The fake clock starts at ``t=0``; each ``sleep`` call accrues into the
+    monotonic reading. With ``jitter=0`` and ``EXPONENTIAL`` mode the first
+    retry sleep is zero (attempts == 1) and the second is
+    ``backoff_factor * 2 ** (attempts - 1) = 1.0 * 2 = 2.0`` seconds. The
+    fake clock's reading after the run reflects the cumulative sleep.
+    """
+    clock = FakeClock()
+    client = _ScriptedClient(
+        [Status.SERVICE_UNAVAILABLE, Status.SERVICE_UNAVAILABLE, Status.OK],
+    )
+    retry = RetryPolicy(
+        backoff_factor=1.0,
+        backoff_max=1000.0,
+        jitter=0.0,
+        clock=clock,
+    )
+    with Pipeline(client, policies=[retry]) as p:
+        response = p.run(_get(), DispatchContext(_instr("0" * 15 + "20")))
+    assert response.is_success
+    assert client.attempts == 3
+    # First retry: 0s (attempts==1 returns 0). Second retry: 2.0s.
+    assert clock.monotonic() == pytest.approx(2.0)
+
+
+def test_retry_clock_jitter_seeded() -> None:
+    """Backoff durations are reproducible across runs with a seeded RNG.
+
+    Constructing two policies with identical seeds and driving the same
+    settings dict through ``_backoff_seconds`` yields the same sequence —
+    the jitter is a pure function of the seeded ``random.Random``.
+    """
+    settings: dict[str, Any] = {
+        "backoff": 1.0,
+        "max_backoff": 1000.0,
+        "history": [None, None, None],
+    }
+    retry_a = RetryPolicy(
+        backoff_factor=1.0,
+        backoff_max=1000.0,
+        jitter=0.25,
+        rand=random.Random(42),
+        clock=FakeClock(),
+    )
+    retry_b = RetryPolicy(
+        backoff_factor=1.0,
+        backoff_max=1000.0,
+        jitter=0.25,
+        rand=random.Random(42),
+        clock=FakeClock(),
+    )
+    sequence_a = [retry_a._backoff_seconds(dict(settings)) for _ in range(5)]
+    sequence_b = [retry_b._backoff_seconds(dict(settings)) for _ in range(5)]
+    assert sequence_a == sequence_b
+    # And the values are non-trivial (jitter actually varied them).
+    assert len(set(sequence_a)) > 1
