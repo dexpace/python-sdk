@@ -160,7 +160,7 @@ class AsyncioHttpClient:
             protocol=Protocol.HTTP_1_1,
             status=status,
             headers=headers,
-            message=reason,
+            reason=reason,
             body=AsyncResponseBody.from_bytes(body_bytes),
         )
 

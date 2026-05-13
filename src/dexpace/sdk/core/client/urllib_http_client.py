@@ -129,7 +129,7 @@ def _build_response(request: Request, opened: object) -> Response:
         protocol=Protocol.HTTP_1_1,
         status=status,
         headers=headers,
-        message=reason,
+        reason=reason,
         body=body,
     )
 

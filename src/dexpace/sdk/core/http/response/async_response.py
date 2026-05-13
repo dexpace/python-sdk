@@ -31,7 +31,7 @@ class AsyncResponse:
     protocol: Protocol
     status: Status
     headers: Headers = field(default_factory=Headers)
-    message: str | None = None
+    reason: str | None = None
     body: AsyncResponseBody | None = None
 
     async def close(self) -> None:

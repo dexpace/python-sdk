@@ -53,7 +53,7 @@ class HttpResponseError(SdkError):
         """
         self.response = response
         self.status = response.status if response is not None else None
-        self.reason = response.message if response is not None else None
+        self.reason = response.reason if response is not None else None
         self.model = kwargs.pop("model", None)
         if message is None:
             label = self.status.name if self.status is not None else "unknown"

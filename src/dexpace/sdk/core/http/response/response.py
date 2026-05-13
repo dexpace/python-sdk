@@ -38,7 +38,7 @@ class Response:
     protocol: Protocol
     status: Status
     headers: Headers = field(default_factory=Headers)
-    message: str | None = None
+    reason: str | None = None
     body: ResponseBody | None = None
 
     def close(self) -> None:
