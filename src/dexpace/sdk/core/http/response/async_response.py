@@ -54,6 +54,18 @@ class AsyncResponse:
     def is_success(self) -> bool:
         return self.status.is_success
 
+    @property
+    def is_redirect(self) -> bool:
+        return self.status.is_redirect
+
+    @property
+    def is_client_error(self) -> bool:
+        return self.status.is_client_error
+
+    @property
+    def is_server_error(self) -> bool:
+        return self.status.is_server_error
+
     def with_status(self, status: Status) -> Self:
         return replace(self, status=status)
 

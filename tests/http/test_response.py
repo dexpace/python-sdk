@@ -18,6 +18,25 @@ def test_is_success_property() -> None:
     assert not r2.is_success
 
 
+def test_status_group_properties() -> None:
+    req = _request()
+    redirect = Response(request=req, protocol=Protocol.HTTP_1_1, status=Status.FOUND)
+    assert redirect.is_redirect
+    assert not redirect.is_client_error
+    assert not redirect.is_server_error
+
+    client_err = Response(request=req, protocol=Protocol.HTTP_1_1, status=Status.NOT_FOUND)
+    assert client_err.is_client_error
+    assert not client_err.is_server_error
+    assert not client_err.is_redirect
+
+    server_err = Response(
+        request=req, protocol=Protocol.HTTP_1_1, status=Status.INTERNAL_SERVER_ERROR
+    )
+    assert server_err.is_server_error
+    assert not server_err.is_client_error
+
+
 def test_close_idempotent_with_no_body() -> None:
     r = Response(request=_request(), protocol=Protocol.HTTP_1_1, status=Status.OK)
     r.close()
