@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from ...instrumentation import ClientLogger, UrlRedactor
 from ..policy import Policy
+from ..stage import Stage
 
 if TYPE_CHECKING:
     from ...http.request.request import Request
@@ -25,6 +26,7 @@ class LoggingPolicy(Policy):
     Disable per-call by setting ``ctx.options["logging_enabled"] = False``.
     """
 
+    STAGE = Stage.LOGGING
     __slots__ = ("_logger", "_redactor")
 
     def __init__(

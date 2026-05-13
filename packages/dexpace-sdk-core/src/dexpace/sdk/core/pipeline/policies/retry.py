@@ -34,6 +34,7 @@ from ...errors import (
 )
 from ...util.clock import SYSTEM_CLOCK, Clock
 from ..policy import Policy
+from ..stage import Stage
 from ._history import RequestHistory
 
 if TYPE_CHECKING:
@@ -116,6 +117,8 @@ class RetryPolicy(Policy):
         )
         ```
     """
+
+    STAGE = Stage.RETRY
 
     def __init__(
         self,

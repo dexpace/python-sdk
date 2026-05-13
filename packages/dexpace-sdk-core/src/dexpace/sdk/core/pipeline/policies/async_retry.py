@@ -20,6 +20,7 @@ from ...errors import (
 )
 from ...util.clock import ASYNC_SYSTEM_CLOCK, AsyncClock
 from ..async_policy import AsyncPolicy
+from ..stage import Stage
 from ._history import RequestHistory
 from .retry import RetryMode, RetryPolicy, _parse_retry_after
 
@@ -41,6 +42,8 @@ class AsyncRetryPolicy(AsyncPolicy):
         config: The underlying sync ``RetryPolicy`` carrying knobs and
             classification helpers.
     """
+
+    STAGE = Stage.RETRY
 
     config: RetryPolicy
 

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from ...instrumentation import NOOP_TRACER, Tracer
 from ..policy import Policy
+from ..stage import Stage
 
 if TYPE_CHECKING:
     from ...http.common.url import Url
@@ -31,6 +32,7 @@ class TracingPolicy(Policy):
     Disable per-call by setting ``ctx.options["tracing_enabled"] = False``.
     """
 
+    STAGE = Stage.POST_LOGGING
     __slots__ = ("_tracer",)
 
     def __init__(self, *, tracer: Tracer | None = None) -> None:

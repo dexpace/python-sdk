@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from ...errors import ClientAuthenticationError, ServiceRequestError
 from ...pipeline.async_policy import AsyncPolicy
 from ...pipeline.policy import Policy
+from ...pipeline.stage import Stage
 from ...util.clock import ASYNC_SYSTEM_CLOCK, SYSTEM_CLOCK, AsyncClock, Clock
 from .access_token import AccessTokenInfo, TokenRequestOptions
 from .credentials import (
@@ -38,6 +39,7 @@ class KeyCredentialPolicy(Policy):
         prefix: Optional prefix (with trailing space) for the header value.
     """
 
+    STAGE = Stage.AUTH
     __slots__ = ("_credential", "header_name", "prefix")
 
     def __init__(
@@ -63,6 +65,7 @@ class KeyCredentialPolicy(Policy):
 class BasicAuthPolicy(Policy):
     """Stamp ``Authorization: Basic <base64>`` from a ``BasicAuthCredential``."""
 
+    STAGE = Stage.AUTH
     __slots__ = ("_credential",)
 
     def __init__(self, credential: BasicAuthCredential) -> None:
@@ -91,6 +94,7 @@ class BearerTokenPolicy(Policy):
     to handle CAE/claims challenges.
     """
 
+    STAGE = Stage.AUTH
     __slots__ = ("_audience", "_cache", "_clock", "_credential", "_lock", "_scopes")
 
     def __init__(
@@ -181,6 +185,7 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
     ``send`` concurrently.
     """
 
+    STAGE = Stage.AUTH
     __slots__ = ("_audience", "_cache", "_clock", "_credential", "_lock", "_scopes")
 
     def __init__(
