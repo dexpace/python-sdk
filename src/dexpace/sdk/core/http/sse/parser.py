@@ -25,6 +25,8 @@ from collections.abc import AsyncIterable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Final
 
+from dexpace.sdk.core.errors import StreamingError
+
 _LF: Final[int] = 0x0A
 _CR: Final[int] = 0x0D
 _COLON: Final[int] = 0x3A
@@ -65,15 +67,23 @@ class SseParser:
     _last_id: str | None = None
     _retry: int | None = None
     _pending: deque[SseEvent] = field(default_factory=deque)
+    max_line_bytes: int = 1 << 20  # 1 MiB
 
     def feed(self, chunk: bytes) -> None:
-        """Append ``chunk`` to the parser buffer and consume completed lines."""
+        """Append ``chunk`` to the parser buffer and consume completed lines.
+
+        Raises:
+            StreamingError: If the buffered prefix exceeds ``max_line_bytes``
+                without a line terminator.
+        """
         if not chunk:
             return
         self._buffer.extend(chunk)
         while True:
             line, consumed = _read_line(self._buffer)
             if line is None:
+                if len(self._buffer) > self.max_line_bytes:
+                    raise StreamingError(f"SSE line exceeded {self.max_line_bytes} bytes")
                 return
             del self._buffer[:consumed]
             self._process_line(line)
@@ -84,9 +94,17 @@ class SseParser:
             yield self._pending.popleft()
 
     def end(self) -> Iterator[SseEvent]:
-        """Flush any final event (no trailing blank line) before EOS."""
+        """Flush any final event (no trailing blank line) before EOS.
+
+        Raises:
+            StreamingError: If the trailing buffer ends mid-codepoint and
+                cannot be decoded as UTF-8.
+        """
         if self._buffer:
-            line = self._buffer.decode("utf-8")
+            try:
+                line = self._buffer.decode("utf-8")
+            except UnicodeDecodeError as err:
+                raise StreamingError("Stream ended mid-codepoint") from err
             self._buffer.clear()
             self._process_line(line)
         if self._data_lines:

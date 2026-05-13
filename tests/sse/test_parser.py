@@ -1,9 +1,14 @@
 """Tests for the WHATWG SSE parser."""
 from __future__ import annotations
 
+import contextlib
 from collections.abc import AsyncIterator
 
+import pytest
+
+from dexpace.sdk.core.errors import StreamingError
 from dexpace.sdk.core.http.sse import SseEvent, parse_events
+from dexpace.sdk.core.http.sse.parser import SseParser
 
 
 def _events(stream: bytes, chunk_size: int = 4096) -> list[SseEvent]:
@@ -86,6 +91,21 @@ def test_final_event_without_trailing_blank() -> None:
     stream = b"data: tail"
     events = _events(stream)
     assert events == [SseEvent(data="tail")]
+
+
+def test_oversized_line_raises() -> None:
+    parser = SseParser(max_line_bytes=64)
+    with pytest.raises(StreamingError):
+        parser.feed(b"data: " + b"x" * 100)
+
+
+def test_partial_utf8_at_eof_does_not_crash() -> None:
+    # ä is 2 bytes 0xc3 0xa4; split between feed and end
+    parser = SseParser()
+    parser.feed(b"data: \xc3")
+    # Should not raise UnicodeDecodeError; StreamingError is acceptable.
+    with contextlib.suppress(StreamingError):
+        list(parser.end())
 
 
 async def test_async_parser() -> None:

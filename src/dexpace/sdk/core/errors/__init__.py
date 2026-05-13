@@ -41,6 +41,7 @@ from .streaming import (
     ResponseNotReadError,
     StreamClosedError,
     StreamConsumedError,
+    StreamingError,
 )
 
 __all__ = [
@@ -62,5 +63,6 @@ __all__ = [
     "ServiceResponseTimeoutError",
     "StreamClosedError",
     "StreamConsumedError",
+    "StreamingError",
     "map_error",
 ]

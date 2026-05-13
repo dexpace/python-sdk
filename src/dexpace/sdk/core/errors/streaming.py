@@ -34,8 +34,14 @@ class ResponseNotReadError(SdkError):
         )
 
 
+class StreamingError(SdkError):
+    """Stream framing / decode error (e.g. SSE line too long, partial
+    UTF-8 codepoint at EOF)."""
+
+
 __all__ = [
     "ResponseNotReadError",
     "StreamClosedError",
     "StreamConsumedError",
+    "StreamingError",
 ]
