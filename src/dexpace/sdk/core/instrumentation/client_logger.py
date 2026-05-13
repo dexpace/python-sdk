@@ -74,8 +74,15 @@ def _format_fields(fields: dict[str, Any]) -> str:
     parts: list[str] = []
     for key, value in fields.items():
         rendered = str(value)
-        if any(c in rendered for c in ' \t"'):
-            rendered = '"' + rendered.replace('"', '\\"') + '"'
+        if any(c in rendered for c in ' \t"\n\r'):
+            rendered = (
+                '"'
+                + rendered.replace("\\", "\\\\")
+                .replace('"', '\\"')
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                + '"'
+            )
         parts.append(f"{key}={rendered}")
     return " ".join(parts)
 

@@ -50,3 +50,27 @@ def test_skips_emission_when_level_disabled(caplog: LogCaptureFixture) -> None:
     logger = ClientLogger("dexpace.test.skip")
     logger.info("noisy")
     assert not [rec for rec in caplog.records if rec.message == "noisy"]
+
+
+def test_newline_in_field_is_escaped(caplog: LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="dexpace.test.newline")
+    logger = ClientLogger("dexpace.test.newline")
+    logger.info("msg", note="line1\nline2")
+
+    rendered = caplog.records[-1].getMessage()
+    assert "\n" not in rendered
+    assert "\\n" in rendered
+    assert 'note="line1\\nline2"' in rendered
+
+
+def test_carriage_return_escaped(caplog: LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="dexpace.test.cr")
+    logger = ClientLogger("dexpace.test.cr")
+    logger.info("msg", note="line1\r\nline2")
+
+    rendered = caplog.records[-1].getMessage()
+    assert "\r" not in rendered
+    assert "\n" not in rendered
+    assert "\\r" in rendered
+    assert "\\n" in rendered
+    assert 'note="line1\\r\\nline2"' in rendered
