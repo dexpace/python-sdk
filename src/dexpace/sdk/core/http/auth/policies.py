@@ -1,7 +1,11 @@
 """Built-in authentication pipeline policies."""
+
 from __future__ import annotations
 
+import asyncio
+import threading
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from ...errors import ClientAuthenticationError, ServiceRequestError
 from ...pipeline.async_policy import AsyncPolicy
@@ -78,11 +82,15 @@ class BearerTokenPolicy(Policy):
     returns True, or after a 401 response with ``WWW-Authenticate``. Enforces
     HTTPS unless ``enforce_https=False`` is passed in ``ctx.options``.
 
+    Concurrent refreshes are serialized via a ``threading.Lock`` using a
+    double-checked pattern so the credential's ``get_token_info`` is invoked
+    at most once per refresh window even under heavy concurrent send pressure.
+
     The ``on_challenge`` hook is a no-op by default; subclasses override it
     to handle CAE/claims challenges.
     """
 
-    __slots__ = ("_audience", "_cache", "_credential", "_scopes")
+    __slots__ = ("_audience", "_cache", "_credential", "_lock", "_scopes")
 
     def __init__(
         self,
@@ -97,6 +105,7 @@ class BearerTokenPolicy(Policy):
         self._scopes = scopes
         self._cache: TokenCache = cache or InMemoryTokenCache()
         self._audience = audience
+        self._lock = threading.Lock()
 
     def send(self, request: Request, ctx: PipelineContext) -> Response:
         request = self._authorize(request, ctx)
@@ -133,22 +142,33 @@ class BearerTokenPolicy(Policy):
         *,
         force_refresh: bool = False,
     ) -> Request:
-        if ctx.options.get("enforce_https", True) and not request.url.lower().startswith("https"):
+        if ctx.options.get("enforce_https", True) and not _is_https(request.url):
             raise ServiceRequestError(
                 "Bearer token authentication is not permitted for non-HTTPS URLs."
             )
         token = self._cache.get(self._scopes, self._audience)
         if force_refresh or token is None or token.needs_refresh():
-            options = _token_options(ctx.options)
-            token = self._credential.get_token_info(*self._scopes, options=options)
-            self._cache.set(self._scopes, token, self._audience)
+            with self._lock:
+                # Double-checked: another thread may have refreshed while we waited.
+                token = self._cache.get(self._scopes, self._audience)
+                if force_refresh or token is None or token.needs_refresh():
+                    options = _token_options(ctx.options)
+                    token = self._credential.get_token_info(*self._scopes, options=options)
+                    self._cache.set(self._scopes, token, self._audience)
+        assert token is not None  # Narrowed by the refresh branch above.
         return request.with_header("Authorization", f"{token.token_type} {token.token}")
 
 
 class AsyncBearerTokenPolicy(AsyncPolicy):
-    """Async twin of ``BearerTokenPolicy``."""
+    """Async twin of ``BearerTokenPolicy``.
 
-    __slots__ = ("_audience", "_cache", "_credential", "_scopes")
+    Concurrent refreshes are serialized via an ``asyncio.Lock`` using a
+    double-checked pattern; the underlying ``AsyncTokenCredential`` is
+    invoked at most once per refresh window even when many tasks call
+    ``send`` concurrently.
+    """
+
+    __slots__ = ("_audience", "_cache", "_credential", "_lock", "_scopes")
 
     def __init__(
         self,
@@ -163,6 +183,7 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         self._scopes = scopes
         self._cache: TokenCache = cache or InMemoryTokenCache()
         self._audience = audience
+        self._lock = asyncio.Lock()
 
     async def send(self, request: Request, ctx: PipelineContext) -> AsyncResponse:
         request = await self._authorize(request, ctx)
@@ -170,9 +191,7 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         if int(response.status) != 401:
             return response
         self._cache.set(self._scopes, _expired_token(), self._audience)
-        if "WWW-Authenticate" in response.headers and await self.on_challenge(
-            request, response
-        ):
+        if "WWW-Authenticate" in response.headers and await self.on_challenge(request, response):
             request = await self._authorize(request, ctx, force_refresh=True)
             response = await self.next.send(request, ctx)
             if int(response.status) != 401:
@@ -195,16 +214,26 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         *,
         force_refresh: bool = False,
     ) -> Request:
-        if ctx.options.get("enforce_https", True) and not request.url.lower().startswith("https"):
+        if ctx.options.get("enforce_https", True) and not _is_https(request.url):
             raise ServiceRequestError(
                 "Bearer token authentication is not permitted for non-HTTPS URLs."
             )
         token = self._cache.get(self._scopes, self._audience)
         if force_refresh or token is None or token.needs_refresh():
-            options = _token_options(ctx.options)
-            token = await self._credential.get_token_info(*self._scopes, options=options)
-            self._cache.set(self._scopes, token, self._audience)
+            async with self._lock:
+                # Double-checked: another task may have refreshed while we waited.
+                token = self._cache.get(self._scopes, self._audience)
+                if force_refresh or token is None or token.needs_refresh():
+                    options = _token_options(ctx.options)
+                    token = await self._credential.get_token_info(*self._scopes, options=options)
+                    self._cache.set(self._scopes, token, self._audience)
+        assert token is not None  # Narrowed by the refresh branch above.
         return request.with_header("Authorization", f"{token.token_type} {token.token}")
+
+
+def _is_https(url: str) -> bool:
+    """Return True if ``url`` parses to an ``https`` scheme (case-insensitive)."""
+    return urlsplit(url).scheme.lower() == "https"
 
 
 def _token_options(call_options: dict[str, Any]) -> TokenRequestOptions | None:
