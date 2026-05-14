@@ -43,13 +43,6 @@ asyncio_mode = "auto"
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning:pytest_asyncio.*",
-    # Socketserver-based stub HTTP servers and short-lived asyncio loops in
-    # the transport-adapter test suites occasionally leave sockets / event
-    # loops behind for the GC sweep. The leaks are in test fixtures (not
-    # production code) and surface inconsistently across platforms — Linux
-    # CI sees them every run, macOS sees them sometimes. Suppress the
-    # escalated warning so a clean test run is treated as success.
-    "ignore::pytest.PytestUnraisableExceptionWarning",
 ]
 
 [tool.ruff]
