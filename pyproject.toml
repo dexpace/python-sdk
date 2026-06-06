@@ -110,3 +110,7 @@ disallow_untyped_defs = false
 disallow_untyped_decorators = false
 disallow_untyped_calls = false
 warn_return_any = false
+
+[[tool.mypy.overrides]]
+module = "furl.*"
+ignore_missing_imports = true

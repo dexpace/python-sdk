@@ -1,11 +1,16 @@
-"""Immutable URL value objects with `urllib.parse` interop centralised."""
+# Copyright (c) 2026 dexpace and Omar Aljarrah.
+# Licensed under the MIT License. See LICENSE.md in the repository root for details.
+
+"""Immutable URL value objects backed by `furl` for parse/serialise."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Self
-from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit
+
+from furl import furl as _furl
 
 type _QueryValue = str | Iterable[str]
 type _QueryEntries = Mapping[str, _QueryValue] | Iterable[tuple[str, _QueryValue]]
@@ -223,17 +228,27 @@ class Url:
             parts.append(f":{self.port}")
         return "".join(parts)
 
+    def _to_furl(self, *, with_userinfo: bool) -> _furl:
+        f = _furl()
+        f.scheme = self.scheme
+        f.host = self.host
+        if self.port is not None:
+            f.port = self.port
+        if self.path:
+            f.path = self.path
+        if len(self.query):
+            f.query = self.query.encode()
+        if self.fragment:
+            f.fragment = self.fragment
+        if with_userinfo and self.userinfo is not None:
+            user, sep, pwd = self.userinfo.partition(":")
+            f.username = user
+            if sep:
+                f.password = pwd
+        return f
+
     def __str__(self) -> str:
-        query_string = self.query.encode() if len(self.query) else ""
-        return urlunsplit(
-            (
-                self.scheme,
-                self.authority(with_userinfo=False),
-                self.path,
-                query_string,
-                self.fragment,
-            )
-        )
+        return str(self._to_furl(with_userinfo=False))
 
     def wire_form(self) -> str:
         """Serialise to wire form including ``userinfo`` if present.
@@ -242,16 +257,7 @@ class Url:
         credentials; default ``str(url)`` redacts userinfo to avoid
         accidental leakage through logging.
         """
-        query_string = self.query.encode() if len(self.query) else ""
-        return urlunsplit(
-            (
-                self.scheme,
-                self.authority(with_userinfo=True),
-                self.path,
-                query_string,
-                self.fragment,
-            )
-        )
+        return str(self._to_furl(with_userinfo=True))
 
     def __repr__(self) -> str:
         userinfo = "[REDACTED]" if self.userinfo else None
@@ -286,23 +292,23 @@ class Url:
         """
         if not raw:
             raise ValueError("URL must not be empty")
-        split = urlsplit(raw)
-        if not split.scheme:
+        f = _furl(raw)
+        if not f.scheme:
             raise ValueError(f"URL missing scheme: {raw!r}")
-        if not split.hostname:
+        if not f.host:
             raise ValueError(f"URL missing host: {raw!r}")
         userinfo: str | None = None
-        if split.username is not None:
-            userinfo = split.username
-            if split.password is not None:
-                userinfo = f"{split.username}:{split.password}"
+        if f.username is not None:
+            userinfo = f.username
+            if f.password is not None:
+                userinfo = f"{f.username}:{f.password}"
         return cls(
-            scheme=split.scheme,
-            host=split.hostname,
-            port=split.port,
-            path=split.path,
-            query=QueryParams.parse(split.query),
-            fragment=split.fragment,
+            scheme=f.scheme,
+            host=f.host,
+            port=urlsplit(raw).port,
+            path=str(f.path),
+            query=QueryParams.parse(str(f.query)),
+            fragment=str(f.fragment),
             userinfo=userinfo,
         )
 

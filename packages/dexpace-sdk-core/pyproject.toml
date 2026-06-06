@@ -14,14 +14,14 @@ keywords = ["sdk", "http", "client", "toolkit"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: Other/Proprietary License",
+    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries",
 ]
-dependencies = []
+dependencies = ["furl>=2.1.3"]
 
 [project.urls]
 Homepage = "https://github.com/dexpace/python-sdk"
