@@ -11,7 +11,7 @@ requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE.md"]
 authors = [{ name = "Omar Aljarrah", email = "o.mazari.om63@gmail.com" }]
-keywords = ["sdk", "http", "client", "toolkit", "pipeline"]
+keywords = ["sdk", "http", "client", "toolkit", "pipeline", "openapi"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
