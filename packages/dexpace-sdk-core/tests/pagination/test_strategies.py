@@ -172,3 +172,13 @@ class TestLinkHeaderStrategy:
         assert page.next_request is not None
         assert page.next_request.method is Method.GET
         assert page.next_request.headers.get("authorization") == "Bearer t"
+
+    def test_relative_target_is_resolved_against_request_url(self) -> None:
+        # RFC 5988 permits a relative target; it must be resolved against the
+        # request URL rather than raising on a missing scheme.
+        strategy: LinkHeaderStrategy[int] = LinkHeaderStrategy(items_field="data")
+        headers = Headers([("Link", '</items?page=2>; rel="next"')])
+        req = _request("https://api.example.com/items?page=1")
+        page = strategy.parse(_response(req, headers=headers), {"data": [1]}, req)
+        assert page.next_request is not None
+        assert str(page.next_request.url) == "https://api.example.com/items?page=2"

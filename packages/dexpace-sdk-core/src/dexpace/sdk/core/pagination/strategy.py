@@ -26,6 +26,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
+from urllib.parse import urljoin
 
 from ..http.common.url import Url
 from .link_header import find_rel
@@ -208,7 +209,9 @@ class LinkHeaderStrategy[T]:
     Follows the ``rel="next"`` target in the response's ``Link`` header and,
     when present, exposes the ``rel="prev"`` target as the page's previous
     request. The next request reuses the template request's method, headers,
-    and body, swapping only the URL.
+    and body, swapping only the URL. A relative target (permitted by
+    RFC 5988) is resolved against the template request's URL, so an API that
+    returns ``</items?page=2>`` rather than an absolute URI still paginates.
 
     Args:
         items_field: Dotted path to the item list in the body.
@@ -241,7 +244,8 @@ class LinkHeaderStrategy[T]:
         target = find_rel(header, rel)
         if target is None:
             return None
-        return template.with_url(Url.parse(target))
+        absolute = urljoin(str(template.url), target)
+        return template.with_url(Url.parse(absolute))
 
 
 if TYPE_CHECKING:
