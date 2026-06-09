@@ -27,10 +27,16 @@ when draining an unbounded server-side sequence.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from collections.abc import AsyncIterator, Callable, Iterator
+from typing import TYPE_CHECKING
 
 from ..http.context.dispatch_context import DispatchContext
+from ..pipeline.dispatch import (
+    AsyncPipelineLike,
+    SendAsync,
+    SendSync,
+    SyncPipelineLike,
+)
 from .page import Page
 
 if TYPE_CHECKING:
@@ -38,32 +44,6 @@ if TYPE_CHECKING:
     from ..http.response.async_response import AsyncResponse
     from ..http.response.response import Response
     from .strategy import PaginationStrategy
-
-#: A callable that sends one request through the pipeline and returns its
-#: response. The paginator builds one of these from a pipeline when given one,
-#: or the caller passes their own for full dispatch control.
-type SendSync = Callable[["Request"], "Response"]
-type SendAsync = Callable[["Request"], Awaitable["AsyncResponse"]]
-
-
-@runtime_checkable
-class SyncPipelineLike(Protocol):
-    """Structural view of a sync pipeline: just the ``run`` entry point.
-
-    ``Pipeline`` satisfies this; the paginator depends only on the structural
-    shape so it stays decoupled from the concrete pipeline class (and so test
-    doubles can stand in without subclassing). ``runtime_checkable`` so the
-    paginator can tell a pipeline from a bare send-callable at construction.
-    """
-
-    def run(self, request: Request, dispatch: DispatchContext) -> Response: ...
-
-
-@runtime_checkable
-class AsyncPipelineLike(Protocol):
-    """Structural view of an async pipeline: just its ``run`` coroutine."""
-
-    async def run(self, request: Request, dispatch: DispatchContext) -> AsyncResponse: ...
 
 
 def _decode_body(raw: str) -> object:

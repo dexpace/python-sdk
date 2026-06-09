@@ -736,11 +736,26 @@
           }
         }
       },
+      "dexpace.sdk.core.http.sse.connection": {
+        "AsyncSseConnection": {
+          "bases": [],
+          "methods": {
+            "aclose": "async aclose(self) -> None"
+          }
+        },
+        "SseConnection": {
+          "bases": [],
+          "methods": {
+            "close": "close(self) -> None"
+          }
+        }
+      },
       "dexpace.sdk.core.http.sse.parser": {
         "AsyncSseStream": {
           "bases": [],
           "methods": {
-            "aclose": "async aclose(self) -> None"
+            "aclose": "async aclose(self) -> None",
+            "retry": "retry(self) -> int | None"
           }
         },
         "SseEvent": {
@@ -752,7 +767,8 @@
           "methods": {
             "drain": "drain(self) -> Iterator[SseEvent]",
             "end": "end(self) -> Iterator[SseEvent]",
-            "feed": "feed(self, chunk: bytes) -> None"
+            "feed": "feed(self, chunk: bytes) -> None",
+            "retry": "retry(self) -> int | None"
           }
         },
         "parse_async_events": "parse_async_events(chunks: AsyncIterable[bytes]) -> AsyncSseStream",
@@ -968,26 +984,10 @@
             "by_page": "async by_page(self) -> AsyncIterator[Page[T]]"
           }
         },
-        "AsyncPipelineLike": {
-          "bases": [
-            "Protocol"
-          ],
-          "methods": {
-            "run": "async run(self, request: Request, dispatch: DispatchContext) -> AsyncResponse"
-          }
-        },
         "Paginator": {
           "bases": [],
           "methods": {
             "by_page": "by_page(self) -> Iterator[Page[T]]"
-          }
-        },
-        "SyncPipelineLike": {
-          "bases": [
-            "Protocol"
-          ],
-          "methods": {
-            "run": "run(self, request: Request, dispatch: DispatchContext) -> Response"
           }
         }
       },
@@ -1069,6 +1069,24 @@
       "dexpace.sdk.core.pipeline.defaults": {
         "default_async_pipeline": "default_async_pipeline(client: AsyncHttpClient, *, redirect: AsyncRedirectPolicy | None, idempotency: AsyncIdempotencyPolicy | None, retry: AsyncRetryPolicy | None, set_date: AsyncSetDatePolicy | None, client_identity: AsyncClientIdentityPolicy | None, auth: AsyncPolicy | None) -> AsyncStagedPipelineBuilder",
         "default_pipeline": "default_pipeline(client: HttpClient, *, redirect: RedirectPolicy | None, idempotency: IdempotencyPolicy | None, retry: RetryPolicy | None, set_date: SetDatePolicy | None, client_identity: ClientIdentityPolicy | None, auth: Policy | None, logging: LoggingPolicy | None, tracing: TracingPolicy | None) -> StagedPipelineBuilder"
+      },
+      "dexpace.sdk.core.pipeline.dispatch": {
+        "AsyncPipelineLike": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "run": "async run(self, request: Request, dispatch: DispatchContext) -> AsyncResponse"
+          }
+        },
+        "SyncPipelineLike": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "run": "run(self, request: Request, dispatch: DispatchContext) -> Response"
+          }
+        }
       },
       "dexpace.sdk.core.pipeline.pipeline": {
         "Pipeline": {
@@ -1492,7 +1510,9 @@
         "Status"
       ],
       "dexpace.sdk.core.http.sse": [
+        "AsyncSseConnection",
         "AsyncSseStream",
+        "SseConnection",
         "SseEvent",
         "SseParser",
         "parse_async_events",
