@@ -86,10 +86,10 @@ removed, so existing code continues to work without modification.
 
 The following were intentionally left out of this round and are **not** included:
 
-- **Default error map (F6c)** — error classification beyond the `retryable`
+- **Default error map** — error classification beyond the `retryable`
   flag and body snapshot was deferred; callers still map status codes to domain
   errors themselves.
-- **`sendfile` fast-path (F7)** — file bodies are streamed via the existing
+- **`sendfile` fast-path** — file bodies are streamed via the existing
   `iter_bytes` path; no zero-copy `sendfile` transport optimisation was added.
 - **MCP support** — no Model Context Protocol integration is included.
 - **Java SDK items** — the Java counterpart lives in a separate repository and
