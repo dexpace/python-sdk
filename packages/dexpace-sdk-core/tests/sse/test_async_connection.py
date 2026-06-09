@@ -145,3 +145,37 @@ async def test_async_cancellation_propagates_and_closes() -> None:
 
     assert seen == ["hi"]
     assert body.closed is True
+
+
+async def test_async_reconnects_after_clean_eof() -> None:
+    first = _AsyncDropBody([b"data: a\n\n"])
+    second = _AsyncDropBody([b"data: b\n\n"])
+    script = _AsyncScript([_response(first), _response(second)])
+    conn = AsyncSseConnection(script, _request(), clock=_RecordingAsyncClock(), rand=_LowJitter())
+
+    received: list[str] = []
+    async with conn as events:
+        async for event in events:
+            received.append(event.data)
+            if len(received) == 2:
+                break
+
+    assert received == ["a", "b"]
+    assert first.closed is True
+
+
+async def test_async_honours_retry_then_budget() -> None:
+    retry_then_drop = _response(
+        _AsyncDropBody([b"retry: 1000\n\n"], error=ServiceResponseError("x"))
+    )
+    drop1 = _response(_AsyncDropBody([], error=ServiceResponseError("x")))
+    drop2 = _response(_AsyncDropBody([], error=ServiceResponseError("x")))
+    script = _AsyncScript([retry_then_drop, drop1, drop2])
+    clock = _RecordingAsyncClock()
+    conn = AsyncSseConnection(script, _request(), clock=clock, rand=_LowJitter(), max_reconnects=2)
+
+    with pytest.raises(ServiceResponseError, match="reconnect budget"):
+        async for _ in conn:
+            pass
+
+    assert clock.sleeps == [1.0, 2.0]

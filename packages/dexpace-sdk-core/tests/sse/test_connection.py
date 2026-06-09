@@ -90,6 +90,13 @@ class _LowJitter(random.Random):
         return a
 
 
+class _HighJitter(random.Random):
+    """``uniform`` returns its high bound — exercises upward jitter."""
+
+    def uniform(self, a: float, b: float) -> float:
+        return b
+
+
 def test_yields_events_and_closes_on_caller_stop() -> None:
     body = _DropBody([b"data: one\n\n", b"data: two\n\n"])
     script = _Script([_response(body)])
@@ -190,3 +197,59 @@ def test_non_success_status_raises_without_reconnect() -> None:
 
     # No reconnect attempted: send called exactly once.
     assert len(script.requests) == 1
+
+
+def test_empty_id_clears_replay_header() -> None:
+    # id:5 then an explicit empty id (clears), so the reconnect omits the header.
+    first = _DropBody([b"id: 5\ndata: a\n\nid:\ndata: b\n\n"], error=ServiceResponseError("x"))
+    second = _DropBody([b"data: c\n\n"])
+    script = _Script([_response(first), _response(second)])
+    conn = SseConnection(script, _request(), clock=_RecordingClock(), rand=_LowJitter())
+
+    received: list[str] = []
+    with conn as events:
+        for event in events:
+            received.append(event.data)
+            if len(received) == 3:
+                break
+
+    assert received == ["a", "b", "c"]
+    assert script.requests[1].headers.get("last-event-id") is None
+
+
+def test_backoff_jitter_is_upward() -> None:
+    first = _DropBody([b"data: a\n\n"], error=ServiceResponseError("x"))
+    second = _DropBody([b"data: b\n\n"])
+    script = _Script([_response(first), _response(second)])
+    clock = _RecordingClock()
+    conn = SseConnection(script, _request(), clock=clock, rand=_HighJitter(), jitter=0.1)
+
+    received: list[str] = []
+    with conn as events:
+        for event in events:
+            received.append(event.data)
+            if len(received) == 2:
+                break
+
+    # First connection progressed -> failures reset to 0 -> base 3.0; high
+    # jitter multiplies by 1.0 + 0.1, never below the base.
+    assert clock.sleeps == [pytest.approx(3.3)]
+    assert clock.sleeps[0] > 3.0
+
+
+def test_budget_exhaustion_chains_last_transport_error() -> None:
+    boom = ServiceResponseError("connection reset")
+    script = _Script(
+        [
+            _response(_DropBody([], error=boom)),
+            _response(_DropBody([], error=boom)),
+        ]
+    )
+    conn = SseConnection(
+        script, _request(), clock=_RecordingClock(), rand=_LowJitter(), max_reconnects=1
+    )
+
+    with pytest.raises(ServiceResponseError, match="reconnect budget") as exc_info:
+        for _ in conn:
+            pass
+    assert exc_info.value.__cause__ is boom

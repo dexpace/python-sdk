@@ -186,15 +186,18 @@ class SseConnection:
 
     def __iter__(self) -> Iterator[SseEvent]:
         failures = 0
+        last_error: BaseException | None = None
         try:
             while True:
                 response = self._connect(_resume_request(self._initial, self._last_event_id))
-                progressed = yield from self._stream(response)
+                progressed, error = yield from self._stream(response)
+                if error is not None:
+                    last_error = error
                 self.close()
                 if progressed:
                     failures = 0
                 if self._max_reconnects is not None and failures >= self._max_reconnects:
-                    raise ServiceResponseError("SSE reconnect budget exhausted")
+                    raise ServiceResponseError("SSE reconnect budget exhausted") from last_error
                 self._clock.sleep(
                     _next_backoff(
                         self._retry_base, failures, self._max_backoff, self._jitter, self._rand
@@ -212,22 +215,22 @@ class SseConnection:
             raise HttpResponseError(response=response)
         return response
 
-    def _stream(self, response: Response) -> Generator[SseEvent, None, bool]:
-        """Yield one connection's events; return whether any were yielded.
+    def _stream(
+        self, response: Response
+    ) -> Generator[SseEvent, None, tuple[bool, BaseException | None]]:
+        """Yield one connection's events; return (progressed, transient_error).
 
-        A transient transport error mid-stream ends the generator normally
-        (so the caller reconnects); other exceptions propagate.
-
-        ``retry:`` directives that arrive without an accompanying ``data:``
-        field (so no ``SseEvent`` is emitted) are still picked up from the
-        parser's accumulated state after iteration ends, ensuring the
-        server-supplied reconnect delay is honoured even on pure
-        retry-hint frames.
+        A transient transport error mid-stream ends the generator normally (so
+        the caller reconnects) and is returned so the caller can chain it as the
+        cause if the reconnect budget is later exhausted; other exceptions
+        propagate. A ``retry:`` hint that arrived without a data event is picked
+        up from the parser's sticky state after iteration.
         """
         progressed = False
+        error: BaseException | None = None
         body = response.body
         if body is None:
-            return progressed
+            return progressed, error
         parser = SseParser()
         try:
             for chunk in body.iter_bytes():
@@ -240,13 +243,11 @@ class SseConnection:
                 self._last_event_id = _last_event_id_of(event, self._last_event_id)
                 progressed = True
                 yield event
-        except _TRANSIENT:
-            pass
-        # Capture the server's sticky reconnect hint (including a retry:-only frame
-        # that emitted no event) for the next reconnection's backoff base.
+        except _TRANSIENT as exc:
+            error = exc
         if parser.retry is not None:
             self._retry_base = parser.retry / 1000.0
-        return progressed
+        return progressed, error
 
 
 class AsyncSseConnection:
@@ -350,6 +351,7 @@ class AsyncSseConnection:
 
     async def _events(self) -> AsyncIterator[SseEvent]:
         failures = 0
+        last_error: BaseException | None = None
         try:
             while True:
                 response = await self._connect(_resume_request(self._initial, self._last_event_id))
@@ -363,15 +365,15 @@ class AsyncSseConnection:
                                 self._last_event_id = _last_event_id_of(event, self._last_event_id)
                                 progressed = True
                                 yield event
-                    except _TRANSIENT:
-                        pass
+                    except _TRANSIENT as exc:
+                        last_error = exc
                     if stream.retry is not None:
                         self._retry_base = stream.retry / 1000.0
                 await self.aclose()
                 if progressed:
                     failures = 0
                 if self._max_reconnects is not None and failures >= self._max_reconnects:
-                    raise ServiceResponseError("SSE reconnect budget exhausted")
+                    raise ServiceResponseError("SSE reconnect budget exhausted") from last_error
                 await self._clock.sleep(
                     _next_backoff(
                         self._retry_base, failures, self._max_backoff, self._jitter, self._rand
