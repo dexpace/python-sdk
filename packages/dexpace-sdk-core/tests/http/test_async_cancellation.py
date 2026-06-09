@@ -19,6 +19,7 @@ import asyncio
 import pytest
 
 from dexpace.sdk.core.http.response import AsyncResponse, AsyncResponseBody
+from dexpace.sdk.core.http.response.async_response_body import _shielded_cleanup
 from dexpace.sdk.core.http.sse.parser import parse_async_events
 
 
@@ -182,3 +183,33 @@ async def test_sse_aclose_is_idempotent() -> None:
     await stream.aclose()
     assert chunks.aclosed is True
     assert chunks.aclose_completed is True
+
+
+async def test_shielded_cleanup_surfaces_failure_without_cancellation() -> None:
+    async def failing() -> None:
+        raise RuntimeError("close failed")
+
+    # With no outer cancellation pending, a cleanup failure surfaces unchanged.
+    with pytest.raises(RuntimeError, match="close failed"):
+        await _shielded_cleanup(failing())
+
+
+async def test_shielded_cleanup_cancellation_takes_precedence_over_failure() -> None:
+    gate = asyncio.Event()
+
+    async def failing_after_gate() -> None:
+        await gate.wait()
+        raise RuntimeError("close failed")
+
+    task = asyncio.ensure_future(_shielded_cleanup(failing_after_gate()))
+    # Let the task park on the shielded wait, then cancel its wait (not the
+    # shielded cleanup itself).
+    for _ in range(5):
+        await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    # Release the cleanup so it now finishes — by raising. A pending
+    # cancellation must win over that cleanup error.
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task

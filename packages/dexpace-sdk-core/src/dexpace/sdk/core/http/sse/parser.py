@@ -43,25 +43,36 @@ async def _shielded_aclose(cleanup: Awaitable[None]) -> None:
     transport before the cancellation is re-raised. The close never swallows
     cancellation — it only defers it until the upstream stream is released.
 
+    A pending outer cancellation always wins: if the close runs to completion
+    but raises an ordinary exception while a cancellation is waiting, the
+    cancellation is re-raised rather than masked by the close error. When no
+    cancellation is pending, a close failure surfaces to the caller unchanged.
+
     Args:
         cleanup: The upstream-close coroutine to run to completion.
 
     Raises:
         asyncio.CancelledError: Re-raised after the close completes when the
             enclosing scope was cancelled while the close ran.
+        Exception: Whatever the close coroutine raised, when no outer
+            cancellation is pending.
     """
     inner = asyncio.ensure_future(cleanup)
     cancelled = False
-    while True:
+    while not inner.done():
         try:
             await asyncio.shield(inner)
-            break
         except asyncio.CancelledError:
             if inner.cancelled():
                 raise
             cancelled = True
+        except Exception:
+            # The close failed; ``inner`` retains the exception, surfaced
+            # below. A pending cancellation still takes precedence.
+            break
     if cancelled:
         raise asyncio.CancelledError
+    inner.result()
 
 
 _LF: Final[int] = 0x0A

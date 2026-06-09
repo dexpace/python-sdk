@@ -35,19 +35,26 @@ async def _shielded_cleanup(cleanup: Awaitable[object]) -> None:
     until the resource is released. A ``CancelledError`` raised because the
     cleanup *itself* was cancelled is propagated immediately.
 
+    A pending outer cancellation always wins: if the cleanup runs to
+    completion but raises an ordinary exception while a cancellation is
+    waiting, the cancellation is re-raised (the cleanup error does not mask
+    it). When no cancellation is pending, a cleanup failure surfaces to the
+    caller unchanged.
+
     Args:
         cleanup: The resource-release coroutine to run to completion.
 
     Raises:
         asyncio.CancelledError: Re-raised after the cleanup completes when
             the enclosing scope was cancelled while the cleanup ran.
+        Exception: Whatever the cleanup coroutine raised, when no outer
+            cancellation is pending.
     """
     inner = asyncio.ensure_future(cleanup)
     cancelled = False
-    while True:
+    while not inner.done():
         try:
             await asyncio.shield(inner)
-            break
         except asyncio.CancelledError:
             if inner.cancelled():
                 # The cleanup itself was cancelled, not just our wait on it.
@@ -56,8 +63,13 @@ async def _shielded_cleanup(cleanup: Awaitable[object]) -> None:
             # Keep waiting until the cleanup finishes, then re-raise so the
             # cancellation continues to propagate.
             cancelled = True
+        except Exception:
+            # The cleanup failed; ``inner`` retains the exception, surfaced
+            # below. A pending cancellation still takes precedence.
+            break
     if cancelled:
         raise asyncio.CancelledError
+    inner.result()
 
 
 class AsyncResponseBody(ABC):
