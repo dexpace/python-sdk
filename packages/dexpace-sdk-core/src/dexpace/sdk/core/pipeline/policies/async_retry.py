@@ -11,6 +11,7 @@ helper (using an async sleep callable).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 from collections.abc import Iterable
@@ -25,7 +26,7 @@ from ...util.clock import ASYNC_SYSTEM_CLOCK, AsyncClock
 from ..async_policy import AsyncPolicy
 from ..stage import Stage
 from ._history import RequestHistory
-from .retry import RetryMode, RetryPolicy, _parse_retry_after
+from .retry import RetryMode, RetryPolicy, _resolve_tracer, _StatusRetryError
 
 if TYPE_CHECKING:
     from ...http.request.request import Request
@@ -64,6 +65,8 @@ class AsyncRetryPolicy(AsyncPolicy):
         method_allowlist: Iterable[str] | None = None,
         retry_on_status_codes: Iterable[int] | None = None,
         respect_retry_after: bool = True,
+        retry_after_max: float | None = None,
+        full_jitter: bool = True,
         jitter: float = 0.25,
         clock: AsyncClock = ASYNC_SYSTEM_CLOCK,
         rand: random.Random | None = None,
@@ -78,8 +81,11 @@ class AsyncRetryPolicy(AsyncPolicy):
             "retry_mode": retry_mode,
             "timeout": timeout,
             "respect_retry_after": respect_retry_after,
+            "full_jitter": full_jitter,
             "jitter": jitter,
         }
+        if retry_after_max is not None:
+            kwargs["retry_after_max"] = retry_after_max
         if method_allowlist is not None:
             kwargs["method_allowlist"] = method_allowlist
         if retry_on_status_codes is not None:
@@ -100,56 +106,43 @@ class AsyncRetryPolicy(AsyncPolicy):
         settings = cfg._configure_settings(ctx.options)
         absolute_deadline = self._clock.monotonic() + settings["timeout"]
         history: list[RequestHistory[AsyncResponse]] = settings["history"]
+        tracer = _resolve_tracer(ctx)
         while True:
+            tracer.attempt_started(len(history))
             try:
                 response = await self.next.send(request, ctx)
-                if not cfg._is_retry(settings, request, response):
-                    ctx.data["retry_history"] = tuple(history)
-                    return response
-                history.append(RequestHistory(request=request, response=response))
-                if not cfg._decrement_status(settings):
-                    ctx.data["retry_history"] = tuple(history)
-                    return response
-                ctx.data["retry_count"] = len(history)
-                await self._sleep_after_status(settings, response, absolute_deadline)
-                continue
             except ClientAuthenticationError:
+                raise
+            except asyncio.CancelledError:
+                # CancelledError is a BaseException, not an SdkError, so the
+                # ``except SdkError`` below would not catch it — but an explicit
+                # re-raise documents and guarantees the invariant: a cancelled
+                # request is never retried, it propagates immediately.
                 raise
             except SdkError as err:
                 history.append(RequestHistory(request=request, error=err))
                 if not cfg._decrement_for_error(settings, err):
+                    tracer.attempt_retries_exhausted()
                     ctx.data["retry_history"] = tuple(history)
                     raise
                 ctx.data["retry_count"] = len(history)
-                await self._sleep_after_error(settings, absolute_deadline)
+                delay = cfg._delay_for(settings, None)
+                tracer.attempt_failed(err, delay)
+                await self._sleep_bounded(delay, absolute_deadline)
                 _LOGGER.debug("retrying after %s: %s", type(err).__name__, err)
                 continue
-
-    async def _sleep_after_status(
-        self,
-        settings: dict[str, Any],
-        response: AsyncResponse,
-        absolute_deadline: float,
-    ) -> None:
-        if self.config.respect_retry_after:
-            retry_after = _parse_retry_after(response.headers.get("Retry-After"))
-            if retry_after is not None:
-                await self._sleep_bounded(retry_after, absolute_deadline)
-                return
-        await self._sleep_bounded(
-            self.config._backoff_seconds(settings),
-            absolute_deadline,
-        )
-
-    async def _sleep_after_error(
-        self,
-        settings: dict[str, Any],
-        absolute_deadline: float,
-    ) -> None:
-        await self._sleep_bounded(
-            self.config._backoff_seconds(settings),
-            absolute_deadline,
-        )
+            if not cfg._is_retry(settings, request, response):
+                ctx.data["retry_history"] = tuple(history)
+                return response
+            history.append(RequestHistory(request=request, response=response))
+            if not cfg._decrement_status(settings):
+                tracer.attempt_retries_exhausted()
+                ctx.data["retry_history"] = tuple(history)
+                return response
+            ctx.data["retry_count"] = len(history)
+            delay = cfg._delay_for(settings, response)
+            tracer.attempt_failed(_StatusRetryError(int(response.status)), delay)
+            await self._sleep_bounded(delay, absolute_deadline)
 
     async def _sleep_bounded(
         self,

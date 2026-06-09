@@ -319,6 +319,7 @@ class TestRetryJitter:
         retry = RetryPolicy(
             backoff_factor=1.0,
             backoff_max=1000.0,
+            full_jitter=False,
             jitter=0.25,
             rand=random.Random(42),
             clock=FakeClock(),
@@ -342,6 +343,7 @@ class TestRetryJitter:
         retry = RetryPolicy(
             backoff_factor=1.0,
             backoff_max=1000.0,
+            full_jitter=False,
             jitter=0.0,
             rand=random.Random(42),
             clock=FakeClock(),
@@ -455,6 +457,7 @@ def test_retry_advances_clock_by_backoff_seconds() -> None:
     retry = RetryPolicy(
         backoff_factor=1.0,
         backoff_max=1000.0,
+        full_jitter=False,
         jitter=0.0,
         clock=clock,
     )
