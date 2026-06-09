@@ -126,6 +126,17 @@ class SseParser:
     _bom_stripped: bool = False
     max_line_bytes: int = 1 << 20  # 1 MiB
 
+    @property
+    def retry(self) -> int | None:
+        """The most recent ``retry:`` value seen, in milliseconds, or ``None``.
+
+        Sticky across events for the life of the parser, mirroring the value the
+        parser stamps onto each emitted ``SseEvent``. Exposed so a reconnecting
+        client can read the server-supplied reconnect hint even from a
+        ``retry:``-only frame that emits no event.
+        """
+        return self._retry
+
     def feed(self, chunk: bytes) -> None:
         """Append ``chunk`` to the parser buffer and consume completed lines.
 

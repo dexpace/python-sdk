@@ -27,7 +27,7 @@ from ...pipeline.dispatch import (
 )
 from ...util.clock import SYSTEM_CLOCK, Clock
 from ..context.dispatch_context import DispatchContext
-from .parser import parse_events
+from .parser import SseParser
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Iterator
@@ -60,19 +60,15 @@ def _resume_request(initial: Request, last_event_id: str | None) -> Request:
     return initial
 
 
-def _observe(
-    event: SseEvent, last_event_id: str | None, retry_base: float
-) -> tuple[str | None, float]:
-    """Fold one event's ``id`` / ``retry`` into the connection state.
+def _last_event_id_of(event: SseEvent, current: str | None) -> str | None:
+    """Return the id to resume from after ``event``.
 
-    An explicit empty ``id`` clears the stored id (per the SSE spec, so the
-    next reconnect omits the header). ``retry`` is given in milliseconds.
+    An explicit empty id clears the stored id (per the SSE spec), so the next
+    reconnect omits the ``Last-Event-ID`` header.
     """
     if event.id is not None:
-        last_event_id = event.id or None
-    if event.retry is not None:
-        retry_base = event.retry / 1000.0
-    return last_event_id, retry_base
+        return event.id or None
+    return current
 
 
 def _next_backoff(
@@ -217,20 +213,35 @@ class SseConnection:
 
         A transient transport error mid-stream ends the generator normally
         (so the caller reconnects); other exceptions propagate.
+
+        ``retry:`` directives that arrive without an accompanying ``data:``
+        field (so no ``SseEvent`` is emitted) are still picked up from the
+        parser's accumulated state after iteration ends, ensuring the
+        server-supplied reconnect delay is honoured even on pure
+        retry-hint frames.
         """
         progressed = False
         body = response.body
         if body is None:
             return progressed
+        parser = SseParser()
         try:
-            for event in parse_events(body.iter_bytes()):
-                self._last_event_id, self._retry_base = _observe(
-                    event, self._last_event_id, self._retry_base
-                )
+            for chunk in body.iter_bytes():
+                parser.feed(chunk)
+                for event in parser.drain():
+                    self._last_event_id = _last_event_id_of(event, self._last_event_id)
+                    progressed = True
+                    yield event
+            for event in parser.end():
+                self._last_event_id = _last_event_id_of(event, self._last_event_id)
                 progressed = True
                 yield event
         except _TRANSIENT:
-            return progressed
+            pass
+        # Capture the server's sticky reconnect hint (including a retry:-only frame
+        # that emitted no event) for the next reconnection's backoff base.
+        if parser.retry is not None:
+            self._retry_base = parser.retry / 1000.0
         return progressed
 
 

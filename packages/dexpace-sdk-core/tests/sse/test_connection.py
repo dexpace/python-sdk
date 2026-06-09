@@ -8,6 +8,9 @@ from __future__ import annotations
 import random
 from collections.abc import Iterator
 
+import pytest
+
+from dexpace.sdk.core.errors import HttpResponseError, ServiceResponseError
 from dexpace.sdk.core.http.common import MediaType, Protocol, Url
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.response import Response, ResponseBody, Status
@@ -101,3 +104,89 @@ def test_yields_events_and_closes_on_caller_stop() -> None:
 
     assert received == ["one", "two"]
     assert body.closed is True
+
+
+def test_reconnects_after_mid_stream_drop_and_replays_last_event_id() -> None:
+    dropped = _DropBody([b"id: 7\ndata: one\n\n"], error=ServiceResponseError("dropped"))
+    resumed = _DropBody([b"data: two\n\n"])
+    script = _Script([_response(dropped), _response(resumed)])
+    conn = SseConnection(script, _request(), clock=_RecordingClock(), rand=_LowJitter())
+
+    received: list[str] = []
+    with conn as events:
+        for event in events:
+            received.append(event.data)
+            if len(received) == 2:
+                break
+
+    assert received == ["one", "two"]
+    # Second request resumed from the last seen id.
+    assert script.requests[1].headers.get("last-event-id") == "7"
+
+
+def test_reconnects_after_clean_eof() -> None:
+    first = _DropBody([b"data: a\n\n"])
+    second = _DropBody([b"data: b\n\n"])
+    script = _Script([_response(first), _response(second)])
+    conn = SseConnection(script, _request(), clock=_RecordingClock(), rand=_LowJitter())
+
+    received: list[str] = []
+    with conn as events:
+        for event in events:
+            received.append(event.data)
+            if len(received) == 2:
+                break
+
+    assert received == ["a", "b"]
+    assert first.closed is True
+
+
+def test_honours_server_retry_then_exponential_backoff() -> None:
+    # First stream sets retry: 1000ms then drops with no events after it; each
+    # subsequent stream also yields nothing and drops, so failures accumulate.
+    def drop() -> Response:
+        return _response(_DropBody([], error=ServiceResponseError("x")))
+
+    retry_then_drop = _response(_DropBody([b"retry: 1000\n\n"], error=ServiceResponseError("x")))
+    script = _Script([retry_then_drop, drop(), drop()])
+    clock = _RecordingClock()
+    conn = SseConnection(script, _request(), clock=clock, rand=_LowJitter(), max_reconnects=2)
+
+    with pytest.raises(ServiceResponseError, match="reconnect budget"):
+        for _ in conn:
+            pass
+
+    # base = 1.0s (from retry:), failures 0 and 1 -> [1.0, 2.0]; then bound hit.
+    assert clock.sleeps == [1.0, 2.0]
+
+
+def test_failure_counter_resets_after_progress() -> None:
+    # A stream that yields an event resets the backoff exponent: the next
+    # reconnect delay returns to the base rather than growing.
+    progress = _response(_DropBody([b"data: x\n\n"], error=ServiceResponseError("x")))
+    again = _response(_DropBody([b"data: y\n\n"]))
+    script = _Script([progress, again])
+    clock = _RecordingClock()
+    conn = SseConnection(script, _request(), clock=clock, rand=_LowJitter())
+
+    received: list[str] = []
+    with conn as events:
+        for event in events:
+            received.append(event.data)
+            if len(received) == 2:
+                break
+
+    # Both connections progressed, so the single reconnect slept the base 3.0s.
+    assert clock.sleeps == [3.0]
+
+
+def test_non_success_status_raises_without_reconnect() -> None:
+    script = _Script([_response(None, status=Status.NOT_FOUND)])
+    conn = SseConnection(script, _request(), clock=_RecordingClock(), rand=_LowJitter())
+
+    with pytest.raises(HttpResponseError):
+        for _ in conn:
+            pass
+
+    # No reconnect attempted: send called exactly once.
+    assert len(script.requests) == 1
