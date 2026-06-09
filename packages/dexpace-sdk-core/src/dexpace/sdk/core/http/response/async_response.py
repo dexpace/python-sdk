@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Self
 from ..common.headers import Headers
 from ..common.http_header_name import HttpHeaderName
 from ..common.protocol import Protocol
+from .async_response_body import _shielded_cleanup
 from .status import Status
 
 if TYPE_CHECKING:
@@ -38,9 +39,14 @@ class AsyncResponse:
     body: AsyncResponseBody | None = None
 
     async def close(self) -> None:
-        """Close the response body. Idempotent."""
+        """Close the response body. Idempotent.
+
+        When invoked from ``__aexit__`` while an ``asyncio.CancelledError`` is
+        propagating out of an ``async with`` block, the body close is shielded
+        so the transport handle is released before cancellation continues.
+        """
         if self.body is not None:
-            await self.body.close()
+            await _shielded_cleanup(self.body.close())
 
     async def __aenter__(self) -> Self:
         return self

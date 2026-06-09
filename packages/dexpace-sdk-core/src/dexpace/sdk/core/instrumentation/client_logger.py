@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Final
 
+from .correlation import get_span_id, get_trace_id
 from .log_level import LogLevel
 
 _LEVEL_MAP: Final[dict[LogLevel, int]] = {
@@ -16,6 +17,28 @@ _LEVEL_MAP: Final[dict[LogLevel, int]] = {
     LogLevel.INFO: logging.INFO,
     LogLevel.VERBOSE: logging.DEBUG,
 }
+
+
+class CorrelationFilter(logging.Filter):
+    """Stamps the active trace/span ids onto every record it sees.
+
+    Reads the context-local ids from :mod:`correlation` and attaches them as
+    ``trace.id`` / ``span.id`` record attributes (plus the dotted-name-safe
+    ``trace_id`` / ``span_id`` aliases for ``%``-style format strings). When no
+    trace is bound the attributes are set to ``None`` so formatters referencing
+    them never raise. Because the ids live in ``contextvars``, this works across
+    ``await`` boundaries without any extra plumbing.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Attach correlation ids and always allow the record through."""
+        trace_id = get_trace_id()
+        span_id = get_span_id()
+        setattr(record, "trace.id", trace_id)
+        setattr(record, "span.id", span_id)
+        record.trace_id = trace_id
+        record.span_id = span_id
+        return True
 
 
 class ClientLogger:
@@ -46,15 +69,15 @@ class ClientLogger:
         self.name = name
         self._logger = logging.getLogger(name)
         self._static_fields = static_fields
+        _install_correlation_filter(self._logger)
 
     def log(self, level: LogLevel, message: str, **fields: Any) -> None:
         """Emit a structured log record at ``level``."""
         py_level = _LEVEL_MAP[level]
         if not self._logger.isEnabledFor(py_level):
             return
-        self._logger.log(
-            py_level, "%s %s", message, _format_fields({**self._static_fields, **fields})
-        )
+        rendered = _format_fields({**self._static_fields, **_correlation_fields(), **fields})
+        self._logger.log(py_level, "%s %s", message, rendered)
 
     def error(self, message: str, **fields: Any) -> None:
         """Emit a structured record at ``ERROR`` level."""
@@ -71,6 +94,25 @@ class ClientLogger:
     def verbose(self, message: str, **fields: Any) -> None:
         """Emit a structured record at ``VERBOSE`` (``DEBUG``) level."""
         self.log(LogLevel.VERBOSE, message, **fields)
+
+
+def _install_correlation_filter(logger: logging.Logger) -> None:
+    """Attach a :class:`CorrelationFilter` to ``logger`` exactly once."""
+    if any(isinstance(existing, CorrelationFilter) for existing in logger.filters):
+        return
+    logger.addFilter(CorrelationFilter())
+
+
+def _correlation_fields() -> dict[str, str]:
+    """Return the bound trace/span ids as logfmt fields, omitting unset ones."""
+    fields: dict[str, str] = {}
+    trace_id = get_trace_id()
+    if trace_id is not None:
+        fields["trace.id"] = trace_id
+    span_id = get_span_id()
+    if span_id is not None:
+        fields["span.id"] = span_id
+    return fields
 
 
 def _format_fields(fields: dict[str, Any]) -> str:
@@ -90,4 +132,4 @@ def _format_fields(fields: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
-__all__ = ["ClientLogger"]
+__all__ = ["ClientLogger", "CorrelationFilter"]

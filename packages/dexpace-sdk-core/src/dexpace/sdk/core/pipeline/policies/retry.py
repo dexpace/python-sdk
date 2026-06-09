@@ -39,6 +39,7 @@ from ...util.clock import SYSTEM_CLOCK, Clock
 from ..policy import Policy
 from ..stage import Stage
 from ._history import RequestHistory
+from .redirect import resolve_http_tracer
 
 if TYPE_CHECKING:
     from ...http.request.request import Request
@@ -46,6 +47,21 @@ if TYPE_CHECKING:
     from ..context import PipelineContext
 
 _LOGGER = logging.getLogger(__name__)
+
+#: Default ceiling, in seconds, applied to a server-supplied ``Retry-After`` or
+#: ``X-RateLimit-Reset`` delay so a buggy or hostile header cannot make the
+#: client sleep for hours. One hour is generous for legitimate rate limits.
+_DEFAULT_RETRY_AFTER_MAX: Final[float] = 3600.0
+
+#: Header carrying the epoch second at which a rate-limit window resets. Sent by
+#: GitHub, Stripe, Slack, and others alongside (or instead of) ``Retry-After``.
+_RATE_LIMIT_RESET_HEADER: Final[str] = "X-RateLimit-Reset"
+
+#: Upward jitter fraction applied to an ``X-RateLimit-Reset`` wait. The delay is
+#: multiplied by a random sample in ``[1.0, 1.0 + this]`` so a client never wakes
+#: before the window resets, while a fleet that observed the same reset instant
+#: spreads its retries instead of firing in lockstep.
+_RATE_LIMIT_RESET_JITTER: Final[float] = 0.1
 
 
 @runtime_checkable
@@ -103,12 +119,26 @@ class RetryPolicy(Policy):
         method_allowlist: HTTP methods that get full retry semantics.
             POST and PATCH are retried only on 500/503/504.
         retry_on_status_codes: Status codes that trigger a retry.
-        respect_retry_after: When ``True``, sleep for the ``Retry-After``
-            header value (if present) instead of the computed backoff.
-        jitter: Fractional band applied to each computed backoff to break
-            thundering herds. ``0.25`` multiplies the backoff by a random
-            sample in ``[0.75, 1.25]``. Set to ``0`` for deterministic
-            backoff.
+        respect_retry_after: When ``True``, sleep for the server-supplied
+            delay (``Retry-After`` header in seconds/HTTP-date, or an
+            ``X-RateLimit-Reset`` epoch) when present, instead of the
+            computed backoff. The server delay is itself capped at
+            ``retry_after_max`` and an ``X-RateLimit-Reset`` wait gets a small
+            upward jitter so a fleet of clients does not all retry at the exact
+            reset instant (and never wakes before it).
+        retry_after_max: Ceiling, in seconds, on a server-supplied
+            ``Retry-After`` / ``X-RateLimit-Reset`` delay. Protects against a
+            buggy or hostile header forcing a multi-hour sleep. Defaults to
+            one hour.
+        full_jitter: When ``True`` (the default), exponential backoff uses
+            *full jitter* — the computed delay is multiplied by a random
+            sample in ``[0.5, 1.0]`` (AWS's recommended scheme), spreading
+            retries evenly across the window. When ``False``, the symmetric
+            ``jitter`` band is applied instead.
+        jitter: Symmetric fractional band applied to the computed backoff
+            when ``full_jitter`` is ``False``. ``0.25`` multiplies the
+            backoff by a random sample in ``[0.75, 1.25]``. Set to ``0`` for
+            deterministic backoff.
 
     Example:
         ```python
@@ -137,6 +167,8 @@ class RetryPolicy(Policy):
         method_allowlist: Iterable[str] = _DEFAULT_METHOD_ALLOWLIST,
         retry_on_status_codes: Iterable[int] = _DEFAULT_STATUS_RETRIES,
         respect_retry_after: bool = True,
+        retry_after_max: float = _DEFAULT_RETRY_AFTER_MAX,
+        full_jitter: bool = True,
         jitter: float = 0.25,
         clock: Clock = SYSTEM_CLOCK,
         rand: random.Random | None = None,
@@ -152,6 +184,8 @@ class RetryPolicy(Policy):
         self.method_allowlist = frozenset(m.upper() for m in method_allowlist)
         self.retry_on_status_codes = frozenset(retry_on_status_codes)
         self.respect_retry_after = respect_retry_after
+        self.retry_after_max = retry_after_max
+        self._full_jitter = full_jitter
         self._jitter = jitter
         self._clock = clock
         self._rand = rand if rand is not None else random.Random()
@@ -171,7 +205,9 @@ class RetryPolicy(Policy):
         settings = self._configure_settings(ctx.options)
         absolute_deadline = self._clock.monotonic() + settings["timeout"]
         history: list[RequestHistory[Response]] = settings["history"]
+        tracer = resolve_http_tracer(ctx)
         while True:
+            tracer.attempt_started(len(history))
             try:
                 response = self.next.send(request, ctx)
                 if not self._is_retry(settings, request, response):
@@ -179,20 +215,26 @@ class RetryPolicy(Policy):
                     return response
                 history.append(RequestHistory(request=request, response=response))
                 if not self._decrement_status(settings):
+                    tracer.attempt_retries_exhausted()
                     ctx.data["retry_history"] = tuple(history)
                     return response
                 ctx.data["retry_count"] = len(history)
-                self._sleep_for(settings, response, absolute_deadline)
+                delay = self._delay_for(settings, response)
+                tracer.attempt_failed(_StatusRetryError(int(response.status)), delay)
+                self._sleep_bounded(delay, absolute_deadline)
                 continue
             except ClientAuthenticationError:
                 raise
             except SdkError as err:
                 history.append(RequestHistory(request=request, error=err))
                 if not self._decrement_for_error(settings, err):
+                    tracer.attempt_retries_exhausted()
                     ctx.data["retry_history"] = tuple(history)
                     raise
                 ctx.data["retry_count"] = len(history)
-                self._sleep_for(settings, None, absolute_deadline)
+                delay = self._delay_for(settings, None)
+                tracer.attempt_failed(err, delay)
+                self._sleep_bounded(delay, absolute_deadline)
                 _LOGGER.debug("retrying after %s: %s", type(err).__name__, err)
                 continue
 
@@ -277,19 +319,57 @@ class RetryPolicy(Policy):
 
     # ----- backoff / sleep ------------------------------------------------
 
-    def _sleep_for(
+    def _delay_for(
         self,
         settings: dict[str, Any],
         response: _ResponseLike | None,
-        absolute_deadline: float,
-    ) -> None:
-        """Sleep before the next attempt, respecting the absolute deadline."""
+    ) -> float:
+        """Compute the delay before the next attempt, in seconds.
+
+        Prefers a server-supplied signal (``Retry-After`` or
+        ``X-RateLimit-Reset``) when ``respect_retry_after`` is set and the
+        response carries one — capped at ``retry_after_max``. Otherwise falls
+        back to the jittered computed backoff.
+
+        Args:
+            settings: Mutable per-call settings dict.
+            response: The response that triggered the retry, or ``None`` for a
+                network-side error (which carries no server timing header).
+
+        Returns:
+            Non-negative seconds to wait.
+        """
         if response is not None and self.respect_retry_after:
-            retry_after = _parse_retry_after(response.headers.get("Retry-After"))
-            if retry_after is not None:
-                self._sleep_bounded(retry_after, absolute_deadline)
-                return
-        self._sleep_bounded(self._backoff_seconds(settings), absolute_deadline)
+            server_delay = self._server_delay(response)
+            if server_delay is not None:
+                return server_delay
+        return self._backoff_seconds(settings)
+
+    def _server_delay(self, response: _ResponseLike) -> float | None:
+        """Resolve a server-supplied retry delay, capped and jittered.
+
+        ``Retry-After`` (seconds or HTTP-date) takes precedence; an
+        ``X-RateLimit-Reset`` epoch is the fallback and gets a slight *upward*
+        jitter. The jitter only ever lengthens the wait — retrying before the
+        window actually resets just earns another rate-limit response — while
+        the small positive spread keeps a fleet of clients that observed the
+        same reset instant from retrying in lockstep. Both are capped at
+        ``retry_after_max``.
+
+        Returns:
+            Seconds to wait, or ``None`` when neither header is present.
+        """
+        retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+        if retry_after is not None:
+            return min(retry_after, self.retry_after_max)
+        reset = _parse_rate_limit_reset(
+            response.headers.get(_RATE_LIMIT_RESET_HEADER),
+            self._clock.now(),
+        )
+        if reset is None:
+            return None
+        jittered = reset * self._rand.uniform(1.0, 1.0 + _RATE_LIMIT_RESET_JITTER)
+        return min(jittered, self.retry_after_max)
 
     def _backoff_seconds(self, settings: dict[str, Any]) -> float:
         attempts = len(settings["history"])
@@ -300,6 +380,8 @@ class RetryPolicy(Policy):
         else:
             backoff = float(settings["backoff"]) * (2 ** (attempts - 1))
         bounded = min(float(settings["max_backoff"]), backoff)
+        if self._full_jitter:
+            return bounded * self._rand.uniform(0.5, 1.0)
         if self._jitter == 0:
             return bounded
         return bounded * self._rand.uniform(1 - self._jitter, 1 + self._jitter)
@@ -336,6 +418,20 @@ class RetryPolicy(Policy):
             raise ServiceResponseTimeoutError("Retry budget exhausted (timeout reached)")
 
 
+class _StatusRetryError(Exception):
+    """Marker error passed to ``HttpTracer.attempt_failed`` for status retries.
+
+    A retryable HTTP status response is not itself an exception, but the
+    tracer's ``attempt_failed`` callback wants a ``BaseException`` describing
+    why the attempt failed. This lightweight wrapper carries the status code so
+    consumers can distinguish a status-driven retry from a transport error.
+    """
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"retryable HTTP status {status}")
+        self.status = status
+
+
 _RETRY_AFTER_DELTA_PATTERN = re.compile(r"^\s*\d+(\.\d+)?\s*$")
 
 
@@ -361,6 +457,34 @@ def _parse_retry_after(value: str | None) -> float | None:
         return None
     delta = when.timestamp() - time.time()
     return max(0.0, delta)
+
+
+_RATE_LIMIT_RESET_PATTERN = re.compile(r"^\s*\d+(\.\d+)?\s*$")
+
+
+def _parse_rate_limit_reset(value: str | None, now: float) -> float | None:
+    """Parse an ``X-RateLimit-Reset`` epoch header into a delay.
+
+    The header carries the wall-clock second at which the rate-limit window
+    resets (GitHub, Stripe, Slack). The delay is the difference between that
+    instant and ``now``, floored at zero (a reset already in the past means
+    retry immediately).
+
+    Args:
+        value: Raw header value (epoch seconds). ``None`` or unparseable
+            returns ``None``.
+        now: Current wall-clock time, in seconds since the epoch, used to
+            compute the delta. Injected so the value is deterministic in tests.
+
+    Returns:
+        Seconds to wait (>= 0), or ``None`` when the header is missing or not a
+        plain epoch number.
+    """
+    if value is None or not value.strip():
+        return None
+    if not _RATE_LIMIT_RESET_PATTERN.match(value):
+        return None
+    return max(0.0, float(value) - now)
 
 
 def _has_budget(settings: dict[str, Any]) -> bool:

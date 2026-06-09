@@ -25,7 +25,7 @@ Status-code matrix:
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal, cast
 from urllib.parse import urljoin
 
 from ...http.common.url import Url
@@ -36,11 +36,40 @@ from ..stage import Stage
 if TYPE_CHECKING:
     from ...http.request.request import Request
     from ...http.response.response import Response
+    from ...instrumentation import HttpTracer
     from ..context import PipelineContext
 
 
 _REDIRECT_STATUSES: frozenset[int] = frozenset({301, 302, 303, 307, 308})
 _CONTENT_HEADER_PREFIX: str = "content-"
+
+#: ``ctx.data`` key holding the per-operation ``HttpTracer``. The first policy
+#: in the chain to need it mints one from the call's
+#: ``instrumentation_context.http_tracer_factory`` and stores it here so every
+#: other policy (tracing, retry, redirect) emits onto the same instance.
+HTTP_TRACER_KEY: str = "http_tracer"
+
+
+def resolve_http_tracer(ctx: PipelineContext) -> HttpTracer:
+    """Return the per-operation ``HttpTracer``, minting one on first use.
+
+    The tracer is cached in ``ctx.data[HTTP_TRACER_KEY]`` so every policy in
+    the chain shares a single instance for the operation. Defaults to the
+    no-op tracer when the call carries the no-op factory, so callers that do
+    not instrument pay nothing.
+
+    Args:
+        ctx: The pipeline context for the in-flight operation.
+
+    Returns:
+        The shared ``HttpTracer`` for this operation.
+    """
+    existing = ctx.data.get(HTTP_TRACER_KEY)
+    if existing is not None:
+        return cast("HttpTracer", existing)
+    tracer = ctx.call.instrumentation_context.http_tracer_factory.create()
+    ctx.data[HTTP_TRACER_KEY] = tracer
+    return tracer
 
 
 class RedirectPolicy(Policy):
@@ -98,6 +127,8 @@ class RedirectPolicy(Policy):
     # ----- main loop ------------------------------------------------------
 
     def send(self, request: Request, ctx: PipelineContext) -> Response:
+        tracer = resolve_http_tracer(ctx)
+        tracer.request_url_resolved(str(request.url))
         visited: dict[str, None] = {str(request.url): None}
         hops = 0
         current_request = request
@@ -118,6 +149,7 @@ class RedirectPolicy(Policy):
             if next_key in visited:
                 return response
             visited[next_key] = None
+            tracer.request_url_resolved(next_key)
             # Close the intermediate response — we are not handing it back to
             # the caller. The terminal response is closed by the caller via
             # the ``with`` block.
@@ -204,4 +236,4 @@ class RedirectPolicy(Policy):
         return reissued
 
 
-__all__ = ["RedirectPolicy"]
+__all__ = ["HTTP_TRACER_KEY", "RedirectPolicy", "resolve_http_tracer"]

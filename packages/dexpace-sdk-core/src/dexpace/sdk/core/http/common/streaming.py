@@ -13,7 +13,7 @@ import json
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
 from typing import Any
 
-from ...errors import DeserializationError
+from ...errors.serialization import DeserializationError
 
 
 def iter_jsonl(chunks: Iterable[bytes]) -> Iterator[Any]:

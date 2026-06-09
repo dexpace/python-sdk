@@ -8,9 +8,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .async_staged_builder import AsyncStagedPipelineBuilder
+from .policies.async_client_identity import AsyncClientIdentityPolicy
+from .policies.async_idempotency import AsyncIdempotencyPolicy
 from .policies.async_redirect import AsyncRedirectPolicy
 from .policies.async_retry import AsyncRetryPolicy
 from .policies.async_set_date import AsyncSetDatePolicy
+from .policies.client_identity import ClientIdentityPolicy
+from .policies.idempotency import IdempotencyPolicy
 from .policies.logging_policy import LoggingPolicy
 from .policies.redirect import RedirectPolicy
 from .policies.retry import RetryPolicy
@@ -29,8 +33,10 @@ def default_pipeline(
     client: HttpClient,
     *,
     redirect: RedirectPolicy | None = None,
+    idempotency: IdempotencyPolicy | None = None,
     retry: RetryPolicy | None = None,
     set_date: SetDatePolicy | None = None,
+    client_identity: ClientIdentityPolicy | None = None,
     auth: Policy | None = None,
     logging: LoggingPolicy | None = None,
     tracing: TracingPolicy | None = None,
@@ -38,15 +44,24 @@ def default_pipeline(
     """Pre-configured :class:`StagedPipelineBuilder` with the canonical stack.
 
     Wires the policies that most consumers want by default in the order their
-    stages dictate: redirect → retry → set-date → auth → logging → tracing.
-    Each policy is opt-out (pass ``None``) or opt-in-with-override (pass a
-    pre-configured instance to replace the default).
+    stages dictate: redirect → idempotency → retry → set-date →
+    client-identity → auth → logging → tracing. Each policy is opt-out (pass
+    ``None``) or opt-in-with-override (pass a pre-configured instance to
+    replace the default).
+
+    Idempotency sits before retry so a write request's ``Idempotency-Key`` is
+    minted once and reused across every retry; ``set-date`` and
+    ``client-identity`` sit just inside the retry wrapper.
 
     Args:
         client: Terminal HTTP transport.
         redirect: Override for :class:`RedirectPolicy`. ``None`` uses defaults.
+        idempotency: Override for :class:`IdempotencyPolicy`. ``None`` uses
+            defaults.
         retry: Override for :class:`RetryPolicy`. ``None`` uses defaults.
         set_date: Override for :class:`SetDatePolicy`. ``None`` uses defaults.
+        client_identity: Override for :class:`ClientIdentityPolicy`. ``None``
+            uses defaults.
         auth: Optional authentication policy (``BearerTokenPolicy``,
             ``BasicAuthPolicy``, ``KeyCredentialPolicy``, etc.). No default —
             requests pass without authentication when this is ``None``.
@@ -59,8 +74,10 @@ def default_pipeline(
     """
     builder = StagedPipelineBuilder(client)
     builder.append(redirect or RedirectPolicy())
+    builder.append(idempotency or IdempotencyPolicy())
     builder.append(retry or RetryPolicy())
     builder.append(set_date or SetDatePolicy())
+    builder.append(client_identity or ClientIdentityPolicy())
     if auth is not None:
         builder.append(auth)
     builder.append(logging or LoggingPolicy())
@@ -72,8 +89,10 @@ def default_async_pipeline(
     client: AsyncHttpClient,
     *,
     redirect: AsyncRedirectPolicy | None = None,
+    idempotency: AsyncIdempotencyPolicy | None = None,
     retry: AsyncRetryPolicy | None = None,
     set_date: AsyncSetDatePolicy | None = None,
+    client_identity: AsyncClientIdentityPolicy | None = None,
     auth: AsyncPolicy | None = None,
 ) -> AsyncStagedPipelineBuilder:
     """Async twin of :func:`default_pipeline`.
@@ -84,8 +103,10 @@ def default_async_pipeline(
     """
     builder = AsyncStagedPipelineBuilder(client)
     builder.append(redirect or AsyncRedirectPolicy())
+    builder.append(idempotency or AsyncIdempotencyPolicy())
     builder.append(retry or AsyncRetryPolicy())
     builder.append(set_date or AsyncSetDatePolicy())
+    builder.append(client_identity or AsyncClientIdentityPolicy())
     if auth is not None:
         builder.append(auth)
     return builder

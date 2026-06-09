@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Final
 
+from .http_tracer import HttpTracer, HttpTracerFactory
 from .identifiers import SpanId, TraceFlags, TraceId, TraceIdType, TraceState
 from .instrumentation_context import InstrumentationContext
 from .span import Span
@@ -23,6 +24,26 @@ class _NoopScope(TracingScope):
 
 
 _NOOP_SCOPE = _NoopScope()
+
+
+class _NoopHttpTracer(HttpTracer):
+    """No-op :class:`HttpTracer` — every event callback inherits the do-nothing
+    default. Use the shared :data:`NOOP_HTTP_TRACER` singleton."""
+
+
+#: Shared no-op :class:`HttpTracer` singleton. Use when tracing is disabled.
+NOOP_HTTP_TRACER: Final[HttpTracer] = _NoopHttpTracer()
+
+
+class _NoopHttpTracerFactory:
+    """No-op tracer factory — every :meth:`create` returns :data:`NOOP_HTTP_TRACER`."""
+
+    def create(self) -> HttpTracer:
+        return NOOP_HTTP_TRACER
+
+
+#: Shared no-op ``HttpTracerFactory`` singleton.
+NOOP_HTTP_TRACER_FACTORY: Final[HttpTracerFactory] = _NoopHttpTracerFactory()
 
 
 class _NoopSpan(Span):
@@ -66,6 +87,7 @@ NOOP_INSTRUMENTATION_CONTEXT: Final[InstrumentationContext] = InstrumentationCon
     trace_flags=TraceFlags.NOOP,
     trace_state=TraceState.NOOP,
     is_remote=False,
+    http_tracer_factory=NOOP_HTTP_TRACER_FACTORY,
 )
 
 
@@ -84,4 +106,10 @@ class _NoopTracer(Tracer):
 NOOP_TRACER: Final[Tracer] = _NoopTracer()
 
 
-__all__ = ["NOOP_INSTRUMENTATION_CONTEXT", "NOOP_SPAN", "NOOP_TRACER"]
+__all__ = [
+    "NOOP_HTTP_TRACER",
+    "NOOP_HTTP_TRACER_FACTORY",
+    "NOOP_INSTRUMENTATION_CONTEXT",
+    "NOOP_SPAN",
+    "NOOP_TRACER",
+]

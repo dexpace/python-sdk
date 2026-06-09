@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 from ...http.request.method import Method
 from ..async_policy import AsyncPolicy
 from ..stage import Stage
-from .redirect import _REDIRECT_STATUSES, RedirectPolicy
+from .redirect import _REDIRECT_STATUSES, RedirectPolicy, resolve_http_tracer
 
 if TYPE_CHECKING:
     from ...http.request.request import Request
@@ -60,6 +60,8 @@ class AsyncRedirectPolicy(AsyncPolicy):
 
     async def send(self, request: Request, ctx: PipelineContext) -> AsyncResponse:
         cfg = self.config
+        tracer = resolve_http_tracer(ctx)
+        tracer.request_url_resolved(str(request.url))
         visited: dict[str, None] = {str(request.url): None}
         hops = 0
         current_request = request
@@ -80,6 +82,7 @@ class AsyncRedirectPolicy(AsyncPolicy):
             if next_key in visited:
                 return response
             visited[next_key] = None
+            tracer.request_url_resolved(next_key)
             await response.close()
             current_request = next_request
             hops += 1

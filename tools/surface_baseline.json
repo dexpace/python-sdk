@@ -1,0 +1,1727 @@
+{
+  "dexpace-sdk-core": {
+    "definitions": {
+      "dexpace.sdk.core.client.async_http_client": {
+        "AsyncHttpClient": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "execute": "async execute(self, request: Request) -> AsyncResponse"
+          }
+        },
+        "asyncio_sleep": "async asyncio_sleep(duration: float) -> None"
+      },
+      "dexpace.sdk.core.client.http_client": {
+        "HttpClient": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "execute": "execute(self, request: Request) -> Response"
+          }
+        }
+      },
+      "dexpace.sdk.core.config.configuration": {
+        "Configuration": {
+          "bases": [],
+          "methods": {
+            "builder": "builder(cls) -> ConfigurationBuilder",
+            "get": "get(self, name: str, default: str | None) -> str | None",
+            "get_bool": "get_bool(self, name: str, default: bool) -> bool",
+            "get_duration": "get_duration(self, name: str, default_seconds: float) -> float",
+            "get_int": "get_int(self, name: str, default: int) -> int"
+          }
+        },
+        "ConfigurationBuilder": {
+          "bases": [],
+          "methods": {
+            "build": "build(self) -> Configuration",
+            "env": "env(self, source: EnvSource) -> Self",
+            "put": "put(self, name: str, value: str) -> Self"
+          }
+        }
+      },
+      "dexpace.sdk.core.errors.base": {
+        "SdkError": {
+          "bases": [
+            "Exception"
+          ],
+          "methods": {}
+        },
+        "ServiceRequestError": {
+          "bases": [
+            "SdkError"
+          ],
+          "methods": {}
+        },
+        "ServiceRequestTimeoutError": {
+          "bases": [
+            "ServiceRequestError"
+          ],
+          "methods": {}
+        },
+        "ServiceResponseError": {
+          "bases": [
+            "SdkError"
+          ],
+          "methods": {}
+        },
+        "ServiceResponseTimeoutError": {
+          "bases": [
+            "ServiceResponseError"
+          ],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.errors.error_map": {
+        "map_error": "map_error(status_code: int, response: Response, error_map: Mapping[int, type[HttpResponseError]] | None) -> None"
+      },
+      "dexpace.sdk.core.errors.http": {
+        "ClientAuthenticationError": {
+          "bases": [
+            "HttpResponseError[ModelT]"
+          ],
+          "methods": {}
+        },
+        "DecodeError": {
+          "bases": [
+            "HttpResponseError[ModelT]"
+          ],
+          "methods": {}
+        },
+        "HttpResponseError": {
+          "bases": [
+            "Generic[ModelT]",
+            "SdkError"
+          ],
+          "methods": {
+            "body_snapshot": "body_snapshot(self, max_bytes: int | None) -> bytes"
+          }
+        },
+        "ResourceExistsError": {
+          "bases": [
+            "HttpResponseError[ModelT]"
+          ],
+          "methods": {}
+        },
+        "ResourceModifiedError": {
+          "bases": [
+            "HttpResponseError[ModelT]"
+          ],
+          "methods": {}
+        },
+        "ResourceNotFoundError": {
+          "bases": [
+            "HttpResponseError[ModelT]"
+          ],
+          "methods": {}
+        },
+        "ResourceNotModifiedError": {
+          "bases": [
+            "HttpResponseError[ModelT]"
+          ],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.errors.pipeline": {
+        "PipelineAbortedError": {
+          "bases": [
+            "SdkError"
+          ],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.errors.serialization": {
+        "DeserializationError": {
+          "bases": [
+            "SdkError",
+            "ValueError"
+          ],
+          "methods": {}
+        },
+        "SerializationError": {
+          "bases": [
+            "SdkError",
+            "ValueError"
+          ],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.errors.streaming": {
+        "ResponseNotReadError": {
+          "bases": [
+            "SdkError"
+          ],
+          "methods": {}
+        },
+        "StreamClosedError": {
+          "bases": [
+            "SdkError"
+          ],
+          "methods": {}
+        },
+        "StreamConsumedError": {
+          "bases": [
+            "SdkError"
+          ],
+          "methods": {}
+        },
+        "StreamingError": {
+          "bases": [
+            "SdkError"
+          ],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.http.auth.access_token": {
+        "AccessTokenInfo": {
+          "bases": [],
+          "methods": {
+            "is_expired": "is_expired(self, *, now: float | None) -> bool",
+            "needs_refresh": "needs_refresh(self, *, now: float | None, leeway_seconds: int, clock: Clock | AsyncClock | None) -> bool"
+          }
+        },
+        "TokenRequestOptions": {
+          "bases": [
+            "TypedDict"
+          ],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.http.auth.challenge": {
+        "AuthenticateChallenge": {
+          "bases": [],
+          "methods": {}
+        },
+        "parse_challenges": "parse_challenges(header_value: str) -> list[AuthenticateChallenge]"
+      },
+      "dexpace.sdk.core.http.auth.challenge_handler": {
+        "BasicChallengeHandler": {
+          "bases": [],
+          "methods": {
+            "can_handle": "can_handle(self, challenges: list[AuthenticateChallenge]) -> bool",
+            "handle": "handle(self, method: Method, url: Url, challenges: list[AuthenticateChallenge], *, is_proxy: bool) -> tuple[str, str] | None"
+          }
+        },
+        "ChallengeHandler": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "can_handle": "can_handle(self, challenges: list[AuthenticateChallenge]) -> bool",
+            "handle": "handle(self, method: Method, url: Url, challenges: list[AuthenticateChallenge], *, is_proxy: bool) -> tuple[str, str] | None"
+          }
+        },
+        "CompositeChallengeHandler": {
+          "bases": [],
+          "methods": {
+            "can_handle": "can_handle(self, challenges: list[AuthenticateChallenge]) -> bool",
+            "handle": "handle(self, method: Method, url: Url, challenges: list[AuthenticateChallenge], *, is_proxy: bool) -> tuple[str, str] | None"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.auth.credentials": {
+        "AsyncTokenCredential": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "close": "async close(self) -> None",
+            "get_token_info": "async get_token_info(self, *scopes: str, options: TokenRequestOptions | None) -> AccessTokenInfo"
+          }
+        },
+        "BasicAuthCredential": {
+          "bases": [],
+          "methods": {
+            "encoded": "encoded(self) -> str"
+          }
+        },
+        "KeyCredential": {
+          "bases": [],
+          "methods": {
+            "key": "key(self) -> str",
+            "update": "update(self, key: str) -> None"
+          }
+        },
+        "NamedKeyCredential": {
+          "bases": [],
+          "methods": {
+            "key": "key(self) -> str",
+            "name": "name(self) -> str",
+            "update": "update(self, name: str, key: str) -> None"
+          }
+        },
+        "TokenCredential": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "close": "close(self) -> None",
+            "get_token_info": "get_token_info(self, *scopes: str, options: TokenRequestOptions | None) -> AccessTokenInfo"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.auth.digest": {
+        "DigestChallengeHandler": {
+          "bases": [],
+          "methods": {
+            "can_handle": "can_handle(self, challenges: list[AuthenticateChallenge]) -> bool",
+            "handle": "handle(self, method: Method, url: Url, challenges: list[AuthenticateChallenge], *, is_proxy: bool) -> tuple[str, str] | None"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.auth.policies": {
+        "AsyncBearerTokenPolicy": {
+          "bases": [
+            "AsyncPolicy"
+          ],
+          "methods": {
+            "on_challenge": "async on_challenge(self, request: Request, response: AsyncResponse) -> bool",
+            "send": "async send(self, request: Request, ctx: PipelineContext) -> AsyncResponse"
+          }
+        },
+        "BasicAuthPolicy": {
+          "bases": [
+            "Policy"
+          ],
+          "methods": {
+            "send": "send(self, request: Request, ctx: PipelineContext) -> Response"
+          }
+        },
+        "BearerTokenPolicy": {
+          "bases": [
+            "Policy"
+          ],
+          "methods": {
+            "on_challenge": "on_challenge(self, request: Request, response: Response) -> bool",
+            "send": "send(self, request: Request, ctx: PipelineContext) -> Response"
+          }
+        },
+        "KeyCredentialPolicy": {
+          "bases": [
+            "Policy"
+          ],
+          "methods": {
+            "send": "send(self, request: Request, ctx: PipelineContext) -> Response"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.auth.token_cache": {
+        "InMemoryTokenCache": {
+          "bases": [],
+          "methods": {
+            "clear": "clear(self) -> None",
+            "get": "get(self, scopes: Sequence[str], audience: str | None) -> AccessTokenInfo | None",
+            "set": "set(self, scopes: Sequence[str], token: AccessTokenInfo, audience: str | None) -> None"
+          }
+        },
+        "TokenCache": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "clear": "clear(self) -> None",
+            "get": "get(self, scopes: Sequence[str], audience: str | None) -> AccessTokenInfo | None",
+            "set": "set(self, scopes: Sequence[str], token: AccessTokenInfo, audience: str | None) -> None"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.common.etag": {
+        "ETag": {
+          "bases": [],
+          "methods": {
+            "matches_strong": "matches_strong(self, other: ETag) -> bool",
+            "matches_weak": "matches_weak(self, other: ETag) -> bool",
+            "parse": "parse(cls, raw: str) -> Self"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.common.headers": {
+        "Headers": {
+          "bases": [],
+          "methods": {
+            "empty": "empty(cls) -> Headers",
+            "get": "get(self, name: _Name, default: str | None) -> str | None",
+            "items": "items(self) -> tuple[tuple[str, tuple[str, ...]], ...]",
+            "names": "names(self) -> tuple[str, ...]",
+            "values": "values(self, name: _Name) -> tuple[str, ...]",
+            "with_added": "with_added(self, name: _Name, value: str) -> Self",
+            "with_merged": "with_merged(self, other: Headers) -> Self",
+            "with_set": "with_set(self, name: _Name, *values: str) -> Self",
+            "without": "without(self, name: _Name) -> Self"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.common.http_header_name": {
+        "HttpHeaderName": {
+          "bases": [],
+          "methods": {
+            "of": "of(cls, canonical_name: str) -> Self"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.common.http_range": {
+        "HttpRange": {
+          "bases": [],
+          "methods": {
+            "end": "end(self) -> int | None",
+            "format": "format(self) -> str",
+            "format_many": "format_many(cls, ranges: Sequence[HttpRange]) -> str",
+            "suffix": "suffix(cls, count: int) -> _SuffixHttpRange",
+            "to_header_value": "to_header_value(self) -> str"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.common.media_type": {
+        "MediaType": {
+          "bases": [],
+          "methods": {
+            "charset": "charset(self) -> str | None",
+            "full_type": "full_type(self) -> str",
+            "includes": "includes(self, other: MediaType) -> bool",
+            "of": "of(cls, type: str, subtype: str, parameters: Mapping[str, str] | None) -> Self",
+            "parse": "parse(cls, value: str) -> Self"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.common.pagination": {
+        "AsyncItemPaged": {
+          "bases": [
+            "AsyncIterator[T]"
+          ],
+          "methods": {
+            "by_page": "by_page(self, continuation_token: str | None) -> AsyncIterator[AsyncIterator[T]]"
+          }
+        },
+        "AsyncPager": {
+          "bases": [
+            "AsyncIterator[AsyncIterator[T]]"
+          ],
+          "methods": {}
+        },
+        "ItemPaged": {
+          "bases": [
+            "Iterator[T]"
+          ],
+          "methods": {
+            "by_page": "by_page(self, continuation_token: str | None) -> Iterator[Iterator[T]]"
+          }
+        },
+        "Pager": {
+          "bases": [
+            "Iterator[Iterator[T]]"
+          ],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.http.common.protocol": {
+        "Protocol": {
+          "bases": [
+            "StrEnum"
+          ],
+          "methods": {
+            "parse": "parse(cls, value: str) -> Self"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.common.request_conditions": {
+        "RequestConditions": {
+          "bases": [],
+          "methods": {
+            "apply_to": "apply_to(self, request: Request) -> Request"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.common.streaming": {
+        "aiter_chunked_frame": "async aiter_chunked_frame(chunks: AsyncIterable[bytes]) -> AsyncIterator[bytes]",
+        "aiter_jsonl": "async aiter_jsonl(chunks: AsyncIterable[bytes]) -> AsyncIterator[Any]",
+        "chunked_frame": "chunked_frame(chunks: Iterable[bytes]) -> Iterator[bytes]",
+        "iter_jsonl": "iter_jsonl(chunks: Iterable[bytes]) -> Iterator[Any]"
+      },
+      "dexpace.sdk.core.http.common.url": {
+        "QueryParams": {
+          "bases": [],
+          "methods": {
+            "empty": "empty(cls) -> QueryParams",
+            "encode": "encode(self) -> str",
+            "flatten": "flatten(self) -> tuple[tuple[str, str], ...]",
+            "get": "get(self, name: str, default: str | None) -> str | None",
+            "items": "items(self) -> tuple[tuple[str, tuple[str, ...]], ...]",
+            "parse": "parse(cls, raw: str) -> Self",
+            "values": "values(self, name: str) -> tuple[str, ...]",
+            "with_added": "with_added(self, name: str, value: str) -> Self",
+            "with_set": "with_set(self, name: str, *values: str) -> Self",
+            "without": "without(self, name: str) -> Self"
+          }
+        },
+        "Url": {
+          "bases": [],
+          "methods": {
+            "authority": "authority(self, *, with_userinfo: bool) -> str",
+            "parse": "parse(cls, raw: str) -> Self",
+            "wire_form": "wire_form(self) -> str",
+            "with_fragment": "with_fragment(self, fragment: str) -> Self",
+            "with_path": "with_path(self, path: str) -> Self",
+            "with_query": "with_query(self, query: QueryParams) -> Self"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.context.call_context": {
+        "CallContext": {
+          "bases": [],
+          "methods": {
+            "close": "close(self) -> None"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.context.dispatch_context": {
+        "DispatchContext": {
+          "bases": [
+            "CallContext"
+          ],
+          "methods": {
+            "noop": "noop(cls) -> Self",
+            "to_request_context": "to_request_context(self, request: Request) -> RequestContext"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.context.exchange_context": {
+        "ExchangeContext": {
+          "bases": [
+            "CallContext"
+          ],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.http.context.request_context": {
+        "RequestContext": {
+          "bases": [
+            "CallContext"
+          ],
+          "methods": {
+            "to_exchange_context": "to_exchange_context(self, response: Response | AsyncResponse) -> ExchangeContext"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.request.async_request_body": {
+        "AsyncRequestBody": {
+          "bases": [
+            "ABC"
+          ],
+          "methods": {
+            "aiter_bytes": "aiter_bytes(self, chunk_size: int) -> AsyncIterator[bytes]",
+            "content_length": "content_length(self) -> int",
+            "from_async_iter": "from_async_iter(cls, chunks: AsyncIterable[bytes], media_type: MediaType | None, content_length: int) -> AsyncRequestBody",
+            "from_async_stream": "from_async_stream(cls, stream: SupportsAsyncRead, media_type: MediaType | None, content_length: int) -> AsyncRequestBody",
+            "from_bytes": "from_bytes(cls, data: bytes, media_type: MediaType | None) -> AsyncRequestBody",
+            "from_form": "from_form(cls, fields: Mapping[str, str], encoding: str) -> AsyncRequestBody",
+            "from_string": "from_string(cls, content: str, media_type: MediaType | None, encoding: str) -> AsyncRequestBody",
+            "is_replayable": "is_replayable(self) -> bool",
+            "media_type": "media_type(self) -> MediaType | None",
+            "to_replayable": "async to_replayable(self) -> AsyncRequestBody",
+            "write_to": "async write_to(self, stream: SupportsAsyncWrite, chunk_size: int) -> int"
+          }
+        },
+        "SupportsAsyncRead": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "close": "async close(self) -> object",
+            "read": "async read(self, size: int) -> bytes"
+          }
+        },
+        "SupportsAsyncWrite": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "write": "async write(self, data: bytes) -> object"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.request.file_request_body": {
+        "FileRequestBody": {
+          "bases": [
+            "RequestBody"
+          ],
+          "methods": {
+            "content_length": "content_length(self) -> int",
+            "count": "count(self) -> int",
+            "is_replayable": "is_replayable(self) -> bool",
+            "iter_bytes": "iter_bytes(self, chunk_size: int) -> Iterator[bytes]",
+            "media_type": "media_type(self) -> MediaType | None",
+            "offset": "offset(self) -> int",
+            "path": "path(self) -> Path",
+            "to_replayable": "to_replayable(self) -> RequestBody"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.request.loggable_request_body": {
+        "LoggableRequestBody": {
+          "bases": [
+            "RequestBody"
+          ],
+          "methods": {
+            "captured_size": "captured_size(self) -> int",
+            "content_length": "content_length(self) -> int",
+            "inner": "inner(self) -> RequestBody",
+            "is_replayable": "is_replayable(self) -> bool",
+            "iter_bytes": "iter_bytes(self, chunk_size: int) -> Iterator[bytes]",
+            "media_type": "media_type(self) -> MediaType | None",
+            "snapshot": "snapshot(self, max_bytes: int | None) -> bytes",
+            "to_replayable": "to_replayable(self) -> RequestBody"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.request.method": {
+        "Method": {
+          "bases": [
+            "StrEnum"
+          ],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.http.request.multipart": {
+        "MultipartField": {
+          "bases": [],
+          "methods": {
+            "with_utf8_filename": "with_utf8_filename(cls, *, name: str, value: bytes | str, filename: str, media_type: MediaType | None, headers: Sequence[tuple[str, str]], ascii_fallback: str) -> Self"
+          }
+        },
+        "MultipartRequestBody": {
+          "bases": [
+            "RequestBody"
+          ],
+          "methods": {
+            "boundary": "boundary(self) -> str",
+            "content_length": "content_length(self) -> int",
+            "is_replayable": "is_replayable(self) -> bool",
+            "iter_bytes": "iter_bytes(self, chunk_size: int) -> Iterator[bytes]",
+            "media_type": "media_type(self) -> MediaType | None",
+            "to_replayable": "to_replayable(self) -> RequestBody"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.request.request": {
+        "Request": {
+          "bases": [],
+          "methods": {
+            "with_added_header": "with_added_header(self, name: _Name, value: str) -> Self",
+            "with_body": "with_body(self, body: RequestBody | None) -> Self",
+            "with_header": "with_header(self, name: _Name, value: str) -> Self",
+            "with_headers": "with_headers(self, headers: Headers) -> Self",
+            "with_method": "with_method(self, method: Method) -> Self",
+            "with_url": "with_url(self, url: str | Url) -> Self",
+            "without_header": "without_header(self, name: _Name) -> Self"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.request.request_body": {
+        "RequestBody": {
+          "bases": [
+            "ABC"
+          ],
+          "methods": {
+            "content_length": "content_length(self) -> int",
+            "from_bytes": "from_bytes(cls, data: bytes, media_type: MediaType | None) -> RequestBody",
+            "from_file": "from_file(cls, path: Path, media_type: MediaType | None, offset: int, count: int) -> RequestBody",
+            "from_form": "from_form(cls, fields: Mapping[str, str], encoding: str) -> RequestBody",
+            "from_iter": "from_iter(cls, chunks: Iterable[bytes], media_type: MediaType | None, content_length: int) -> RequestBody",
+            "from_multipart": "from_multipart(cls, fields: Sequence[MultipartField], *, boundary: str | None) -> RequestBody",
+            "from_stream": "from_stream(cls, stream: BinaryIO, media_type: MediaType | None, content_length: int) -> RequestBody",
+            "from_string": "from_string(cls, content: str, media_type: MediaType | None, encoding: str) -> RequestBody",
+            "is_replayable": "is_replayable(self) -> bool",
+            "iter_bytes": "iter_bytes(self, chunk_size: int) -> Iterator[bytes]",
+            "media_type": "media_type(self) -> MediaType | None",
+            "to_replayable": "to_replayable(self) -> RequestBody",
+            "write_to": "write_to(self, stream: BinaryIO, chunk_size: int) -> int"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.response.async_response": {
+        "AsyncResponse": {
+          "bases": [],
+          "methods": {
+            "close": "async close(self) -> None",
+            "is_client_error": "is_client_error(self) -> bool",
+            "is_redirect": "is_redirect(self) -> bool",
+            "is_server_error": "is_server_error(self) -> bool",
+            "is_success": "is_success(self) -> bool",
+            "with_body": "with_body(self, body: AsyncResponseBody | None) -> Self",
+            "with_header": "with_header(self, name: _Name, value: str) -> Self",
+            "with_headers": "with_headers(self, headers: Headers) -> Self",
+            "with_status": "with_status(self, status: Status) -> Self"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.response.async_response_body": {
+        "AsyncResponseBody": {
+          "bases": [
+            "ABC"
+          ],
+          "methods": {
+            "aiter_bytes": "aiter_bytes(self, chunk_size: int) -> AsyncIterator[bytes]",
+            "bytes": "async bytes(self) -> _bytes",
+            "close": "async close(self) -> None",
+            "content_length": "content_length(self) -> int",
+            "from_async_stream": "from_async_stream(cls, stream: SupportsAsyncRead, media_type: MediaType | None, content_length: int) -> AsyncResponseBody",
+            "from_bytes": "from_bytes(cls, data: _bytes, media_type: MediaType | None) -> AsyncResponseBody",
+            "media_type": "media_type(self) -> MediaType | None",
+            "string": "async string(self, encoding: str | None) -> str"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.response.loggable_response_body": {
+        "LoggableResponseBody": {
+          "bases": [
+            "ResponseBody"
+          ],
+          "methods": {
+            "captured_size": "captured_size(self) -> int",
+            "close": "close(self) -> None",
+            "content_length": "content_length(self) -> int",
+            "iter_bytes": "iter_bytes(self, chunk_size: int) -> Iterator[bytes]",
+            "media_type": "media_type(self) -> MediaType | None",
+            "snapshot": "snapshot(self, max_bytes: int | None) -> bytes"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.response.response": {
+        "Response": {
+          "bases": [],
+          "methods": {
+            "close": "close(self) -> None",
+            "is_client_error": "is_client_error(self) -> bool",
+            "is_redirect": "is_redirect(self) -> bool",
+            "is_server_error": "is_server_error(self) -> bool",
+            "is_success": "is_success(self) -> bool",
+            "with_body": "with_body(self, body: ResponseBody | None) -> Self",
+            "with_header": "with_header(self, name: _Name, value: str) -> Self",
+            "with_headers": "with_headers(self, headers: Headers) -> Self",
+            "with_status": "with_status(self, status: Status) -> Self"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.response.response_body": {
+        "ResponseBody": {
+          "bases": [
+            "ABC"
+          ],
+          "methods": {
+            "bytes": "bytes(self) -> _bytes",
+            "close": "close(self) -> None",
+            "content_length": "content_length(self) -> int",
+            "from_bytes": "from_bytes(cls, data: _bytes, media_type: MediaType | None) -> ResponseBody",
+            "from_stream": "from_stream(cls, stream: BinaryIO, media_type: MediaType | None, content_length: int) -> ResponseBody",
+            "iter_bytes": "iter_bytes(self, chunk_size: int) -> Iterator[bytes]",
+            "media_type": "media_type(self) -> MediaType | None",
+            "string": "string(self, encoding: str | None) -> str"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.response.status": {
+        "Status": {
+          "bases": [
+            "IntEnum"
+          ],
+          "methods": {
+            "is_client_error": "is_client_error(self) -> bool",
+            "is_error": "is_error(self) -> bool",
+            "is_informational": "is_informational(self) -> bool",
+            "is_redirect": "is_redirect(self) -> bool",
+            "is_server_error": "is_server_error(self) -> bool",
+            "is_success": "is_success(self) -> bool"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.sse.parser": {
+        "AsyncSseStream": {
+          "bases": [],
+          "methods": {
+            "aclose": "async aclose(self) -> None"
+          }
+        },
+        "SseEvent": {
+          "bases": [],
+          "methods": {}
+        },
+        "SseParser": {
+          "bases": [],
+          "methods": {
+            "drain": "drain(self) -> Iterator[SseEvent]",
+            "end": "end(self) -> Iterator[SseEvent]",
+            "feed": "feed(self, chunk: bytes) -> None"
+          }
+        },
+        "parse_async_events": "parse_async_events(chunks: AsyncIterable[bytes]) -> AsyncSseStream",
+        "parse_events": "parse_events(chunks: Iterable[bytes]) -> Iterator[SseEvent]"
+      },
+      "dexpace.sdk.core.http.webhooks.verification": {
+        "InvalidWebhookSignatureError": {
+          "bases": [
+            "ValueError"
+          ],
+          "methods": {}
+        },
+        "WebhookVerifier": {
+          "bases": [],
+          "methods": {
+            "unwrap": "unwrap(self, headers: Mapping[str, str], body: str | bytes) -> object",
+            "verify": "verify(self, headers: Mapping[str, str], body: str | bytes) -> None"
+          }
+        }
+      },
+      "dexpace.sdk.core.instrumentation.client_logger": {
+        "ClientLogger": {
+          "bases": [],
+          "methods": {
+            "error": "error(self, message: str, **fields: Any) -> None",
+            "info": "info(self, message: str, **fields: Any) -> None",
+            "log": "log(self, level: LogLevel, message: str, **fields: Any) -> None",
+            "verbose": "verbose(self, message: str, **fields: Any) -> None",
+            "warning": "warning(self, message: str, **fields: Any) -> None"
+          }
+        },
+        "CorrelationFilter": {
+          "bases": [
+            "logging.Filter"
+          ],
+          "methods": {
+            "filter": "filter(self, record: logging.LogRecord) -> bool"
+          }
+        }
+      },
+      "dexpace.sdk.core.instrumentation.correlation": {
+        "bind_correlation": "bind_correlation(*, trace_id: str | None, span_id: str | None) -> Iterator[None]",
+        "get_span_id": "get_span_id() -> str | None",
+        "get_trace_id": "get_trace_id() -> str | None",
+        "set_span_id": "set_span_id(value: str | None) -> Token[str | None]",
+        "set_trace_id": "set_trace_id(value: str | None) -> Token[str | None]"
+      },
+      "dexpace.sdk.core.instrumentation.http_tracer": {
+        "HttpTracer": {
+          "bases": [
+            "ABC"
+          ],
+          "methods": {
+            "attempt_failed": "attempt_failed(self, error: BaseException, next_delay: float) -> None",
+            "attempt_retries_exhausted": "attempt_retries_exhausted(self) -> None",
+            "attempt_started": "attempt_started(self, attempt: int) -> None",
+            "connection_acquired": "connection_acquired(self, host: str, port: int) -> None",
+            "operation_failed": "operation_failed(self, error: BaseException) -> None",
+            "operation_started": "operation_started(self) -> None",
+            "operation_succeeded": "operation_succeeded(self) -> None",
+            "request_sent": "request_sent(self, byte_count: int) -> None",
+            "request_url_resolved": "request_url_resolved(self, url: str) -> None",
+            "response_headers_received": "response_headers_received(self, status: int, headers: Mapping[str, str]) -> None",
+            "response_received": "response_received(self, byte_count: int) -> None"
+          }
+        },
+        "HttpTracerFactory": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "create": "create(self) -> HttpTracer"
+          }
+        }
+      },
+      "dexpace.sdk.core.instrumentation.identifiers": {
+        "SpanId": {
+          "bases": [],
+          "methods": {}
+        },
+        "TraceFlags": {
+          "bases": [],
+          "methods": {}
+        },
+        "TraceId": {
+          "bases": [],
+          "methods": {}
+        },
+        "TraceIdType": {
+          "bases": [
+            "StrEnum"
+          ],
+          "methods": {}
+        },
+        "TraceState": {
+          "bases": [],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.instrumentation.instrumentation_context": {
+        "InstrumentationContext": {
+          "bases": [],
+          "methods": {
+            "is_valid": "is_valid(self) -> bool"
+          }
+        }
+      },
+      "dexpace.sdk.core.instrumentation.log_level": {
+        "LogLevel": {
+          "bases": [
+            "Enum"
+          ],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.instrumentation.metrics": {
+        "Counter": {
+          "bases": [
+            "ABC"
+          ],
+          "methods": {
+            "add": "add(self, value: float, attributes: Mapping[str, str] | None) -> None"
+          }
+        },
+        "Histogram": {
+          "bases": [
+            "ABC"
+          ],
+          "methods": {
+            "record": "record(self, value: float, attributes: Mapping[str, str] | None) -> None"
+          }
+        },
+        "MetricsContext": {
+          "bases": [
+            "ABC"
+          ],
+          "methods": {
+            "counter": "counter(self, name: str, *, unit: str | None, description: str | None) -> Counter",
+            "histogram": "histogram(self, name: str, *, unit: str | None, description: str | None) -> Histogram",
+            "up_down_counter": "up_down_counter(self, name: str, *, unit: str | None, description: str | None) -> UpDownCounter"
+          }
+        },
+        "UpDownCounter": {
+          "bases": [
+            "ABC"
+          ],
+          "methods": {
+            "add": "add(self, value: float, attributes: Mapping[str, str] | None) -> None"
+          }
+        }
+      },
+      "dexpace.sdk.core.instrumentation.span": {
+        "Span": {
+          "bases": [
+            "ABC"
+          ],
+          "methods": {
+            "context": "context(self) -> InstrumentationContext",
+            "end": "end(self, error: BaseException | None) -> None",
+            "is_recording": "is_recording(self) -> bool",
+            "make_current": "make_current(self) -> TracingScope",
+            "set_attribute": "set_attribute(self, key: str, value: Any) -> Self",
+            "set_error": "set_error(self, error_type: str) -> Self"
+          }
+        }
+      },
+      "dexpace.sdk.core.instrumentation.tracer": {
+        "Tracer": {
+          "bases": [
+            "ABC"
+          ],
+          "methods": {
+            "start_span": "start_span(self, name: str, parent: InstrumentationContext | None) -> Span"
+          }
+        }
+      },
+      "dexpace.sdk.core.instrumentation.tracing_scope": {
+        "TracingScope": {
+          "bases": [
+            "ABC"
+          ],
+          "methods": {
+            "close": "close(self) -> None"
+          }
+        }
+      },
+      "dexpace.sdk.core.instrumentation.url_redactor": {
+        "UrlRedactor": {
+          "bases": [],
+          "methods": {
+            "redact": "redact(self, url: str | Url) -> str"
+          }
+        }
+      },
+      "dexpace.sdk.core.pagination.link_header": {
+        "find_rel": "find_rel(value: str, rel: str) -> str | None",
+        "parse_link_header": "parse_link_header(value: str) -> tuple[ParsedLink, ...]"
+      },
+      "dexpace.sdk.core.pagination.page": {
+        "Page": {
+          "bases": [],
+          "methods": {
+            "aclose": "async aclose(self) -> None",
+            "close": "close(self) -> None",
+            "has_next": "has_next(self) -> bool"
+          }
+        }
+      },
+      "dexpace.sdk.core.pagination.paginator": {
+        "AsyncPaginator": {
+          "bases": [],
+          "methods": {
+            "by_page": "async by_page(self) -> AsyncIterator[Page[T]]"
+          }
+        },
+        "AsyncPipelineLike": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "run": "async run(self, request: Request, dispatch: DispatchContext) -> AsyncResponse"
+          }
+        },
+        "Paginator": {
+          "bases": [],
+          "methods": {
+            "by_page": "by_page(self) -> Iterator[Page[T]]"
+          }
+        },
+        "SyncPipelineLike": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "run": "run(self, request: Request, dispatch: DispatchContext) -> Response"
+          }
+        }
+      },
+      "dexpace.sdk.core.pagination.strategy": {
+        "CursorStrategy": {
+          "bases": [],
+          "methods": {
+            "parse": "parse(self, response: HasHeaders, payload: object, template_request: Request) -> Page[T]"
+          }
+        },
+        "HasHeaders": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "headers": "headers(self) -> Headers"
+          }
+        },
+        "LinkHeaderStrategy": {
+          "bases": [],
+          "methods": {
+            "parse": "parse(self, response: HasHeaders, payload: object, template_request: Request) -> Page[T]"
+          }
+        },
+        "PageNumberStrategy": {
+          "bases": [],
+          "methods": {
+            "parse": "parse(self, response: HasHeaders, payload: object, template_request: Request) -> Page[T]"
+          }
+        },
+        "PaginationStrategy": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "parse": "parse(self, response: HasHeaders, payload: object, template_request: Request) -> Page[T]"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.async_pipeline": {
+        "AsyncPipeline": {
+          "bases": [],
+          "methods": {
+            "run": "async run(self, request: Request, dispatch: DispatchContext, **options: Any) -> AsyncResponse"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.async_policy": {
+        "AsyncPolicy": {
+          "bases": [
+            "ABC"
+          ],
+          "methods": {
+            "send": "async send(self, request: Request, ctx: PipelineContext) -> AsyncResponse"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.async_staged_builder": {
+        "AsyncStagedPipelineBuilder": {
+          "bases": [],
+          "methods": {
+            "append": "append(self, policy: AsyncPolicy, *, force: bool) -> Self",
+            "build": "build(self) -> AsyncPipeline",
+            "from_pipeline": "from_pipeline(cls, pipeline: AsyncPipeline) -> Self",
+            "insert_after": "insert_after(self, target: type[AsyncPolicy], new: AsyncPolicy) -> Self",
+            "insert_before": "insert_before(self, target: type[AsyncPolicy], new: AsyncPolicy) -> Self",
+            "prepend": "prepend(self, policy: AsyncPolicy, *, force: bool) -> Self",
+            "remove": "remove(self, target: type[AsyncPolicy]) -> Self",
+            "replace": "replace(self, target: type[AsyncPolicy], new: AsyncPolicy) -> Self"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.context": {
+        "PipelineContext": {
+          "bases": [],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.pipeline.defaults": {
+        "default_async_pipeline": "default_async_pipeline(client: AsyncHttpClient, *, redirect: AsyncRedirectPolicy | None, idempotency: AsyncIdempotencyPolicy | None, retry: AsyncRetryPolicy | None, set_date: AsyncSetDatePolicy | None, client_identity: AsyncClientIdentityPolicy | None, auth: AsyncPolicy | None) -> AsyncStagedPipelineBuilder",
+        "default_pipeline": "default_pipeline(client: HttpClient, *, redirect: RedirectPolicy | None, idempotency: IdempotencyPolicy | None, retry: RetryPolicy | None, set_date: SetDatePolicy | None, client_identity: ClientIdentityPolicy | None, auth: Policy | None, logging: LoggingPolicy | None, tracing: TracingPolicy | None) -> StagedPipelineBuilder"
+      },
+      "dexpace.sdk.core.pipeline.pipeline": {
+        "Pipeline": {
+          "bases": [],
+          "methods": {
+            "run": "run(self, request: Request, dispatch: DispatchContext, **options: Any) -> Response"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.policies._history": {
+        "RequestHistory": {
+          "bases": [],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.pipeline.policies.async_client_identity": {
+        "AsyncClientIdentityPolicy": {
+          "bases": [
+            "AsyncPolicy"
+          ],
+          "methods": {
+            "send": "async send(self, request: Request, ctx: PipelineContext) -> AsyncResponse"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.policies.async_idempotency": {
+        "AsyncIdempotencyPolicy": {
+          "bases": [
+            "AsyncPolicy"
+          ],
+          "methods": {
+            "send": "async send(self, request: Request, ctx: PipelineContext) -> AsyncResponse"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.policies.async_redirect": {
+        "AsyncRedirectPolicy": {
+          "bases": [
+            "AsyncPolicy"
+          ],
+          "methods": {
+            "send": "async send(self, request: Request, ctx: PipelineContext) -> AsyncResponse"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.policies.async_retry": {
+        "AsyncRetryPolicy": {
+          "bases": [
+            "AsyncPolicy"
+          ],
+          "methods": {
+            "no_retries": "no_retries(cls) -> AsyncRetryPolicy",
+            "send": "async send(self, request: Request, ctx: PipelineContext) -> AsyncResponse"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.policies.async_set_date": {
+        "AsyncSetDatePolicy": {
+          "bases": [
+            "AsyncPolicy"
+          ],
+          "methods": {
+            "send": "async send(self, request: Request, ctx: PipelineContext) -> AsyncResponse"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.policies.client_identity": {
+        "ClientIdentityPolicy": {
+          "bases": [
+            "Policy"
+          ],
+          "methods": {
+            "send": "send(self, request: Request, ctx: PipelineContext) -> Response"
+          }
+        },
+        "default_user_agent": "default_user_agent() -> str"
+      },
+      "dexpace.sdk.core.pipeline.policies.idempotency": {
+        "IdempotencyPolicy": {
+          "bases": [
+            "Policy"
+          ],
+          "methods": {
+            "send": "send(self, request: Request, ctx: PipelineContext) -> Response"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.policies.logging_policy": {
+        "LoggingPolicy": {
+          "bases": [
+            "Policy"
+          ],
+          "methods": {
+            "send": "send(self, request: Request, ctx: PipelineContext) -> Response"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.policies.redirect": {
+        "RedirectPolicy": {
+          "bases": [
+            "Policy"
+          ],
+          "methods": {
+            "send": "send(self, request: Request, ctx: PipelineContext) -> Response"
+          }
+        },
+        "resolve_http_tracer": "resolve_http_tracer(ctx: PipelineContext) -> HttpTracer"
+      },
+      "dexpace.sdk.core.pipeline.policies.retry": {
+        "RetryMode": {
+          "bases": [
+            "StrEnum"
+          ],
+          "methods": {}
+        },
+        "RetryPolicy": {
+          "bases": [
+            "Policy"
+          ],
+          "methods": {
+            "no_retries": "no_retries(cls) -> RetryPolicy",
+            "send": "send(self, request: Request, ctx: PipelineContext) -> Response"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.policies.set_date": {
+        "SetDatePolicy": {
+          "bases": [
+            "Policy"
+          ],
+          "methods": {
+            "send": "send(self, request: Request, ctx: PipelineContext) -> Response"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.policies.tracing_policy": {
+        "TracingPolicy": {
+          "bases": [
+            "Policy"
+          ],
+          "methods": {
+            "send": "send(self, request: Request, ctx: PipelineContext) -> Response"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.policy": {
+        "Policy": {
+          "bases": [
+            "ABC"
+          ],
+          "methods": {
+            "send": "send(self, request: Request, ctx: PipelineContext) -> Response"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.stage": {
+        "Stage": {
+          "bases": [
+            "IntEnum"
+          ],
+          "methods": {
+            "is_pillar": "is_pillar(self) -> bool"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.staged_builder": {
+        "StagedPipelineBuilder": {
+          "bases": [],
+          "methods": {
+            "append": "append(self, policy: Policy, *, force: bool) -> Self",
+            "build": "build(self) -> Pipeline",
+            "from_pipeline": "from_pipeline(cls, pipeline: Pipeline) -> Self",
+            "insert_after": "insert_after(self, target: type[Policy], new: Policy) -> Self",
+            "insert_before": "insert_before(self, target: type[Policy], new: Policy) -> Self",
+            "prepend": "prepend(self, policy: Policy, *, force: bool) -> Self",
+            "remove": "remove(self, target: type[Policy]) -> Self",
+            "replace": "replace(self, target: type[Policy], new: Policy) -> Self"
+          }
+        }
+      },
+      "dexpace.sdk.core.pipeline.step.config": {
+        "RetryConfig": {
+          "bases": [],
+          "methods": {}
+        },
+        "StepMetadata": {
+          "bases": [],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.pipeline.step.pipeline_step": {
+        "PipelineStep": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.serde.codec": {
+        "Codec": {
+          "bases": [],
+          "methods": {
+            "decode": "decode(self, data: object, target: type[T]) -> T",
+            "encode": "encode(self, value: object) -> object"
+          }
+        },
+        "CodecError": {
+          "bases": [
+            "DeserializationError"
+          ],
+          "methods": {}
+        },
+        "discriminated": "discriminated(tag_field: str, /) -> Callable[[type[T]], type[T]]",
+        "field_alias": "field_alias(wire_name: str, /, *, default: object, default_factory: Callable[[], object] | None) -> object",
+        "variant": "variant(tag_value: str, /) -> Callable[[type[T]], type[T]]"
+      },
+      "dexpace.sdk.core.serde.json_serde": {
+        "JsonDeserializer": {
+          "bases": [],
+          "methods": {
+            "deserialize": "deserialize(self, value: str) -> Any",
+            "deserialize_bytes": "deserialize_bytes(self, value: bytes) -> Any",
+            "deserialize_stream": "deserialize_stream(self, stream: BinaryIO) -> Any"
+          }
+        },
+        "JsonSerde": {
+          "bases": [],
+          "methods": {
+            "deserializer": "deserializer(self) -> JsonDeserializer",
+            "serializer": "serializer(self) -> JsonSerializer"
+          }
+        },
+        "JsonSerializer": {
+          "bases": [],
+          "methods": {
+            "serialize": "serialize(self, value: Any) -> str",
+            "serialize_to_bytes": "serialize_to_bytes(self, value: Any) -> bytes",
+            "serialize_to_stream": "serialize_to_stream(self, value: Any, stream: BinaryIO) -> None"
+          }
+        }
+      },
+      "dexpace.sdk.core.serde.serde": {
+        "Deserializer": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "deserialize": "deserialize(self, value: str) -> Any",
+            "deserialize_bytes": "deserialize_bytes(self, value: bytes) -> Any",
+            "deserialize_stream": "deserialize_stream(self, stream: BinaryIO) -> Any"
+          }
+        },
+        "Serde": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "deserializer": "deserializer(self) -> Deserializer",
+            "serializer": "serializer(self) -> Serializer"
+          }
+        },
+        "Serializer": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "serialize": "serialize(self, value: Any) -> str",
+            "serialize_to_bytes": "serialize_to_bytes(self, value: Any) -> bytes",
+            "serialize_to_stream": "serialize_to_stream(self, value: Any, stream: BinaryIO) -> None"
+          }
+        }
+      },
+      "dexpace.sdk.core.serde.tristate": {
+        "Present": {
+          "bases": [],
+          "methods": {}
+        },
+        "fold": "fold(state: Tristate[T], *, on_absent: Callable[[], R], on_null: Callable[[], R], on_present: Callable[[T], R]) -> R",
+        "is_absent": "is_absent(state: Tristate[T]) -> TypeGuard[_Absent]",
+        "is_null": "is_null(state: Tristate[T]) -> TypeGuard[_Null]",
+        "is_present": "is_present(state: Tristate[T]) -> TypeGuard[Present[T]]",
+        "of_optional": "of_optional(value: T | None) -> _Null | Present[T]",
+        "present": "present(value: T) -> Present[T]"
+      },
+      "dexpace.sdk.core.util.clock": {
+        "AsyncClock": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "monotonic": "monotonic(self) -> float",
+            "now": "now(self) -> float",
+            "sleep": "async sleep(self, duration: float) -> None"
+          }
+        },
+        "Clock": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "monotonic": "monotonic(self) -> float",
+            "now": "now(self) -> float",
+            "sleep": "sleep(self, duration: float) -> None"
+          }
+        }
+      },
+      "dexpace.sdk.core.util.proxy": {
+        "ProxyOptions": {
+          "bases": [],
+          "methods": {
+            "bypasses_proxy": "bypasses_proxy(self, host: str) -> bool",
+            "from_configuration": "from_configuration(cls, config: Configuration) -> Self | None"
+          }
+        },
+        "ProxyType": {
+          "bases": [
+            "StrEnum"
+          ],
+          "methods": {}
+        }
+      }
+    },
+    "exports": {
+      "dexpace.sdk.core.client": [
+        "AsyncHttpClient",
+        "HttpClient",
+        "asyncio_sleep"
+      ],
+      "dexpace.sdk.core.config": [
+        "Configuration",
+        "ConfigurationBuilder"
+      ],
+      "dexpace.sdk.core.errors": [
+        "ClientAuthenticationError",
+        "DecodeError",
+        "DeserializationError",
+        "HttpResponseError",
+        "PipelineAbortedError",
+        "ResourceExistsError",
+        "ResourceModifiedError",
+        "ResourceNotFoundError",
+        "ResourceNotModifiedError",
+        "ResponseNotReadError",
+        "SdkError",
+        "SerializationError",
+        "ServiceRequestError",
+        "ServiceRequestTimeoutError",
+        "ServiceResponseError",
+        "ServiceResponseTimeoutError",
+        "StreamClosedError",
+        "StreamConsumedError",
+        "StreamingError",
+        "map_error"
+      ],
+      "dexpace.sdk.core.http.auth": [
+        "AccessTokenInfo",
+        "AsyncBearerTokenPolicy",
+        "AsyncTokenCredential",
+        "AuthenticateChallenge",
+        "BasicAuthCredential",
+        "BasicAuthPolicy",
+        "BasicChallengeHandler",
+        "BearerTokenPolicy",
+        "ChallengeHandler",
+        "CompositeChallengeHandler",
+        "DigestAlgorithm",
+        "DigestChallengeHandler",
+        "InMemoryTokenCache",
+        "KeyCredential",
+        "KeyCredentialPolicy",
+        "NamedKeyCredential",
+        "TokenCache",
+        "TokenCredential",
+        "TokenRequestOptions",
+        "parse_challenges"
+      ],
+      "dexpace.sdk.core.http.common": [
+        "AsyncItemPaged",
+        "AsyncPager",
+        "ETag",
+        "Headers",
+        "HttpHeaderName",
+        "HttpRange",
+        "ItemPaged",
+        "MediaType",
+        "Pager",
+        "Protocol",
+        "QueryParams",
+        "RequestConditions",
+        "Url",
+        "aiter_chunked_frame",
+        "aiter_jsonl",
+        "chunked_frame",
+        "common_media_types",
+        "http_header_name",
+        "iter_jsonl"
+      ],
+      "dexpace.sdk.core.http.context": [
+        "CallContext",
+        "ContextStore",
+        "DispatchContext",
+        "ExchangeContext",
+        "RequestContext"
+      ],
+      "dexpace.sdk.core.http.request": [
+        "AsyncRequestBody",
+        "FileRequestBody",
+        "LoggableRequestBody",
+        "Method",
+        "MultipartField",
+        "MultipartRequestBody",
+        "Request",
+        "RequestBody"
+      ],
+      "dexpace.sdk.core.http.response": [
+        "AsyncResponse",
+        "AsyncResponseBody",
+        "LoggableResponseBody",
+        "Response",
+        "ResponseBody",
+        "Status"
+      ],
+      "dexpace.sdk.core.http.sse": [
+        "AsyncSseStream",
+        "SseEvent",
+        "SseParser",
+        "parse_async_events",
+        "parse_events"
+      ],
+      "dexpace.sdk.core.http.webhooks": [
+        "DEFAULT_TOLERANCE_SECONDS",
+        "InvalidWebhookSignatureError",
+        "WebhookVerifier"
+      ],
+      "dexpace.sdk.core.instrumentation": [
+        "ClientLogger",
+        "CorrelationFilter",
+        "Counter",
+        "DEFAULT_QUERY_ALLOWLIST",
+        "Histogram",
+        "HttpTracer",
+        "HttpTracerFactory",
+        "InstrumentationContext",
+        "LogLevel",
+        "MetricsContext",
+        "NOOP_COUNTER",
+        "NOOP_HISTOGRAM",
+        "NOOP_HTTP_TRACER",
+        "NOOP_HTTP_TRACER_FACTORY",
+        "NOOP_INSTRUMENTATION_CONTEXT",
+        "NOOP_METRICS_CONTEXT",
+        "NOOP_SPAN",
+        "NOOP_TRACER",
+        "NOOP_UPDOWN_COUNTER",
+        "Span",
+        "SpanId",
+        "TraceFlags",
+        "TraceId",
+        "TraceIdType",
+        "TraceState",
+        "Tracer",
+        "TracingScope",
+        "UpDownCounter",
+        "UrlRedactor",
+        "bind_correlation",
+        "get_span_id",
+        "get_trace_id",
+        "set_span_id",
+        "set_trace_id"
+      ],
+      "dexpace.sdk.core.pagination": [
+        "AsyncPaginator",
+        "AsyncPipelineLike",
+        "CursorStrategy",
+        "HasHeaders",
+        "LinkHeaderStrategy",
+        "Page",
+        "PageNumberStrategy",
+        "PaginationStrategy",
+        "Paginator",
+        "ParsedLink",
+        "SendAsync",
+        "SendSync",
+        "SyncPipelineLike",
+        "find_rel",
+        "parse_link_header"
+      ],
+      "dexpace.sdk.core.pipeline": [
+        "AsyncPipeline",
+        "AsyncPolicy",
+        "AsyncStagedPipelineBuilder",
+        "Pipeline",
+        "PipelineContext",
+        "PipelineStep",
+        "Policy",
+        "RequestPipelineStep",
+        "ResponsePipelineStep",
+        "RetryConfig",
+        "Stage",
+        "StagedPipelineBuilder",
+        "StepMetadata",
+        "default_async_pipeline",
+        "default_pipeline"
+      ],
+      "dexpace.sdk.core.pipeline.policies": [
+        "AsyncClientIdentityPolicy",
+        "AsyncIdempotencyPolicy",
+        "AsyncRedirectPolicy",
+        "AsyncRetryPolicy",
+        "AsyncSetDatePolicy",
+        "ClientIdentityPolicy",
+        "IdempotencyPolicy",
+        "LoggingPolicy",
+        "RedirectPolicy",
+        "RequestHistory",
+        "RetryMode",
+        "RetryPolicy",
+        "SetDatePolicy",
+        "TracingPolicy",
+        "default_user_agent"
+      ],
+      "dexpace.sdk.core.pipeline.step": [
+        "PipelineStep",
+        "RequestPipelineStep",
+        "ResponsePipelineStep"
+      ],
+      "dexpace.sdk.core.serde": [
+        "ABSENT",
+        "ALIAS_KEY",
+        "Codec",
+        "CodecError",
+        "DISCRIMINATOR_KEY",
+        "Deserializer",
+        "JSON_SERDE",
+        "JsonDeserializer",
+        "JsonSerde",
+        "JsonSerializer",
+        "NULL",
+        "Present",
+        "REGISTRY_KEY",
+        "Serde",
+        "Serializer",
+        "Tristate",
+        "discriminated",
+        "field_alias",
+        "fold",
+        "is_absent",
+        "is_null",
+        "is_present",
+        "of_optional",
+        "present",
+        "variant"
+      ],
+      "dexpace.sdk.core.util": [
+        "ASYNC_SYSTEM_CLOCK",
+        "AsyncClock",
+        "Clock",
+        "ProxyOptions",
+        "ProxyType",
+        "SYSTEM_CLOCK"
+      ]
+    }
+  },
+  "dexpace-sdk-http-aiohttp": {
+    "definitions": {
+      "dexpace.sdk.http.aiohttp.client": {
+        "AiohttpHttpClient": {
+          "bases": [],
+          "methods": {
+            "aclose": "async aclose(self) -> None",
+            "execute": "async execute(self, request: Request) -> AsyncResponse"
+          }
+        }
+      }
+    },
+    "exports": {
+      "dexpace.sdk.http.aiohttp": [
+        "AiohttpHttpClient"
+      ]
+    }
+  },
+  "dexpace-sdk-http-httpx": {
+    "definitions": {
+      "dexpace.sdk.http.httpx.async_": {
+        "AsyncHttpxHttpClient": {
+          "bases": [],
+          "methods": {
+            "aclose": "async aclose(self) -> None",
+            "execute": "async execute(self, request: Request) -> AsyncResponse"
+          }
+        }
+      },
+      "dexpace.sdk.http.httpx.sync": {
+        "HttpxHttpClient": {
+          "bases": [],
+          "methods": {
+            "close": "close(self) -> None",
+            "execute": "execute(self, request: Request) -> Response"
+          }
+        }
+      }
+    },
+    "exports": {
+      "dexpace.sdk.http.httpx": [
+        "AsyncHttpxHttpClient",
+        "HttpxHttpClient"
+      ]
+    }
+  },
+  "dexpace-sdk-http-requests": {
+    "definitions": {
+      "dexpace.sdk.http.requests.client": {
+        "RequestsHttpClient": {
+          "bases": [],
+          "methods": {
+            "close": "close(self) -> None",
+            "execute": "execute(self, request: Request) -> Response"
+          }
+        }
+      }
+    },
+    "exports": {
+      "dexpace.sdk.http.requests": [
+        "RequestsHttpClient"
+      ]
+    }
+  },
+  "dexpace-sdk-http-stdlib": {
+    "definitions": {
+      "dexpace.sdk.http.stdlib.asyncio_http_client": {
+        "AsyncioHttpClient": {
+          "bases": [],
+          "methods": {
+            "aclose": "async aclose(self) -> None",
+            "execute": "async execute(self, request: Request) -> AsyncResponse"
+          }
+        }
+      },
+      "dexpace.sdk.http.stdlib.urllib_http_client": {
+        "UrllibHttpClient": {
+          "bases": [],
+          "methods": {
+            "close": "close(self) -> None",
+            "execute": "execute(self, request: Request) -> Response"
+          }
+        }
+      }
+    },
+    "exports": {
+      "dexpace.sdk.http.stdlib": [
+        "AsyncioHttpClient",
+        "UrllibHttpClient"
+      ]
+    }
+  }
+}
