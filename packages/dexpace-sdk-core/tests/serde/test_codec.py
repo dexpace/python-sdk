@@ -210,6 +210,15 @@ def test_encode_rejects_non_documentable_value(codec: Codec) -> None:
         codec.encode(object())
 
 
+def test_encode_utf8_bytes_decodes_to_string(codec: Codec) -> None:
+    assert codec.encode(b"hello") == "hello"
+
+
+def test_encode_non_utf8_bytes_raises_serialization_error(codec: Codec) -> None:
+    with pytest.raises(SerializationError):
+        codec.encode(b"\xff\xfe")
+
+
 # --------------------------------------------------------------------------- #
 # Containers and scalars                                                       #
 # --------------------------------------------------------------------------- #

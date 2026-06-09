@@ -633,7 +633,10 @@ def _encode_value(value: object) -> object:
     if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
         return value.isoformat()
     if isinstance(value, bytes):
-        return value.decode("utf-8")
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError as err:
+            raise SerializationError("cannot encode non-UTF-8 bytes value") from err
     if isinstance(value, cabc.Mapping):
         return {k: _encode_value(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set, frozenset)):
