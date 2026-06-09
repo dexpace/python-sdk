@@ -426,7 +426,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "dexpace-sdk-core", editable = "packages/dexpace-sdk-core" },
-    { name = "requests", specifier = ">=2.34.2,<3.0" },
+    { name = "requests", specifier = ">=2.32,<3.0" },
 ]
 
 [[package]]
