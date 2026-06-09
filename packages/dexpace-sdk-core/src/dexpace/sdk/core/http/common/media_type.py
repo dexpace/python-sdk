@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import codecs
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Self
@@ -75,9 +76,19 @@ class MediaType:
 
     @property
     def charset(self) -> str | None:
-        """The ``charset`` parameter, or ``None`` if absent."""
+        """The ``charset`` parameter as a known codec name, or ``None``.
+
+        Returns ``None`` when the parameter is absent *or* names an encoding
+        that the Python codec registry does not recognise. Degrading an
+        unknown charset to ``None`` (rather than raising) lets callers fall
+        back to a default encoding instead of failing to decode a body.
+        """
         for key, value in self.parameters:
             if key == "charset":
+                try:
+                    codecs.lookup(value)
+                except (LookupError, ValueError):
+                    return None
                 return value
         return None
 
