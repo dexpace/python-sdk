@@ -331,6 +331,14 @@ class AsyncSseStream:
             self._parser.feed(chunk)
             self._pending = self._parser.drain()
 
+    @property
+    def retry(self) -> int | None:
+        """The most recent ``retry:`` value seen by the underlying parser, in
+        milliseconds, or ``None``. Mirrors :attr:`SseParser.retry` so a
+        reconnecting client can read the server's sticky hint after iteration.
+        """
+        return self._parser.retry
+
     async def aclose(self) -> None:
         """Release the upstream byte stream. Idempotent.
 

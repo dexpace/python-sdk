@@ -22,19 +22,23 @@ from typing import TYPE_CHECKING, cast
 
 from ...errors import HttpResponseError, ServiceRequestError, ServiceResponseError
 from ...pipeline.dispatch import (
+    AsyncPipelineLike,
+    SendAsync,
     SendSync,
     SyncPipelineLike,
 )
-from ...util.clock import SYSTEM_CLOCK, Clock
+from ...util.clock import ASYNC_SYSTEM_CLOCK, SYSTEM_CLOCK, AsyncClock, Clock
 from ..context.dispatch_context import DispatchContext
-from .parser import SseParser
+from ..response.async_response_body import _shielded_cleanup
+from .parser import SseParser, parse_async_events
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Iterator
+    from collections.abc import AsyncIterator, Callable, Generator, Iterator
     from types import TracebackType
     from typing import Self
 
     from ..request.request import Request
+    from ..response.async_response import AsyncResponse
     from ..response.response import Response
     from .parser import SseEvent
 
@@ -245,4 +249,145 @@ class SseConnection:
         return progressed
 
 
-__all__ = ["SseConnection"]
+class AsyncSseConnection:
+    """Asynchronous twin of :class:`SseConnection`.
+
+    Mirrors the sync client exactly with ``async`` iteration semantics. Each
+    (re)connection is dispatched through ``source`` — an ``AsyncPipeline`` (run
+    with a fresh dispatch context per connection) or an async
+    ``Request -> AsyncResponse`` callable. The response is closed through the
+    shielded-cleanup convention, so a cancelled consumer still releases the
+    transport handle before the cancellation continues to propagate.
+
+    Args:
+        source: An async pipeline or an async send-callable.
+        initial_request: The request opening the stream; reused for every
+            reconnection with an updated ``Last-Event-ID``.
+        last_event_id: Seed id to resume a previously-interrupted stream.
+        default_retry: Backoff base (seconds) used until the server sends a
+            ``retry:`` value.
+        max_backoff: Ceiling on any single reconnect delay.
+        max_reconnects: Maximum consecutive failed reconnections before
+            iteration raises. ``None`` reconnects indefinitely.
+        jitter: Upward jitter fraction applied to the backoff.
+        clock: Async time source for backoff sleeps (injected for tests).
+        rand: RNG for jitter (injected for tests).
+        dispatch_factory: Builds the dispatch context per connection when
+            ``source`` is a pipeline. Defaults to ``DispatchContext.noop``.
+    """
+
+    __slots__ = (
+        "_clock",
+        "_dispatch_factory",
+        "_initial",
+        "_jitter",
+        "_last_event_id",
+        "_max_backoff",
+        "_max_reconnects",
+        "_rand",
+        "_response",
+        "_retry_base",
+        "_send",
+    )
+
+    def __init__(
+        self,
+        source: AsyncPipelineLike | SendAsync,
+        initial_request: Request,
+        *,
+        last_event_id: str | None = None,
+        default_retry: float = _DEFAULT_RETRY_SECONDS,
+        max_backoff: float = _DEFAULT_MAX_BACKOFF,
+        max_reconnects: int | None = None,
+        jitter: float = _DEFAULT_JITTER,
+        clock: AsyncClock = ASYNC_SYSTEM_CLOCK,
+        rand: random.Random | None = None,
+        dispatch_factory: Callable[[], DispatchContext] | None = None,
+    ) -> None:
+        self._initial = initial_request
+        self._last_event_id = last_event_id
+        self._retry_base = default_retry
+        self._max_backoff = max_backoff
+        self._max_reconnects = max_reconnects
+        self._jitter = jitter
+        self._clock = clock
+        self._rand = rand if rand is not None else random.Random()
+        self._dispatch_factory = dispatch_factory or DispatchContext.noop
+        self._response: AsyncResponse | None = None
+        self._send = self._normalise(source)
+
+    def _normalise(self, source: AsyncPipelineLike | SendAsync) -> SendAsync:
+        if isinstance(source, AsyncPipelineLike):
+            pipeline = source
+
+            async def send(request: Request) -> AsyncResponse:
+                return await pipeline.run(request, self._dispatch_factory())
+
+            return send
+        return source
+
+    async def aclose(self) -> None:
+        """Close the current response, if any. Idempotent and cancel-safe."""
+        response = self._response
+        if response is None:
+            return
+        self._response = None
+        await _shielded_cleanup(response.close())
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        await self.aclose()
+
+    def __aiter__(self) -> AsyncIterator[SseEvent]:
+        return self._events()
+
+    async def _events(self) -> AsyncIterator[SseEvent]:
+        failures = 0
+        try:
+            while True:
+                response = await self._connect(_resume_request(self._initial, self._last_event_id))
+                progressed = False
+                body = response.body
+                if body is not None:
+                    stream = parse_async_events(body.aiter_bytes())
+                    try:
+                        async with stream:
+                            async for event in stream:
+                                self._last_event_id = _last_event_id_of(event, self._last_event_id)
+                                progressed = True
+                                yield event
+                    except _TRANSIENT:
+                        pass
+                    if stream.retry is not None:
+                        self._retry_base = stream.retry / 1000.0
+                await self.aclose()
+                if progressed:
+                    failures = 0
+                if self._max_reconnects is not None and failures >= self._max_reconnects:
+                    raise ServiceResponseError("SSE reconnect budget exhausted")
+                await self._clock.sleep(
+                    _next_backoff(
+                        self._retry_base, failures, self._max_backoff, self._jitter, self._rand
+                    )
+                )
+                failures += 1
+        finally:
+            await self.aclose()
+
+    async def _connect(self, request: Request) -> AsyncResponse:
+        response = await self._send(request)
+        self._response = response
+        if not response.status.is_success:
+            await self.aclose()
+            raise HttpResponseError(response=response)
+        return response
+
+
+__all__ = ["AsyncSseConnection", "SseConnection"]
