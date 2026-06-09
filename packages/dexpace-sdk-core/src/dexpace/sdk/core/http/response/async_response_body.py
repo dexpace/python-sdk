@@ -5,8 +5,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from types import TracebackType
 from typing import Self
 
@@ -15,6 +16,48 @@ from ..request.async_request_body import SupportsAsyncRead
 from .response_body import _check_chunk_size
 
 _bytes = bytes
+
+
+async def _shielded_cleanup(cleanup: Awaitable[object]) -> None:
+    """Run a cleanup coroutine without letting cancellation interrupt it.
+
+    This is the single cancellation convention used by the async response
+    bodies: a ``finally`` block that releases transport resources may run
+    while an ``asyncio.CancelledError`` is already propagating through the
+    enclosing task. Awaiting the cleanup directly would let that
+    cancellation interrupt it mid-way, leaking the underlying connection.
+
+    The cleanup is wrapped in ``asyncio.shield`` so it always runs to
+    completion. If the surrounding scope is cancelled, the ``CancelledError``
+    raised by ``shield`` is caught and the wait retried until the shielded
+    cleanup finishes; the cancellation is then re-raised so it continues to
+    propagate. Cleanup never swallows cancellation — it merely defers it
+    until the resource is released. A ``CancelledError`` raised because the
+    cleanup *itself* was cancelled is propagated immediately.
+
+    Args:
+        cleanup: The resource-release coroutine to run to completion.
+
+    Raises:
+        asyncio.CancelledError: Re-raised after the cleanup completes when
+            the enclosing scope was cancelled while the cleanup ran.
+    """
+    inner = asyncio.ensure_future(cleanup)
+    cancelled = False
+    while True:
+        try:
+            await asyncio.shield(inner)
+            break
+        except asyncio.CancelledError:
+            if inner.cancelled():
+                # The cleanup itself was cancelled, not just our wait on it.
+                raise
+            # An outer cancellation hit our wait, not the shielded cleanup.
+            # Keep waiting until the cleanup finishes, then re-raise so the
+            # cancellation continues to propagate.
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 class AsyncResponseBody(ABC):
@@ -59,7 +102,7 @@ class AsyncResponseBody(ABC):
             async for chunk in self.aiter_bytes():
                 chunks.append(chunk)
         finally:
-            await self.close()
+            await _shielded_cleanup(self.close())
         return b"".join(chunks)
 
     async def string(self, encoding: str | None = None) -> str:
@@ -124,19 +167,15 @@ class _AsyncStreamResponseBody(AsyncResponseBody):
 
     Note:
         Cancellation contract. The generator returned by ``aiter_bytes``
-        relies on a ``finally: await self.close()`` clause to release the
-        underlying stream. If the consuming task is cancelled
-        mid-iteration, that ``finally`` block runs while a
-        ``CancelledError`` is already in flight; depending on the host
-        transport, the inner ``await self._stream.close()`` may itself be
-        cancelled before it completes, leaving the stream open. The async
-        generator's ``aclose()`` is best-effort under cancellation.
-
-        Callers that may be cancelled mid-stream are responsible for
-        deterministic cleanup: wrap the body in ``async with body:`` or
-        invoke ``await body.close()`` explicitly from a cancellation-safe
-        scope (for example, an ``asyncio.shield`` inside a ``finally``
-        block) to guarantee the transport handle is released.
+        relies on a ``finally`` clause to release the underlying stream. If
+        the consuming task is cancelled mid-iteration, that ``finally`` block
+        runs while a ``CancelledError`` is already in flight. The cleanup is
+        routed through ``_shielded_cleanup``, which wraps the inner
+        ``await self._stream.close()`` in ``asyncio.shield`` so the close runs
+        to completion before the ``CancelledError`` is re-raised. The transport
+        handle is therefore released even when the iterating task is cancelled
+        mid-stream, and the cancellation continues to propagate afterwards —
+        cleanup never swallows it.
     """
 
     __slots__ = ("_closed", "_consumed", "_length", "_media_type", "_stream")
@@ -177,7 +216,7 @@ class _AsyncStreamResponseBody(AsyncResponseBody):
         if self._closed:
             return
         self._closed = True
-        await self._stream.close()
+        await _shielded_cleanup(self._stream.close())
 
 
 __all__ = ["AsyncResponseBody"]

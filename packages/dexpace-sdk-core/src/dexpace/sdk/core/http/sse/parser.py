@@ -24,16 +24,50 @@ Per-event fields:
 
 from __future__ import annotations
 
+import asyncio
 from collections import deque
-from collections.abc import AsyncIterable, Iterable, Iterator
+from collections.abc import AsyncIterable, Awaitable, Iterable, Iterator
 from dataclasses import dataclass, field
-from typing import Final
+from types import TracebackType
+from typing import Final, Self
 
 from dexpace.sdk.core.errors import StreamingError
+
+
+async def _shielded_aclose(cleanup: Awaitable[None]) -> None:
+    """Run an async-stream close to completion under cancellation.
+
+    Mirrors the cancellation convention used by the async response bodies:
+    a close that runs while an ``asyncio.CancelledError`` is in flight is
+    wrapped in ``asyncio.shield`` so it finishes releasing the upstream
+    transport before the cancellation is re-raised. The close never swallows
+    cancellation — it only defers it until the upstream stream is released.
+
+    Args:
+        cleanup: The upstream-close coroutine to run to completion.
+
+    Raises:
+        asyncio.CancelledError: Re-raised after the close completes when the
+            enclosing scope was cancelled while the close ran.
+    """
+    inner = asyncio.ensure_future(cleanup)
+    cancelled = False
+    while True:
+        try:
+            await asyncio.shield(inner)
+            break
+        except asyncio.CancelledError:
+            if inner.cancelled():
+                raise
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
+
 
 _LF: Final[int] = 0x0A
 _CR: Final[int] = 0x0D
 _COLON: Final[int] = 0x3A
+_UTF8_BOM: Final[bytes] = b"\xef\xbb\xbf"
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +112,7 @@ class SseParser:
     _last_id: str | None = None
     _retry: int | None = None
     _pending: deque[SseEvent] = field(default_factory=deque)
+    _bom_stripped: bool = False
     max_line_bytes: int = 1 << 20  # 1 MiB
 
     def feed(self, chunk: bytes) -> None:
@@ -90,6 +125,8 @@ class SseParser:
         if not chunk:
             return
         self._buffer.extend(chunk)
+        if not self._strip_leading_bom():
+            return  # Buffer too short to decide on the BOM yet.
         while True:
             line, consumed = _read_line(self._buffer)
             if line is None:
@@ -111,6 +148,7 @@ class SseParser:
             StreamingError: If the trailing buffer ends mid-codepoint and
                 cannot be decoded as UTF-8.
         """
+        self._strip_leading_bom(at_end=True)
         if self._buffer:
             try:
                 line = self._buffer.decode("utf-8")
@@ -121,6 +159,35 @@ class SseParser:
         if self._data_lines:
             self._dispatch()
         yield from self.drain()
+
+    def _strip_leading_bom(self, *, at_end: bool = False) -> bool:
+        """Remove a single leading UTF-8 BOM (``EF BB BF``) once at stream start.
+
+        The check runs exactly once: after the first byte arrives. Because the
+        three BOM bytes may span chunk boundaries, the decision is deferred
+        until either the buffer holds at least three bytes or the stream ends.
+
+        Args:
+            at_end: When ``True``, force the decision even if fewer than three
+                bytes are buffered (no further input is coming).
+
+        Returns:
+            ``True`` once the BOM has been handled (stripped or ruled out) and
+            line consumption may proceed; ``False`` while still waiting for
+            enough bytes to decide.
+        """
+        if self._bom_stripped:
+            return True
+        if (
+            not at_end
+            and len(self._buffer) < len(_UTF8_BOM)
+            and self._buffer == _UTF8_BOM[: len(self._buffer)]
+        ):
+            return False  # Possible partial BOM — wait for more bytes.
+        self._bom_stripped = True
+        if self._buffer[: len(_UTF8_BOM)] == _UTF8_BOM:
+            del self._buffer[: len(_UTF8_BOM)]
+        return True
 
     def _process_line(self, line: str) -> None:
         if not line:
@@ -202,15 +269,25 @@ class AsyncSseStream:
     """Async iterator that drives an ``SseParser`` from an async byte stream.
 
     Construct via :func:`parse_async_events` or directly. Use as
-    ``async for event in stream``.
+    ``async for event in stream``, ideally inside ``async with`` so the
+    upstream byte stream is released deterministically.
+
+    Note:
+        Cancellation contract. If the consuming task is cancelled
+        mid-stream, :meth:`aclose` (run from ``__aexit__`` or directly)
+        releases the upstream byte iterator. The upstream ``aclose`` is
+        routed through ``_shielded_aclose`` so it runs to completion even
+        while a ``CancelledError`` is in flight; the cancellation is then
+        re-raised and continues to propagate — closing never swallows it.
     """
 
-    __slots__ = ("_chunks", "_parser", "_pending")
+    __slots__ = ("_chunks", "_closed", "_parser", "_pending")
 
     def __init__(self, chunks: AsyncIterable[bytes]) -> None:
         self._chunks = aiter(chunks)
         self._parser = SseParser()
         self._pending: Iterator[SseEvent] = iter(())
+        self._closed = False
 
     def __aiter__(self) -> AsyncSseStream:
         return self
@@ -231,6 +308,31 @@ class AsyncSseStream:
                     raise StopAsyncIteration from err
             self._parser.feed(chunk)
             self._pending = self._parser.drain()
+
+    async def aclose(self) -> None:
+        """Release the upstream byte stream. Idempotent.
+
+        Closes the wrapped async iterator's ``aclose`` (when it exposes one)
+        under ``asyncio.shield`` so the transport handle is released even when
+        the consuming task is cancelled mid-stream.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        upstream_aclose = getattr(self._chunks, "aclose", None)
+        if upstream_aclose is not None:
+            await _shielded_aclose(upstream_aclose())
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        await self.aclose()
 
 
 def parse_async_events(chunks: AsyncIterable[bytes]) -> AsyncSseStream:
