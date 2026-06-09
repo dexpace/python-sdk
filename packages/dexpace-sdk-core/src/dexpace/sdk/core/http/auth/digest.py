@@ -107,6 +107,7 @@ class DigestChallengeHandler:
         realm = selected.parameters.get("realm", "")
         nonce = selected.parameters.get("nonce", "")
         opaque = selected.parameters.get("opaque")
+        charset = _select_charset(selected.parameters.get("charset"))
         qop = self._pick_qop(selected.parameters.get("qop"))
         if qop is None and "qop" in selected.parameters:
             # The server advertised qop but did not include ``auth``: we
@@ -125,6 +126,7 @@ class DigestChallengeHandler:
             nc=nc,
             cnonce=cnonce,
             qop=qop,
+            charset=charset,
         )
         header_value = _format_header(
             username=self._username,
@@ -188,9 +190,10 @@ class DigestChallengeHandler:
         nc: str,
         cnonce: str,
         qop: str | None,
+        charset: str,
     ) -> str:
         def h(data: str) -> str:
-            return hasher(data.encode("utf-8")).hexdigest()
+            return hasher(data.encode(charset)).hexdigest()
 
         ha1 = h(f"{self._username}:{realm}:{self._password}")
         if algorithm.endswith("-SESS"):
@@ -200,6 +203,28 @@ class DigestChallengeHandler:
             return h(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}")
         # No qop (legacy RFC 2069): response = H(HA1:nonce:HA2)
         return h(f"{ha1}:{nonce}:{ha2}")
+
+
+def _select_charset(charset_param: str | None) -> str:
+    """Choose the encoding for credential hashing per RFC 7616 §3.4.
+
+    RFC 7616 defines exactly one valid ``charset`` value — ``UTF-8`` — which
+    a server advertises to request that ``username`` and ``password`` be
+    encoded as UTF-8 before hashing. When the directive is absent (or carries
+    any other value), the legacy RFC 2617 default of ISO-8859-1 applies.
+
+    Args:
+        charset_param: The raw ``charset`` directive from the challenge, or
+            ``None`` if the server did not send one. Matched case-insensitively
+            against ``UTF-8``.
+
+    Returns:
+        The Python codec name to pass to ``str.encode`` — ``"utf-8"`` when the
+        server advertised ``charset=UTF-8``, otherwise ``"iso-8859-1"``.
+    """
+    if charset_param is not None and charset_param.strip().upper() == "UTF-8":
+        return "utf-8"
+    return "iso-8859-1"
 
 
 def _request_uri(url: Url) -> str:
