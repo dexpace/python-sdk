@@ -25,8 +25,8 @@ dexpace-sdk-http-requests = { workspace = true }
 dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
-    "pytest-asyncio>=0.23",
-    "ruff>=0.4",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.15.16",
     "mypy>=1.10",
 ]
 
