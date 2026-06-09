@@ -54,10 +54,13 @@ def test_default_pipeline_returns_builder() -> None:
 def test_default_pipeline_wires_canonical_stack() -> None:
     pipeline = default_pipeline(_StubTransport()).build()
     stages = _stages_of(pipeline)
-    # Canonical order: REDIRECT, RETRY, POST_RETRY (set-date), LOGGING, POST_LOGGING
+    # Canonical order: REDIRECT, POST_REDIRECT (idempotency), RETRY,
+    # POST_RETRY (set-date then client-identity), LOGGING, POST_LOGGING (tracing).
     assert stages == [
         Stage.REDIRECT,
+        Stage.POST_REDIRECT,
         Stage.RETRY,
+        Stage.POST_RETRY,
         Stage.POST_RETRY,
         Stage.LOGGING,
         Stage.POST_LOGGING,
