@@ -244,8 +244,14 @@ Documented in [`CLAUDE.md`](CLAUDE.md). The short version:
 
 ## Contributing
 
-External pull requests are welcome. Run the gates above before opening
-one, and follow the conventions in [`CLAUDE.md`](CLAUDE.md).
+External pull requests are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md)
+for setup, the quality gates, and commit conventions, and
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) for community expectations.
+
+## Security
+
+To report a vulnerability, follow [`SECURITY.md`](SECURITY.md) — please do
+not open a public issue.
 
 ## License
 
