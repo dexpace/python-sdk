@@ -76,9 +76,26 @@ class LoggableRequestBody(RequestBody):
                 self._tap.write(chunk[:remaining])
             yield chunk
 
-    def snapshot(self) -> bytes:
-        """Return an immutable copy of the captured bytes."""
-        return self._tap.getvalue()
+    def snapshot(self, max_bytes: int | None = None) -> bytes:
+        """Return an immutable copy of the captured bytes.
+
+        Args:
+            max_bytes: If given, copy at most this many bytes from the front
+                of the tap. A ``memoryview`` bounds the slice so no more than
+                ``max_bytes`` are ever materialised, even when the tap holds a
+                large payload. ``None`` returns the full tap.
+
+        Returns:
+            The captured bytes, optionally truncated to ``max_bytes``.
+
+        Raises:
+            ValueError: If ``max_bytes`` is negative.
+        """
+        if max_bytes is None:
+            return self._tap.getvalue()
+        if max_bytes < 0:
+            raise ValueError(f"max_bytes must be non-negative, got {max_bytes}")
+        return bytes(self._tap.getbuffer()[:max_bytes])
 
     @property
     def captured_size(self) -> int:
