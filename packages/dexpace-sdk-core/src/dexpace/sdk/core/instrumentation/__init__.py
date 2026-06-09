@@ -14,7 +14,15 @@ sibling packages.
 
 from __future__ import annotations
 
-from .client_logger import ClientLogger
+from .client_logger import ClientLogger, CorrelationFilter
+from .correlation import (
+    bind_correlation,
+    get_span_id,
+    get_trace_id,
+    set_span_id,
+    set_trace_id,
+)
+from .http_tracer import HttpTracer, HttpTracerFactory
 from .identifiers import SpanId, TraceFlags, TraceId, TraceIdType, TraceState
 from .instrumentation_context import InstrumentationContext
 from .log_level import LogLevel
@@ -28,7 +36,13 @@ from .metrics import (
     MetricsContext,
     UpDownCounter,
 )
-from .noop import NOOP_INSTRUMENTATION_CONTEXT, NOOP_SPAN, NOOP_TRACER
+from .noop import (
+    NOOP_HTTP_TRACER,
+    NOOP_HTTP_TRACER_FACTORY,
+    NOOP_INSTRUMENTATION_CONTEXT,
+    NOOP_SPAN,
+    NOOP_TRACER,
+)
 from .span import Span
 from .tracer import Tracer
 from .tracing_scope import TracingScope
@@ -38,14 +52,19 @@ __all__ = [
     "DEFAULT_QUERY_ALLOWLIST",
     "NOOP_COUNTER",
     "NOOP_HISTOGRAM",
+    "NOOP_HTTP_TRACER",
+    "NOOP_HTTP_TRACER_FACTORY",
     "NOOP_INSTRUMENTATION_CONTEXT",
     "NOOP_METRICS_CONTEXT",
     "NOOP_SPAN",
     "NOOP_TRACER",
     "NOOP_UPDOWN_COUNTER",
     "ClientLogger",
+    "CorrelationFilter",
     "Counter",
     "Histogram",
+    "HttpTracer",
+    "HttpTracerFactory",
     "InstrumentationContext",
     "LogLevel",
     "MetricsContext",
@@ -59,4 +78,9 @@ __all__ = [
     "TracingScope",
     "UpDownCounter",
     "UrlRedactor",
+    "bind_correlation",
+    "get_span_id",
+    "get_trace_id",
+    "set_span_id",
+    "set_trace_id",
 ]

@@ -73,6 +73,10 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["B011", "RUF012"]
+# HttpTracer is an adapter-style base: every event method ships a no-op default
+# so subclasses override only the events they consume. B024/B027 flag exactly
+# that intentional pattern.
+"**/instrumentation/http_tracer.py" = ["B024", "B027"]
 
 [tool.mypy]
 python_version = "3.12"
