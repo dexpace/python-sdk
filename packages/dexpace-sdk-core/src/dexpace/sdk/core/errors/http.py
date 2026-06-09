@@ -5,8 +5,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Final, Generic, TypeVar
 
+from ..http.response.loggable_response_body import LoggableResponseBody
 from .base import SdkError
 
 if TYPE_CHECKING:
@@ -25,6 +26,12 @@ if TYPE_CHECKING:
     ModelT = TypeVar("ModelT", default=Any)
 else:
     ModelT = TypeVar("ModelT")
+
+# Status codes for which a retry is worthwhile by default: request timeout,
+# rate limiting, and the transient 5xx family. Mirrors the retry policy's
+# ``_DEFAULT_STATUS_RETRIES`` so ``retryable`` and the policy agree out of
+# the box; callers can override per error via the ``retryable`` kwarg.
+_DEFAULT_RETRYABLE_STATUS: Final[frozenset[int]] = frozenset({408, 429, 500, 502, 503, 504})
 
 
 # UP046 wants PEP 695 ``class Foo[T = Any](...)`` form, but that syntax
@@ -49,12 +56,18 @@ class HttpResponseError(SdkError, Generic[ModelT]):  # noqa: UP046
         model: Optional deserialised body payload (set by consumer
             libraries when they parse the error body). Typed as
             ``ModelT | None``.
+        retryable: Whether retrying the request might succeed. Derived from
+            the response status by default (request timeout, rate limiting,
+            and transient 5xx are retryable) so the retry policy can read the
+            flag directly instead of re-deriving it; callers may override it
+            explicitly via the ``retryable`` constructor keyword.
     """
 
     status: Status | None
     reason: str | None
     response: _AnyResponse | None
     model: ModelT | None
+    retryable: bool
 
     def __init__(
         self,
@@ -70,16 +83,59 @@ class HttpResponseError(SdkError, Generic[ModelT]):  # noqa: UP046
             response: The HTTP response that triggered the error.
             **kwargs: Forwarded to ``SdkError`` (``error``,
                 ``continuation_token``). The ``model`` key is consumed
-                separately for caller-supplied deserialised bodies.
+                separately for caller-supplied deserialised bodies. The
+                ``retryable`` key, if given, overrides the status-derived
+                default (pass ``True``/``False`` to force it).
         """
         self.response = response
         self.status = response.status if response is not None else None
         self.reason = response.reason if response is not None else None
         self.model = kwargs.pop("model", None)
+        retryable_override = kwargs.pop("retryable", None)
+        self.retryable = (
+            self._status_is_retryable() if retryable_override is None else bool(retryable_override)
+        )
         if message is None:
             label = self.status.name if self.status is not None else "unknown"
             message = f"Operation returned a non-success status: {label}"
         super().__init__(message, **kwargs)
+
+    def _status_is_retryable(self) -> bool:
+        """Return whether this error's status is retryable by default.
+
+        Returns:
+            ``True`` when the captured status is one of the default
+            retryable codes, ``False`` when no status was captured.
+        """
+        return self.status is not None and int(self.status) in _DEFAULT_RETRYABLE_STATUS
+
+    def body_snapshot(self, max_bytes: int | None = None) -> bytes:
+        """Preview the error response body without consuming it.
+
+        Safe to call from logging and post-mortem paths: it never drains a
+        single-use stream. Bytes are only returned when the body has already
+        been captured for repeatable reads (a ``LoggableResponseBody``); for
+        any other body — or when no response/body is present — an empty
+        ``bytes`` is returned rather than destroying the payload.
+
+        Args:
+            max_bytes: If given, return at most this many bytes from the
+                front of the captured body. ``None`` returns the full
+                capture.
+
+        Returns:
+            The captured body bytes, optionally truncated to ``max_bytes``;
+            empty when no non-consuming preview is available.
+
+        Raises:
+            ValueError: If ``max_bytes`` is negative.
+        """
+        if max_bytes is not None and max_bytes < 0:
+            raise ValueError(f"max_bytes must be non-negative, got {max_bytes}")
+        body = self.response.body if self.response is not None else None
+        if isinstance(body, LoggableResponseBody):
+            return body.snapshot(max_bytes)
+        return b""
 
 
 class DecodeError(HttpResponseError[ModelT]):
