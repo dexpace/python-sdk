@@ -35,11 +35,11 @@ from ...errors import (
     ServiceResponseError,
     ServiceResponseTimeoutError,
 )
-from ...instrumentation.http_tracer import HttpTracer
 from ...util.clock import SYSTEM_CLOCK, Clock
 from ..policy import Policy
 from ..stage import Stage
 from ._history import RequestHistory
+from .redirect import resolve_http_tracer
 
 if TYPE_CHECKING:
     from ...http.request.request import Request
@@ -56,6 +56,12 @@ _DEFAULT_RETRY_AFTER_MAX: Final[float] = 3600.0
 #: Header carrying the epoch second at which a rate-limit window resets. Sent by
 #: GitHub, Stripe, Slack, and others alongside (or instead of) ``Retry-After``.
 _RATE_LIMIT_RESET_HEADER: Final[str] = "X-RateLimit-Reset"
+
+#: Upward jitter fraction applied to an ``X-RateLimit-Reset`` wait. The delay is
+#: multiplied by a random sample in ``[1.0, 1.0 + this]`` so a client never wakes
+#: before the window resets, while a fleet that observed the same reset instant
+#: spreads its retries instead of firing in lockstep.
+_RATE_LIMIT_RESET_JITTER: Final[float] = 0.1
 
 
 @runtime_checkable
@@ -117,9 +123,9 @@ class RetryPolicy(Policy):
             delay (``Retry-After`` header in seconds/HTTP-date, or an
             ``X-RateLimit-Reset`` epoch) when present, instead of the
             computed backoff. The server delay is itself capped at
-            ``retry_after_max`` and an ``X-RateLimit-Reset`` wait is jittered
-            slightly so a fleet of clients does not all retry at the exact
-            reset instant.
+            ``retry_after_max`` and an ``X-RateLimit-Reset`` wait gets a small
+            upward jitter so a fleet of clients does not all retry at the exact
+            reset instant (and never wakes before it).
         retry_after_max: Ceiling, in seconds, on a server-supplied
             ``Retry-After`` / ``X-RateLimit-Reset`` delay. Protects against a
             buggy or hostile header forcing a multi-hour sleep. Defaults to
@@ -199,7 +205,7 @@ class RetryPolicy(Policy):
         settings = self._configure_settings(ctx.options)
         absolute_deadline = self._clock.monotonic() + settings["timeout"]
         history: list[RequestHistory[Response]] = settings["history"]
-        tracer = _resolve_tracer(ctx)
+        tracer = resolve_http_tracer(ctx)
         while True:
             tracer.attempt_started(len(history))
             try:
@@ -343,9 +349,12 @@ class RetryPolicy(Policy):
         """Resolve a server-supplied retry delay, capped and jittered.
 
         ``Retry-After`` (seconds or HTTP-date) takes precedence; an
-        ``X-RateLimit-Reset`` epoch is the fallback and gets a slight jitter
-        so a fleet of clients does not all wake at the exact reset instant.
-        Both are capped at ``retry_after_max``.
+        ``X-RateLimit-Reset`` epoch is the fallback and gets a slight *upward*
+        jitter. The jitter only ever lengthens the wait — retrying before the
+        window actually resets just earns another rate-limit response — while
+        the small positive spread keeps a fleet of clients that observed the
+        same reset instant from retrying in lockstep. Both are capped at
+        ``retry_after_max``.
 
         Returns:
             Seconds to wait, or ``None`` when neither header is present.
@@ -359,7 +368,7 @@ class RetryPolicy(Policy):
         )
         if reset is None:
             return None
-        jittered = reset * self._rand.uniform(0.85, 1.0)
+        jittered = reset * self._rand.uniform(1.0, 1.0 + _RATE_LIMIT_RESET_JITTER)
         return min(jittered, self.retry_after_max)
 
     def _backoff_seconds(self, settings: dict[str, Any]) -> float:
@@ -421,23 +430,6 @@ class _StatusRetryError(Exception):
     def __init__(self, status: int) -> None:
         super().__init__(f"retryable HTTP status {status}")
         self.status = status
-
-
-def _resolve_tracer(ctx: PipelineContext) -> HttpTracer:
-    """Mint the per-operation ``HttpTracer`` for the call.
-
-    Reads the ``HttpTracerFactory`` off the call's instrumentation context and
-    creates a fresh tracer for this send. The factory defaults to the no-op
-    factory (so callers that don't instrument pay nothing), which means the
-    retry loop can emit attempt events unconditionally.
-
-    Args:
-        ctx: The active pipeline context.
-
-    Returns:
-        A tracer to notify of attempt events; never ``None``.
-    """
-    return ctx.call.instrumentation_context.http_tracer_factory.create()
 
 
 _RETRY_AFTER_DELTA_PATTERN = re.compile(r"^\s*\d+(\.\d+)?\s*$")

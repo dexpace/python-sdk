@@ -32,7 +32,7 @@ from dexpace.sdk.core.instrumentation import (
 from dexpace.sdk.core.instrumentation.http_tracer import HttpTracer, HttpTracerFactory
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import Pipeline
-from dexpace.sdk.core.pipeline.policies import RetryPolicy
+from dexpace.sdk.core.pipeline.policies import RetryPolicy, TracingPolicy
 from dexpace.sdk.core.pipeline.policies.retry import (
     _parse_rate_limit_reset,
     _StatusRetryError,
@@ -131,19 +131,31 @@ class TestRateLimitResetParsing:
 
 
 class TestRateLimitResetHonored:
-    def test_sleeps_until_reset_when_no_retry_after(self) -> None:
+    def test_never_wakes_before_reset(self) -> None:
         clock = FakeClock(start=1_000.0)
         client = _ScriptedClient(
             [Status.TOO_MANY_REQUESTS, Status.OK],
             headers={"X-RateLimit-Reset": "1040"},
         )
-        # jitter band [0.85, 1.0] removed by forcing rand.uniform to its top.
-        retry = RetryPolicy(clock=clock, rand=_FixedRandom(1.0))
+        # Bottom of the upward jitter band [1.0, 1.1] -> exactly the reset wait.
+        retry = RetryPolicy(clock=clock, rand=_FixedRandom(0.0))
         with Pipeline(client, policies=[retry]) as p:
             response = p.run(_get(), DispatchContext(_instr("0" * 16 + "1")))
         assert response.status is Status.OK
-        # 40s until reset, jitter * 1.0 -> 40s slept.
+        # 40s until reset, jitter * 1.0 -> waits to the reset instant, never before.
         assert clock.monotonic() == pytest.approx(1_040.0)
+
+    def test_reset_jitter_only_lengthens_the_wait(self) -> None:
+        clock = FakeClock(start=1_000.0)
+        client = _ScriptedClient(
+            [Status.TOO_MANY_REQUESTS, Status.OK],
+            headers={"X-RateLimit-Reset": "1040"},
+        )
+        # Top of the band [1.0, 1.1] -> 40s * 1.1 = 44s, i.e. slightly past reset.
+        retry = RetryPolicy(clock=clock, rand=_FixedRandom(1.0))
+        with Pipeline(client, policies=[retry]) as p:
+            p.run(_get(), DispatchContext(_instr("0" * 16 + "1")))
+        assert clock.monotonic() == pytest.approx(1_044.0)
 
     def test_retry_after_takes_precedence_over_reset(self) -> None:
         clock = FakeClock(start=1_000.0)
@@ -296,6 +308,56 @@ class TestTracerAttemptEvents:
         err, _ = tracer.failed[0]
         assert isinstance(err, _StatusRetryError)
         assert err.status == int(Status.SERVICE_UNAVAILABLE)
+
+
+class _LifecycleTracer(HttpTracer):
+    """Records the operation- and attempt-level events on one instance."""
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    def operation_started(self) -> None:
+        self.events.append("operation_started")
+
+    def operation_succeeded(self) -> None:
+        self.events.append("operation_succeeded")
+
+    def attempt_started(self, attempt: int) -> None:
+        self.events.append(f"attempt_started:{attempt}")
+
+
+class _CountingFactory:
+    """Mints a *fresh* tracer per ``create`` — the spec-conformant contract."""
+
+    def __init__(self) -> None:
+        self.created: list[_LifecycleTracer] = []
+
+    def create(self) -> HttpTracer:
+        tracer = _LifecycleTracer()
+        self.created.append(tracer)
+        return tracer
+
+
+class TestSharedTracerAcrossPolicies:
+    def test_retry_and_tracing_share_one_per_operation_tracer(self) -> None:
+        # With a factory that mints a fresh tracer per ``create`` (the
+        # documented contract), the retry and tracing policies must still land
+        # on a single per-operation instance via the ``ctx.data`` cache —
+        # otherwise attempt events and lifecycle events split across objects.
+        factory = _CountingFactory()
+        clock = FakeClock()
+        client = _ScriptedClient([Status.SERVICE_UNAVAILABLE, Status.OK])
+        with Pipeline(
+            client,
+            policies=[TracingPolicy(), RetryPolicy(clock=clock, rand=_FixedRandom(0.5))],
+        ) as p:
+            p.run(_get(), DispatchContext(_instr("c" * 16, factory)))
+        assert len(factory.created) == 1
+        tracer = factory.created[0]
+        assert "operation_started" in tracer.events
+        assert "attempt_started:0" in tracer.events
+        assert "attempt_started:1" in tracer.events
+        assert "operation_succeeded" in tracer.events
 
 
 class _FixedRandom(random.Random):

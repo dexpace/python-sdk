@@ -26,7 +26,8 @@ from ...util.clock import ASYNC_SYSTEM_CLOCK, AsyncClock
 from ..async_policy import AsyncPolicy
 from ..stage import Stage
 from ._history import RequestHistory
-from .retry import RetryMode, RetryPolicy, _resolve_tracer, _StatusRetryError
+from .redirect import resolve_http_tracer
+from .retry import RetryMode, RetryPolicy, _StatusRetryError
 
 if TYPE_CHECKING:
     from ...http.request.request import Request
@@ -106,7 +107,7 @@ class AsyncRetryPolicy(AsyncPolicy):
         settings = cfg._configure_settings(ctx.options)
         absolute_deadline = self._clock.monotonic() + settings["timeout"]
         history: list[RequestHistory[AsyncResponse]] = settings["history"]
-        tracer = _resolve_tracer(ctx)
+        tracer = resolve_http_tracer(ctx)
         while True:
             tracer.attempt_started(len(history))
             try:
