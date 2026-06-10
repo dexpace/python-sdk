@@ -41,6 +41,12 @@ removed, so existing code continues to work without modification.
 - **Log correlation** (`instrumentation.correlation`). A `contextvar`-backed
   correlation id that flows through the pipeline and is attached to log records,
   so logs from a single logical request can be tied together.
+- **Reconnecting SSE client** (`http.sse.connection`). `SseConnection` and
+  `AsyncSseConnection` resume an interrupted event stream by replaying the
+  `Last-Event-ID` header and reconnecting with jittered backoff that honours the
+  server's `retry:` hint. Built on the shared dispatch seam
+  (`pipeline.dispatch`), which lets both the SSE client and the paginator accept
+  either a pipeline or a bare send-callable.
 
 ### Changed
 

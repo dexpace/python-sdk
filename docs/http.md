@@ -7,12 +7,12 @@ helpers to derive a new instance.
 ## Request / Response
 
 ```python
-from dexpace.sdk.core.http.common import Headers
+from dexpace.sdk.core.http.common import Headers, Url
 from dexpace.sdk.core.http.request import Method, Request
 
 request = Request(
     method=Method.POST,
-    url="https://api.example.com/v1/items",
+    url=Url.parse("https://api.example.com/v1/items"),
     headers=Headers({"Content-Type": "application/json"}),
 )
 updated = request.with_added_header("X-Trace", "abc")
@@ -22,7 +22,7 @@ updated = request.with_added_header("X-Trace", "abc")
 
 Case-insensitive, multi-valued, immutable. Pass `HttpHeaderName`
 constants (`CONTENT_TYPE`, `AUTHORIZATION`, …) to skip the
-`.lower().strip()` step on the hot path:
+`.lower()` step on the hot path:
 
 ```python
 from dexpace.sdk.core.http.common.http_header_name import CONTENT_TYPE
@@ -33,8 +33,10 @@ assert headers.get(CONTENT_TYPE) == "application/json"
 
 ## MediaType / Url / ETag / HttpRange / RequestConditions
 
-Each is a `@dataclass(frozen=True, slots=True)` with a `parse(str)`
-classmethod and a `__str__` that round-trips:
+Each is a `@dataclass(frozen=True, slots=True)`. `MediaType`, `Url`, and
+`ETag` expose a `parse(str)` classmethod and a `__str__` that round-trips.
+`HttpRange` renders via `format()` / `to_header_value()`, and
+`RequestConditions` applies itself onto a request via `apply_to(request)`:
 
 ```python
 from dexpace.sdk.core.http.common import ETag, HttpRange, MediaType, Url

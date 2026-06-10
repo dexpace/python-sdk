@@ -17,10 +17,13 @@ classmethod factories for the common shapes.
 | `RequestBody.from_iter(Iterable[bytes])` | ❌         | Same. The iterable is consumed on first `iter_bytes`. |
 
 Single-use bodies raise `RuntimeError` on the second `iter_bytes` call.
-The retry policy in `pipeline.policies.retry` does **not** automatically
-buffer single-use bodies — that is intentionally explicit: call
-`body.to_replayable()` before the first send if the request is in a
-retryable scope.
+The retry policy in `pipeline.policies.retry` **does** automatically
+buffer single-use bodies when retries are enabled: `RetryPolicy.send`
+calls `body.to_replayable()` before the first attempt whenever
+`total_retries > 0`, so a retry can re-emit the same payload. The
+buffering step is skipped when `total_retries == 0`; if you bypass the
+retry policy you can still call `body.to_replayable()` yourself before
+the first send.
 
 ## Response shape
 
@@ -56,6 +59,8 @@ the response side — first access drains the underlying body into a
 ## Async equivalents
 
 `AsyncRequestBody` / `AsyncResponseBody` mirror the sync APIs with
-`aiter_bytes` and `async def bytes()` / `string()`. Factories: same
-names, plus `from_async_stream` and `from_async_iter` for the
-single-use shapes.
+`aiter_bytes` and `async def bytes()` / `string()`. The factory sets
+differ per side: `AsyncRequestBody` exposes `from_bytes`, `from_string`,
+`from_form`, `from_async_stream`, and `from_async_iter`;
+`AsyncResponseBody` exposes `from_bytes` and `from_async_stream` only
+(there is no `from_async_iter` on the response side).
