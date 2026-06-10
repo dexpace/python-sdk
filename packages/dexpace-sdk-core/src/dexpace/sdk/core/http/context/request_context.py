@@ -36,14 +36,26 @@ class RequestContext(CallContext):
     ) -> ExchangeContext:
         """Promote into an `ExchangeContext` bound to ``response``.
 
-        Stores the new context in `ContextStore` keyed by trace id.
+        The promoted context records ``response.request`` — the request that
+        actually produced ``response`` — rather than ``self.request``. After a
+        redirect the per-hop request differs from the original one this
+        ``RequestContext`` was opened with; recording the response's own
+        request keeps ``ExchangeContext.request`` and ``response`` a pair that
+        truly traveled together.
+
+        Args:
+            response: The response that arrived for this call.
+
+        Returns:
+            The new `ExchangeContext`, also stored in `ContextStore` keyed by
+            trace id.
         """
         from .context_store import ContextStore
         from .exchange_context import ExchangeContext
 
         promoted = ExchangeContext(
             instrumentation_context=self.instrumentation_context,
-            request=self.request,
+            request=response.request,
             response=response,
         )
         ContextStore.set(promoted.instrumentation_context.trace_id.value, promoted)

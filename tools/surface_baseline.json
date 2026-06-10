@@ -831,7 +831,7 @@
             "operation_failed": "operation_failed(self, error: BaseException) -> None",
             "operation_started": "operation_started(self) -> None",
             "operation_succeeded": "operation_succeeded(self) -> None",
-            "request_sent": "request_sent(self, byte_count: int) -> None",
+            "request_sent": "request_sent(self, byte_count: int | None) -> None",
             "request_url_resolved": "request_url_resolved(self, url: str) -> None",
             "response_headers_received": "response_headers_received(self, status: int, headers: Mapping[str, str]) -> None",
             "response_received": "response_received(self, byte_count: int) -> None"

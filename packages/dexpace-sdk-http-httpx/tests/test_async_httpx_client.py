@@ -190,8 +190,176 @@ async def test_async_reason_phrase_propagated() -> None:
             assert response.reason == "OK"
 
 
-async def test_async_unknown_status_closes_response() -> None:
-    """When Status() rejects an unknown code, the response must be released."""
+async def test_async_known_length_body_sends_content_length_not_chunked() -> None:
+    """A known-length body goes out framed by Content-Length, not chunked."""
+    sent: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent["content-length"] = request.headers.get("content-length")
+        sent["transfer-encoding"] = request.headers.get("transfer-encoding")
+        return httpx.Response(200, content=b"ack")
+
+    transport = httpx.MockTransport(handler)
+    request = Request(
+        method=Method.POST,
+        url=Url.parse("http://example.test/upload"),
+        body=RequestBody.from_bytes(b"hello world"),
+    )
+    async with AsyncHttpxHttpClient(transport=transport) as client, await client.execute(request):
+        pass
+
+    assert sent["content-length"] == "11"
+    assert sent["transfer-encoding"] is None
+
+
+async def test_async_unknown_length_body_stays_chunked() -> None:
+    """An unknown-length (iterator) body keeps Transfer-Encoding: chunked."""
+    sent: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent["content-length"] = request.headers.get("content-length")
+        sent["transfer-encoding"] = request.headers.get("transfer-encoding")
+        return httpx.Response(200, content=b"ack")
+
+    transport = httpx.MockTransport(handler)
+    request = Request(
+        method=Method.POST,
+        url=Url.parse("http://example.test/upload"),
+        body=RequestBody.from_iter(iter([b"a", b"bc"])),
+    )
+    async with AsyncHttpxHttpClient(transport=transport) as client, await client.execute(request):
+        pass
+
+    assert sent["content-length"] is None
+    assert sent["transfer-encoding"] == "chunked"
+
+
+async def test_async_sync_body_iteration_runs_off_the_loop() -> None:
+    """Blocking chunk reads run on a worker thread, not the event loop."""
+    import threading
+
+    loop_thread = threading.get_ident()
+    iter_threads: list[int] = []
+
+    def chunks() -> object:
+        for piece in (b"one", b"two", b"three"):
+            iter_threads.append(threading.get_ident())
+            yield piece
+
+    received: dict[str, bytes] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        received["body"] = request.content
+        return httpx.Response(200, content=b"ack")
+
+    transport = httpx.MockTransport(handler)
+    request = Request(
+        method=Method.POST,
+        url=Url.parse("http://example.test/upload"),
+        body=RequestBody.from_iter(chunks()),  # type: ignore[arg-type]
+    )
+    async with AsyncHttpxHttpClient(transport=transport) as client, await client.execute(request):
+        pass
+
+    assert received["body"] == b"onetwothree"
+    assert iter_threads, "iterator was never pumped"
+    assert all(tid != loop_thread for tid in iter_threads), (
+        "sync body iteration ran on the event loop thread"
+    )
+
+
+async def test_async_caller_content_length_is_not_duplicated() -> None:
+    """An explicit caller Content-Length is preserved, not re-added."""
+    from dexpace.sdk.core.http.common.headers import Headers as SdkHeaders
+
+    sent: dict[str, list[str]] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent["content-length"] = [
+            v for k, v in request.headers.multi_items() if k == "content-length"
+        ]
+        return httpx.Response(200, content=b"ack")
+
+    transport = httpx.MockTransport(handler)
+    request = Request(
+        method=Method.POST,
+        url=Url.parse("http://example.test/upload"),
+        headers=SdkHeaders([("Content-Length", "11")]),
+        body=RequestBody.from_bytes(b"hello world"),
+    )
+    async with AsyncHttpxHttpClient(transport=transport) as client, await client.execute(request):
+        pass
+
+    assert sent["content-length"] == ["11"]
+
+
+async def test_async_reported_protocol_reflects_http_version() -> None:
+    """The response protocol mirrors httpx's reported HTTP version."""
+    from dexpace.sdk.core.http.common.protocol import Protocol
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"", extensions={"http_version": b"HTTP/2"})
+
+    transport = httpx.MockTransport(handler)
+    async with AsyncHttpxHttpClient(transport=transport) as client:
+        request = Request(method=Method.GET, url=Url.parse("http://example.test/"))
+        async with await client.execute(request) as response:
+            assert response.protocol == Protocol.HTTP_2
+
+
+async def test_async_content_encoded_response_drops_content_length() -> None:
+    """A content-encoded response does not propagate the upstream length."""
+    import gzip
+
+    compressed = gzip.compress(b"decompressed-bytes")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-encoding": "gzip", "content-length": str(len(compressed))},
+            content=compressed,
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with AsyncHttpxHttpClient(transport=transport) as client:
+        request = Request(method=Method.GET, url=Url.parse("http://example.test/"))
+        async with await client.execute(request) as response:
+            assert response.body is not None
+            # The header length describes the compressed payload; the stream
+            # yields decompressed bytes, so the length must not be propagated.
+            assert response.body.content_length() == -1
+            assert await response.body.bytes() == b"decompressed-bytes"
+
+
+async def test_async_shared_client_is_not_closed_on_aclose() -> None:
+    """A caller-supplied client is not closed by the transport."""
+    transport = httpx.MockTransport(_ok_handler(b"{}"))
+    shared = httpx.AsyncClient(transport=transport)
+    client = AsyncHttpxHttpClient(client=shared)
+    await client.aclose()
+    assert not shared.is_closed
+    await shared.aclose()
+
+
+async def test_async_in_range_unregistered_status_returns_response() -> None:
+    """An in-range but unregistered status yields a Response, not an error."""
+    payload = b"upstream said 218"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(218, headers={"x-marker": "yes"}, content=payload)
+
+    transport = httpx.MockTransport(handler)
+    async with AsyncHttpxHttpClient(transport=transport) as client:
+        request = Request(method=Method.GET, url=Url.parse("http://example.test/"))
+        async with await client.execute(request) as response:
+            assert int(response.status) == 218
+            assert response.headers.get("x-marker") == "yes"
+            assert response.body is not None
+            assert await response.body.bytes() == payload
+
+
+async def test_async_invalid_status_closes_response_and_raises() -> None:
+    """A genuinely invalid status releases the response and raises."""
     from dexpace.sdk.core.errors import ServiceResponseError
 
     closed = {"yes": False}

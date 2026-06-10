@@ -129,3 +129,68 @@ def test_ascii_filename_still_works() -> None:
     body = MultipartRequestBody([MultipartField(name="file", value=b"x", filename="upload.bin")])
     drained = _drain(body)
     assert b'filename="upload.bin"' in drained
+
+
+@pytest.mark.parametrize("ctrl", ["\r", "\n", "\0"])
+def test_control_char_in_name_rejected(ctrl: str) -> None:
+    # CR/LF/NUL in a field name would let an attacker inject extra part
+    # headers or a fabricated boundary line into the multipart payload.
+    with pytest.raises(ValueError, match="control characters"):
+        MultipartField(name=f"key{ctrl}", value=b"v")
+
+
+@pytest.mark.parametrize("ctrl", ["\r", "\n", "\0"])
+def test_control_char_in_filename_rejected(ctrl: str) -> None:
+    # Filenames are the classic attacker-controlled value on file uploads.
+    with pytest.raises(ValueError, match="control characters"):
+        MultipartField(name="file", value=b"v", filename=f"a{ctrl}b.txt")
+
+
+def test_crlf_injection_filename_rejected() -> None:
+    # The canonical header-injection payload: a filename that smuggles a new
+    # Content-Type header and body after a CRLF must be refused outright.
+    payload = 'a"\r\nContent-Type: text/html\r\n\r\n<script>'
+    with pytest.raises(ValueError, match="control characters"):
+        MultipartField(name="file", value=b"v", filename=payload)
+
+
+@pytest.mark.parametrize("ctrl", ["\r", "\n", "\0"])
+def test_control_char_in_custom_header_name_rejected(ctrl: str) -> None:
+    with pytest.raises(ValueError, match="control characters"):
+        MultipartField(name="f", value=b"v", headers=((f"X-Bad{ctrl}", "ok"),))
+
+
+@pytest.mark.parametrize("ctrl", ["\r", "\n", "\0"])
+def test_control_char_in_custom_header_value_rejected(ctrl: str) -> None:
+    with pytest.raises(ValueError, match="control characters"):
+        MultipartField(name="f", value=b"v", headers=(("X-Ok", f"bad{ctrl}value"),))
+
+
+@pytest.mark.parametrize("ctrl", ["\r", "\n", "\0"])
+def test_control_char_in_media_type_subtype_rejected(ctrl: str) -> None:
+    # The part media type is rendered into a ``Content-Type:`` header, so a
+    # subtype carrying CR/LF would inject an extra header line.
+    media_type = MediaType.of("application", f"octet-stream{ctrl}X-Evil: 1")
+    with pytest.raises(ValueError, match="control characters"):
+        MultipartField(name="f", value=b"v", media_type=media_type)
+
+
+@pytest.mark.parametrize("ctrl", ["\r", "\n", "\0"])
+def test_control_char_in_media_type_param_rejected(ctrl: str) -> None:
+    media_type = MediaType.of("text", "plain", {"charset": f"utf-8{ctrl}X-Evil: 1"})
+    with pytest.raises(ValueError, match="control characters"):
+        MultipartField(name="f", value=b"v", media_type=media_type)
+
+
+@pytest.mark.parametrize("ctrl", ["\r", "\n", "\0"])
+def test_control_char_in_boundary_rejected(ctrl: str) -> None:
+    # A caller-supplied boundary is interpolated into every delimiter and the
+    # Content-Type header; CR/LF/NUL in it would inject lines into the payload.
+    with pytest.raises(ValueError, match="control characters"):
+        MultipartRequestBody([MultipartField(name="a", value="b")], boundary=f"bnd{ctrl}evil")
+
+
+def test_crlf_injection_boundary_rejected() -> None:
+    payload = "evil\r\nX-Injected: yes\r\n--evil"
+    with pytest.raises(ValueError, match="control characters"):
+        MultipartRequestBody([MultipartField(name="a", value="b")], boundary=payload)

@@ -13,6 +13,7 @@ import dataclasses
 import enum
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time
+from typing import Annotated
 from uuid import UUID
 
 import pytest
@@ -685,8 +686,12 @@ def test_decode_invalid_uuid_raises_with_path(codec: Codec) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_decode_non_optional_union_does_not_accept_none(codec: Codec) -> None:
-    # ``int | str`` has no ``NoneType`` arm; ``None`` must not be injected.
+def test_decode_non_optional_union_passes_none_through(codec: Codec) -> None:
+    # A tagless multi-arm union (``int | str``) cannot be resolved
+    # structurally, so its payload — including ``None`` — passes through
+    # untouched rather than being coerced or rejected. The codec injects no
+    # ``NoneType`` arm and performs no validation; this pins the documented
+    # passthrough, matching ``_decode_union``'s docstring.
     assert codec.decode(None, int | str) is None  # type: ignore[arg-type]
 
 
@@ -701,3 +706,175 @@ def test_decode_optional_union_recovers_inner_dataclass(codec: Codec) -> None:
 def test_decode_multi_arm_union_passes_scalar_through(codec: Codec) -> None:
     # A multi-arm union with no matching coercion passes the scalar through.
     assert codec.decode("hello", int | str) == "hello"  # type: ignore[arg-type, comparison-overlap]
+
+
+# --------------------------------------------------------------------------- #
+# Annotated[...] field decoding                                                #
+# --------------------------------------------------------------------------- #
+
+
+def test_decode_annotated_field_decodes_as_underlying_type(codec: Codec) -> None:
+    @dataclass(frozen=True, slots=True)
+    class HasAnnotated:
+        when: Annotated[datetime, "rfc3339"]
+
+    decoded = codec.decode({"when": "2026-01-02T03:04:05+00:00"}, HasAnnotated)
+    # Without the Annotated unwrap this lands in the container branch and the
+    # raw wire ``str`` is stored instead of a ``datetime``.
+    assert decoded.when == datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    assert isinstance(decoded.when, datetime)
+
+
+def test_decode_bare_annotated_target_decodes_as_underlying(codec: Codec) -> None:
+    decoded: date = codec.decode("2026-01-02", Annotated[date, "iso"])  # type: ignore[arg-type]
+    assert decoded == date(2026, 1, 2)
+    assert isinstance(decoded, date)
+
+
+def test_decode_annotated_container_element_recovers_models(codec: Codec) -> None:
+    @dataclass(frozen=True, slots=True)
+    class HasAnnotatedList:
+        rows: list[Annotated[_Inner, "row"]]
+
+    decoded = codec.decode({"rows": [{"x": 1}, {"x": 2}]}, HasAnnotatedList)
+    assert decoded.rows == [_Inner(1), _Inner(2)]
+
+
+# --------------------------------------------------------------------------- #
+# CodecError contract on hostile / edge inputs (M14)                           #
+# --------------------------------------------------------------------------- #
+
+
+def test_decode_set_of_unhashable_elements_raises_codec_error(codec: Codec) -> None:
+    # ``set[object]`` over decoded ``list`` elements would raise a bare
+    # ``TypeError`` from ``set(...)``; it must surface as ``CodecError``.
+    with pytest.raises(CodecError) as info:
+        codec.decode([[1, 2], [3]], set[object])
+    assert "unhashable" in str(info.value)
+
+
+def test_decode_frozenset_of_unhashable_elements_raises_codec_error(codec: Codec) -> None:
+    with pytest.raises(CodecError) as info:
+        codec.decode([{"k": "v"}], frozenset[object])
+    assert "unhashable" in str(info.value)
+
+
+def test_decode_deeply_nested_payload_raises_codec_error_not_recursion(codec: Codec) -> None:
+    # A hostile, deeply nested array would exhaust the interpreter stack and
+    # surface a bare ``RecursionError``; the depth guard turns it into a clean
+    # ``CodecError`` instead.
+    depth = 5_000
+    payload: object = 0
+    target: object = int
+    for _ in range(depth):
+        payload = [payload]
+        target = list[target]  # type: ignore[valid-type]
+    with pytest.raises(CodecError) as info:
+        codec.decode(payload, target)  # type: ignore[arg-type]
+    assert "depth" in str(info.value)
+
+
+def test_decode_unresolvable_forward_ref_raises_codec_error(codec: Codec) -> None:
+    # ``get_type_hints`` raises a bare ``NameError`` for a string annotation
+    # whose name is not in scope; the codec wraps it as ``CodecError``.
+    @dataclass(frozen=True, slots=True)
+    class HasBadRef:
+        value: DoesNotExistAnywhere  # type: ignore[name-defined]  # noqa: F821
+
+    with pytest.raises(CodecError) as info:
+        codec.decode({"value": 1}, HasBadRef)
+    assert "resolve" in str(info.value)
+
+
+@dataclass(frozen=True, slots=True)
+class _Box[T]:
+    item: T
+
+
+def test_decode_parametrised_generic_dataclass_decodes_as_dataclass(codec: Codec) -> None:
+    # ``_Box[_Inner]`` has a real dataclass origin; it must decode field-by-field
+    # rather than falling through the container branch and returning the raw
+    # dict undecoded. The type argument ``_Inner`` substitutes for ``T`` so the
+    # inner mapping is recovered as a model.
+    decoded = codec.decode({"item": {"x": 7}}, _Box[_Inner])
+    assert isinstance(decoded, _Box)
+    assert decoded.item == _Inner(7)
+
+
+def test_decode_generic_dataclass_substitutes_nested_type_param(codec: Codec) -> None:
+    # ``T`` resolves to ``list[_Inner]``; the nested element type must be
+    # substituted too, so every element decodes as a model.
+    decoded = codec.decode({"item": [{"x": 1}, {"x": 2}]}, _Box[list[_Inner]])
+    assert decoded.item == [_Inner(1), _Inner(2)]
+
+
+def test_decode_generic_dataclass_scalar_arg_round_trips(codec: Codec) -> None:
+    decoded = codec.decode({"item": 5}, _Box[int])
+    assert decoded == _Box(5)
+
+
+# --------------------------------------------------------------------------- #
+# field_alias / wire-alias validation (IMP9)                                   #
+# --------------------------------------------------------------------------- #
+
+
+def test_field_alias_rejects_default_and_factory_together() -> None:
+    with pytest.raises(ValueError, match="at most one"):
+        field_alias("v", default=3, default_factory=list)
+
+
+def test_duplicate_wire_alias_across_fields_raises(codec: Codec) -> None:
+    @dataclass(frozen=True, slots=True)
+    class Clashing:
+        a: int = field(metadata={ALIAS_KEY: "shared"})
+        b: int = field(metadata={ALIAS_KEY: "shared"})
+
+    with pytest.raises(CodecError) as info:
+        codec.decode({"shared": 1}, Clashing)
+    assert "shared" in str(info.value)
+
+
+# --------------------------------------------------------------------------- #
+# Tristate fields default to ABSENT on missing keys (IMP13)                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_tristate_field_without_default_is_absent_when_key_omitted(codec: Codec) -> None:
+    @dataclass(frozen=True, slots=True)
+    class HasTristate:
+        # No ``= ABSENT`` default declared.
+        note: Tristate[str]
+
+    decoded = codec.decode({}, HasTristate)
+    assert decoded.note is ABSENT
+
+
+def test_tristate_field_without_default_round_trips_null_and_present(codec: Codec) -> None:
+    @dataclass(frozen=True, slots=True)
+    class HasTristate:
+        note: Tristate[str]
+
+    assert codec.decode({"note": None}, HasTristate).note is NULL
+    assert codec.decode({"note": "hi"}, HasTristate).note == Present("hi")
+
+
+def test_defaultless_annotated_tristate_field_is_absent_when_key_omitted(codec: Codec) -> None:
+    # An ``Annotated[Tristate[X], meta]`` field with no default must still
+    # decode to ABSENT on an omitted key, exactly like the bare Tristate form.
+    @dataclass(frozen=True, slots=True)
+    class HasAnnotatedTristate:
+        note: Annotated[Tristate[str], "meta"]
+
+    assert codec.decode({}, HasAnnotatedTristate).note is ABSENT
+    assert codec.decode({"note": None}, HasAnnotatedTristate).note is NULL
+    assert codec.decode({"note": "hi"}, HasAnnotatedTristate).note == Present("hi")
+
+
+def test_non_tristate_required_field_still_raises_when_omitted(codec: Codec) -> None:
+    @dataclass(frozen=True, slots=True)
+    class HasRequired:
+        value: int
+
+    with pytest.raises(CodecError) as info:
+        codec.decode({}, HasRequired)
+    assert "missing required field" in str(info.value)

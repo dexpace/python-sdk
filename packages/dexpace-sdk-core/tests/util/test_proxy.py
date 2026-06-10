@@ -222,9 +222,9 @@ def test_from_configuration_no_proxy_list() -> None:
     assert options.non_proxy_hosts == ("example.com", "*.internal")
 
 
-def test_from_configuration_malformed_url_returns_none() -> None:
-    """A URL without a host parses to ``None`` rather than raising."""
-    config = Configuration.builder().put(Configuration.HTTPS_PROXY, "not-a-url").build()
+def test_from_configuration_hostless_url_returns_none() -> None:
+    """A URL with a scheme but no host parses to ``None`` rather than raising."""
+    config = Configuration.builder().put(Configuration.HTTPS_PROXY, "http://").build()
     assert ProxyOptions.from_configuration(config) is None
 
 
@@ -240,3 +240,125 @@ def test_from_configuration_no_env_returns_none() -> None:
     """An empty configuration produces ``None``."""
     config = Configuration(overrides={}, env=lambda _name: None)
     assert ProxyOptions.from_configuration(config) is None
+
+
+def _config(url: str) -> Configuration:
+    """Build a configuration with only ``HTTPS_PROXY`` set."""
+    return Configuration.builder().put(Configuration.HTTPS_PROXY, url).build()
+
+
+class TestFromConfigurationScheme:
+    """The proxy URL scheme selects the transport flavour (L4)."""
+
+    def test_socks5_scheme_maps_to_socks5_type(self) -> None:
+        options = ProxyOptions.from_configuration(_config("socks5://proxy.corp:1080"))
+        assert options is not None
+        assert options.type is ProxyType.SOCKS5
+
+    def test_socks5h_scheme_maps_to_socks5_type(self) -> None:
+        options = ProxyOptions.from_configuration(_config("socks5h://proxy.corp:1080"))
+        assert options is not None
+        assert options.type is ProxyType.SOCKS5
+
+    def test_socks4_scheme_maps_to_socks4_type(self) -> None:
+        options = ProxyOptions.from_configuration(_config("socks4://proxy.corp:1080"))
+        assert options is not None
+        assert options.type is ProxyType.SOCKS4
+
+    def test_http_scheme_maps_to_http_type(self) -> None:
+        options = ProxyOptions.from_configuration(_config("http://proxy.corp:8080"))
+        assert options is not None
+        assert options.type is ProxyType.HTTP
+
+    def test_unsupported_scheme_rejected_with_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # An unsupported scheme must be rejected, NOT silently downgraded to
+        # HTTP, and the rejection must be visible above DEBUG.
+        with caplog.at_level("WARNING", logger="dexpace.sdk.core.util.proxy"):
+            options = ProxyOptions.from_configuration(_config("ftp://proxy.corp:8080"))
+        assert options is None
+        assert any(record.levelname == "WARNING" for record in caplog.records)
+
+
+class TestFromConfigurationPortDefaults:
+    """A missing port defaults by scheme instead of dropping the proxy (L4)."""
+
+    def test_http_without_port_defaults_to_80(self) -> None:
+        options = ProxyOptions.from_configuration(_config("http://proxy.corp"))
+        assert options is not None
+        assert options.port == 80
+
+    def test_https_without_port_defaults_to_443(self) -> None:
+        options = ProxyOptions.from_configuration(_config("https://proxy.corp"))
+        assert options is not None
+        assert options.port == 443
+
+    def test_socks_without_port_defaults_to_1080(self) -> None:
+        options = ProxyOptions.from_configuration(_config("socks5://proxy.corp"))
+        assert options is not None
+        assert options.port == 1080
+
+
+class TestFromConfigurationSchemeless:
+    """A scheme-less ``host:port`` form is parsed as an HTTP proxy (L4)."""
+
+    def test_schemeless_host_port(self) -> None:
+        options = ProxyOptions.from_configuration(_config("proxy.corp:8080"))
+        assert options is not None
+        assert options.type is ProxyType.HTTP
+        assert options.host == "proxy.corp"
+        assert options.port == 8080
+
+    def test_schemeless_host_only_defaults_port(self) -> None:
+        options = ProxyOptions.from_configuration(_config("proxy.corp"))
+        assert options is not None
+        assert options.host == "proxy.corp"
+        assert options.port == 80
+
+
+class TestFromConfigurationCredentials:
+    """Percent-encoded proxy credentials are ``unquote()``-decoded (L4)."""
+
+    def test_percent_encoded_credentials_decoded(self) -> None:
+        # user "u@s" and password "p:w" percent-encode their reserved chars.
+        options = ProxyOptions.from_configuration(_config("http://u%40s:p%3Aw@proxy.corp:8080"))
+        assert options is not None
+        assert options.username == "u@s"
+        assert options.password == "p:w"
+
+
+class TestFromConfigurationVisibility:
+    """A genuinely unusable proxy config is logged above DEBUG (L4)."""
+
+    def test_hostless_url_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level("WARNING", logger="dexpace.sdk.core.util.proxy"):
+            options = ProxyOptions.from_configuration(_config("http://"))
+        assert options is None
+        assert any(record.levelname == "WARNING" for record in caplog.records)
+
+
+class TestBypassGlobWithPort:
+    """Glob bypass patterns strip a trailing ``:port`` so host:port matches (IMP12)."""
+
+    def test_ported_glob_matches_port_qualified_candidate(self) -> None:
+        options = ProxyOptions(
+            type=ProxyType.HTTP,
+            host="proxy.corp",
+            port=8080,
+            non_proxy_hosts=("*.example.com:443",),
+        )
+        # Before the fix the ``:443`` baked into the compiled regex meant the
+        # pattern never matched a (port-stripped) candidate.
+        assert options.bypasses_proxy("api.example.com") is True
+        assert options.bypasses_proxy("api.example.com:443") is True
+        assert options.bypasses_proxy("api.example.com:8443") is True
+
+    def test_ported_glob_does_not_over_match(self) -> None:
+        options = ProxyOptions(
+            type=ProxyType.HTTP,
+            host="proxy.corp",
+            port=8080,
+            non_proxy_hosts=("*.example.com:443",),
+        )
+        assert options.bypasses_proxy("api.example.org") is False

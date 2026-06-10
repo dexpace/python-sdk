@@ -1,7 +1,7 @@
 # Copyright (c) 2026 dexpace and Omar Aljarrah.
 # Licensed under the MIT License. See LICENSE.md in the repository root for details.
 
-"""Metrics SPI — Counter / Histogram / Gauge ABCs and no-op singletons.
+"""Metrics SPI — Counter / UpDownCounter / Histogram ABCs and no-op singletons.
 
 Mirrors the OpenTelemetry-style metric primitives but stays no-deps. A
 real implementation lives in a sibling package (e.g.

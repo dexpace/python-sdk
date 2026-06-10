@@ -26,19 +26,29 @@ Limitations of the underlying ``urllib.request`` transport:
   outbound) and, in proxy/forwarder scenarios, ``WWW-Authenticate``. Use a
   production transport if you need to emit repeated outbound headers.
 
-The response body is exposed as a `ResponseBody.from_stream` wrapper
-so streaming reads on the response side are possible. Maps urllib's
-exception types into the SDK error hierarchy.
+Redirects are **not** followed by this transport. A custom opener disables
+``urllib``'s built-in ``HTTPRedirectHandler`` so 3xx responses surface to
+the pipeline as ordinary ``Response`` objects, letting the redirect policy
+own hop limits, the method matrix, and cross-origin credential stripping —
+matching the other adapters (all of which disable library-level redirects).
+
+The response body is exposed as a `ResponseBody.from_stream` wrapper over a
+read-mapping adapter so streaming reads on the response side are possible
+and read-phase failures (stalls, truncation) surface as SDK errors. Maps
+urllib's exception types into the SDK error hierarchy.
 """
 
 from __future__ import annotations
 
 import contextlib
+import http.client
+from collections.abc import Mapping
+from http.client import HTTPResponse
 from types import TracebackType
 from typing import Final, Self
 from urllib.error import HTTPError, URLError
+from urllib.request import HTTPRedirectHandler, OpenerDirector, build_opener
 from urllib.request import Request as _UrllibRequest
-from urllib.request import urlopen
 
 from dexpace.sdk.core.errors import (
     ServiceRequestError,
@@ -55,6 +65,43 @@ from dexpace.sdk.core.http.response.status import Status
 
 _DEFAULT_TIMEOUT: Final[float] = 30.0
 
+# ``http.client.HTTPResponse.version`` is an integer: ``10`` for HTTP/1.0 and
+# ``11`` for HTTP/1.1. Map it onto the SDK's protocol enum; default elsewhere.
+_PROTOCOL_BY_VERSION: Final[Mapping[int, Protocol]] = {
+    10: Protocol.HTTP_1_0,
+    11: Protocol.HTTP_1_1,
+}
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    """Redirect handler that refuses to follow 3xx responses.
+
+    Returning ``None`` from ``redirect_request`` tells ``urllib`` not to
+    reissue the request, so the 3xx surfaces as an ``HTTPError`` that the
+    ``execute`` path converts into a normal ``Response``. This keeps redirect
+    handling (hop caps, the method matrix, cross-origin credential stripping)
+    in the pipeline's redirect policy rather than in the transport.
+    """
+
+    def redirect_request(
+        self,
+        req: _UrllibRequest,
+        fp: object,
+        code: int,
+        msg: str,
+        headers: object,
+        newurl: str,
+    ) -> None:
+        return None
+
+
+def _build_no_redirect_opener() -> OpenerDirector:
+    """Build an opener whose redirect handler does not follow 3xx responses."""
+    return build_opener(_NoRedirectHandler)
+
+
+_OPENER: Final[OpenerDirector] = _build_no_redirect_opener()
+
 
 class UrllibHttpClient:
     """Reference synchronous transport over ``urllib.request``.
@@ -64,6 +111,10 @@ class UrllibHttpClient:
     ``close`` on exit. The implementation prepares an ``urllib.Request`` per
     call, streams the response into a buffered ``ResponseBody``, and maps
     urllib failure modes into the SDK error hierarchy.
+
+    Redirects are not followed at the transport layer (a private opener
+    disables ``urllib``'s ``HTTPRedirectHandler``), so 3xx responses reach
+    the pipeline intact.
 
     See the module docstring for the full list of underlying ``urllib``
     limitations (no streaming uploads, coarse timeouts, multi-value
@@ -85,6 +136,10 @@ class UrllibHttpClient:
     def execute(self, request: Request) -> Response:
         """Send ``request`` and return the response.
 
+        3xx responses are returned as-is (redirects are not followed at the
+        transport layer); the pipeline's redirect policy decides whether to
+        reissue.
+
         Raises:
             ServiceRequestError: When the connection cannot be established.
             ServiceRequestTimeoutError: When the connection times out before
@@ -97,10 +152,11 @@ class UrllibHttpClient:
             raise ServiceRequestError("UrllibHttpClient is closed")
         raw = _build_urllib_request(request)
         try:
-            opened = urlopen(raw, timeout=self.timeout)
+            opened = _OPENER.open(raw, timeout=self.timeout)
         except HTTPError as err:
-            # urllib raises HTTPError for 4xx/5xx; surface them via the
-            # normal Response path so policies (retry, error_map) can react.
+            # urllib raises HTTPError for 3xx (redirects are not followed) and
+            # 4xx/5xx; surface them via the normal Response path so policies
+            # (redirect, retry, error_map) can react.
             return _build_response(request, err)
         except URLError as err:
             # Since 3.10 ``socket.timeout`` is ``TimeoutError``. A connect
@@ -157,23 +213,66 @@ def _build_response(request: Request, opened: object) -> Response:
     try:
         status = Status(status_code)
     except ValueError as err:
-        # A valid-but-unregistered code raises here before the body wraps the
-        # stream. Release the underlying response first so the connection is
-        # not leaked (parity with the aiohttp/httpx adapters).
+        # Only a genuinely out-of-range code (outside 100..599) reaches here:
+        # ``Status`` synthesizes a member for any in-range code. Release the
+        # underlying response first so the connection is not leaked.
         _close_quietly(opened)
         raise ServiceResponseError(f"Unknown status code: {status_code}", error=err) from err
     raw_headers = getattr(opened, "headers", None)
     headers = _convert_headers(raw_headers)
-    body = ResponseBody.from_stream(opened)  # type: ignore[arg-type]  # urllib's HTTPResponse satisfies BinaryIO
+    content_length = _body_content_length(headers)
+    body = ResponseBody.from_stream(
+        _ReadMappingStream(opened),  # type: ignore[arg-type]  # adapter satisfies BinaryIO
+        content_length=content_length,
+    )
     reason = getattr(opened, "reason", None)
     return Response(
         request=request,
-        protocol=Protocol.HTTP_1_1,
+        protocol=_protocol_of(opened),
         status=status,
         headers=headers,
         reason=reason,
         body=body,
     )
+
+
+def _protocol_of(opened: object) -> Protocol:
+    """Map ``http.client.HTTPResponse.version`` onto the SDK protocol enum.
+
+    Args:
+        opened: The urllib response (or ``HTTPError``) handle.
+
+    Returns:
+        The reported protocol, or ``Protocol.HTTP_1_1`` when unknown.
+    """
+    version = getattr(opened, "version", None)
+    if isinstance(version, int):
+        return _PROTOCOL_BY_VERSION.get(version, Protocol.HTTP_1_1)
+    return Protocol.HTTP_1_1
+
+
+def _body_content_length(headers: Headers) -> int:
+    """Resolve the body length to advertise on the ``ResponseBody``.
+
+    Returns ``-1`` (unknown) when ``Content-Encoding`` is present, because
+    the stream yields decompressed bytes and the upstream ``Content-Length``
+    counts the compressed payload — propagating it would lie about the body.
+
+    Args:
+        headers: The response headers.
+
+    Returns:
+        The body length in bytes, or ``-1`` when unknown or unreliable.
+    """
+    if "content-encoding" in headers:
+        return -1
+    raw = headers.get("Content-Length")
+    if raw is None:
+        return -1
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return -1
 
 
 def _close_quietly(opened: object) -> None:
@@ -198,6 +297,46 @@ def _convert_headers(raw: object) -> Headers:
     if items_method is None:
         return Headers()
     return Headers(list(items_method()))
+
+
+class _ReadMappingStream:
+    """``BinaryIO``-shaped adapter that maps read failures to SDK errors.
+
+    ``ResponseBody.from_stream`` calls ``read(size)`` and ``close()`` on its
+    argument. The raw ``http.client.HTTPResponse`` raises bare
+    ``TimeoutError`` on a stalled read and ``http.client.IncompleteRead`` on
+    a truncated body — neither is an ``SdkError``. This adapter forwards
+    ``read``/``close`` to the underlying response while translating
+    read-phase failures: the request is already on the wire, so a stall is a
+    ``ServiceResponseTimeoutError`` and truncation/other transport failures
+    are ``ServiceResponseError``.
+    """
+
+    __slots__ = ("_closed", "_response")
+
+    def __init__(self, response: HTTPResponse) -> None:
+        self._response = response
+        self._closed = False
+
+    def read(self, size: int = -1) -> bytes:
+        if self._closed:
+            return b""
+        try:
+            if size < 0:
+                return self._response.read()
+            return self._response.read(size)
+        except TimeoutError as err:
+            raise ServiceResponseTimeoutError("Response body read timed out", error=err) from err
+        except http.client.IncompleteRead as err:
+            raise ServiceResponseError(f"Response body truncated: {err}", error=err) from err
+        except OSError as err:
+            raise ServiceResponseError(f"Response body read failed: {err}", error=err) from err
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._response.close()
 
 
 __all__ = ["UrllibHttpClient"]

@@ -34,9 +34,11 @@ from dexpace.sdk.core.instrumentation import (
 )
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import AsyncPipeline, Pipeline
-from dexpace.sdk.core.pipeline.policies import TracingPolicy
+from dexpace.sdk.core.pipeline.policies import RetryPolicy, TracingPolicy
 from dexpace.sdk.core.pipeline.policies.async_redirect import AsyncRedirectPolicy
 from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
+
+from ..conftest import FakeClock
 
 
 class _RecordingHttpTracer(HttpTracer):
@@ -57,7 +59,7 @@ class _RecordingHttpTracer(HttpTracer):
     def request_url_resolved(self, url: str) -> None:
         self.events.append(("request_url_resolved", url))
 
-    def request_sent(self, byte_count: int) -> None:
+    def request_sent(self, byte_count: int | None) -> None:
         self.events.append(("request_sent", byte_count))
 
     def response_headers_received(self, status: int, headers: Mapping[str, str]) -> None:
@@ -312,3 +314,136 @@ class TestSharedTracerAcrossPolicies:
         assert "operation_succeeded" in names
         # Two hops -> two request_sent events from the inner TracingPolicy.
         assert names.count("request_url_resolved") == 2
+
+
+# ----- operation_* fire once per operation, not per attempt/hop ----------
+
+
+class _RetryThenOkClient(HttpClient):
+    """Returns ``fail_status`` for the first ``fail_count`` calls, then OK."""
+
+    def __init__(self, *, fail_status: Status, fail_count: int) -> None:
+        self._fail_status = fail_status
+        self._fail_count = fail_count
+        self.calls = 0
+
+    def execute(self, request: Request) -> Response:
+        status = self._fail_status if self.calls < self._fail_count else Status.OK
+        self.calls += 1
+        return Response(request=request, protocol=Protocol.HTTP_1_1, status=status)
+
+
+class _AlwaysRaisesClient(HttpClient):
+    """Raises a retryable error on every call to exhaust the retry budget."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+        self.calls = 0
+
+    def execute(self, request: Request) -> Response:
+        self.calls += 1
+        raise self._error
+
+
+class TestOperationEventsFireOncePerOperation:
+    def test_retry_emits_operation_lifecycle_once_across_attempts(self) -> None:
+        # TracingPolicy sits *inside* RetryPolicy (retry is outer), so it is
+        # re-entered once per attempt. The operation_* events must still fire
+        # exactly once for the whole operation.
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        client = _RetryThenOkClient(fail_status=Status.SERVICE_UNAVAILABLE, fail_count=2)
+        retry = RetryPolicy(status_retries=3, clock=FakeClock())
+        with Pipeline(client, policies=[retry, TracingPolicy()]) as p:
+            p.run(_request(), DispatchContext(instr))
+        names = tracer.names()
+        # Three attempts total (two 503s then a 200).
+        assert client.calls == 3
+        assert names.count("operation_started") == 1
+        assert names.count("operation_succeeded") == 1
+        assert names.count("operation_failed") == 0
+        # Per-attempt request_sent still fires once per attempt.
+        assert names.count("request_sent") == 3
+        # operation_started is the very first event the tracer sees, and it
+        # precedes the single operation_succeeded.
+        assert names[0] == "operation_started"
+        assert names.index("operation_started") < names.index("operation_succeeded")
+
+    def test_retry_exhaustion_emits_operation_failed_once(self) -> None:
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        boom = ServiceRequestError("connect failed")
+        client = _AlwaysRaisesClient(boom)
+        retry = RetryPolicy(connect_retries=2, total_retries=2, clock=FakeClock())
+        raised: BaseException | None = None
+        with Pipeline(client, policies=[retry, TracingPolicy()]) as p:
+            try:
+                p.run(_request(), DispatchContext(instr))
+            except ServiceRequestError as err:
+                raised = err
+        assert raised is boom
+        names = tracer.names()
+        assert names.count("operation_started") == 1
+        assert names.count("operation_failed") == 1
+        assert names.count("operation_succeeded") == 0
+        failed = [payload for name, payload in tracer.events if name == "operation_failed"]
+        assert failed == [boom]
+
+    def test_redirect_emits_operation_lifecycle_once_across_hops(self) -> None:
+        # TracingPolicy sits *inside* RedirectPolicy (redirect is outer), so it
+        # is re-entered per hop. The operation_* events fire exactly once.
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        client = _ScriptedClient(
+            [
+                _Hop(Status.MOVED_PERMANENTLY, "https://api.example.com/new"),
+                _Hop(Status.OK),
+            ],
+        )
+        with Pipeline(client, policies=[RedirectPolicy(), TracingPolicy()]) as p:
+            p.run(_request("https://api.example.com/start"), DispatchContext(instr))
+        names = tracer.names()
+        # Two hops -> two attempts through the inner TracingPolicy.
+        assert names.count("request_sent") == 2
+        assert names.count("operation_started") == 1
+        assert names.count("operation_succeeded") == 1
+        assert names.count("operation_failed") == 0
+        # The redirect policy emits request_url_resolved before TracingPolicy
+        # runs, so among the operation_* events, started precedes succeeded.
+        op_events = [name for name in names if name.startswith("operation_")]
+        assert op_events == ["operation_started", "operation_succeeded"]
+
+
+# ----- request_sent fires for unknown-length bodies (L19) -----------------
+
+
+class TestRequestSentUnknownLength:
+    def test_request_sent_fires_with_none_for_unknown_length_body(self) -> None:
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        body = RequestBody.from_iter([b"chunk-1", b"chunk-2"], content_length=-1)
+        req = Request(
+            method=Method.POST,
+            url=Url.parse("https://api.example.com/v1"),
+            body=body,
+        )
+        with Pipeline(_OkClient(), policies=[TracingPolicy()]) as p:
+            p.run(req, DispatchContext(instr))
+        sent = [payload for name, payload in tracer.events if name == "request_sent"]
+        # The event still fires; the unknown length is reported as None, mirroring
+        # the bodyless case which reports 0.
+        assert sent == [None]
+
+    def test_request_sent_reports_known_length_for_sized_stream(self) -> None:
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        body = RequestBody.from_iter([b"abc"], content_length=3)
+        req = Request(
+            method=Method.POST,
+            url=Url.parse("https://api.example.com/v1"),
+            body=body,
+        )
+        with Pipeline(_OkClient(), policies=[TracingPolicy()]) as p:
+            p.run(req, DispatchContext(instr))
+        sent = [payload for name, payload in tracer.events if name == "request_sent"]
+        assert sent == [3]

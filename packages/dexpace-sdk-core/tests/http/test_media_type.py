@@ -48,6 +48,12 @@ class TestParse:
         mt = MediaType.parse('text/plain; foo="a\\"b"')
         assert dict(mt.parameters)["foo"] == 'a"b'
 
+    def test_parse_quoted_value_with_semicolon(self) -> None:
+        # A ``;`` inside a quoted-string is part of the value, not a separator.
+        mt = MediaType.parse('multipart/mixed; boundary="a;b"')
+        assert dict(mt.parameters)["boundary"] == "a;b"
+        assert len(mt.parameters) == 1
+
 
 class TestNormalisation:
     def test_lower_cases_type_and_subtype(self) -> None:
@@ -106,6 +112,14 @@ class TestSerialisation:
         rendered = str(mt)
         assert 'boundary="foo bar"' in rendered
         # Round-trip: parsing the rendered form recovers the original value.
+        assert MediaType.parse(rendered) == mt
+
+    def test_str_quotes_boundary_with_semicolon_round_trips(self) -> None:
+        mt = MediaType.of("multipart", "mixed", {"boundary": "a;b;c"})
+        rendered = str(mt)
+        assert 'boundary="a;b;c"' in rendered
+        # Round-trip: parsing the rendered form recovers the original value
+        # despite the embedded semicolon.
         assert MediaType.parse(rendered) == mt
 
     def test_equality_independent_of_param_order(self) -> None:

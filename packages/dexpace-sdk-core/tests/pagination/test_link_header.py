@@ -81,3 +81,27 @@ def test_malformed_segment_without_brackets_is_ignored() -> None:
     parsed = parse_link_header(header)
     assert len(parsed) == 1
     assert parsed[0][0] == "https://x/1"
+
+
+def test_comma_inside_uri_target_does_not_split_link_value() -> None:
+    # A comma is a legal unencoded URI sub-delim; splitting inside <...> would
+    # shred the target and drop the whole link-value.
+    header = '<https://api.example.com/items?ids=1,2,3>; rel="next"'
+    parsed = parse_link_header(header)
+    assert len(parsed) == 1
+    assert parsed[0][0] == "https://api.example.com/items?ids=1,2,3"
+    assert parsed[0][1]["rel"] == "next"
+
+
+def test_comma_inside_uri_target_among_multiple_links() -> None:
+    header = (
+        '<https://api.example.com/items?fields=a,b&page=2>; rel="next", '
+        '<https://api.example.com/items?fields=a,b&page=9>; rel="last"'
+    )
+    parsed = parse_link_header(header)
+    assert [target for target, _ in parsed] == [
+        "https://api.example.com/items?fields=a,b&page=2",
+        "https://api.example.com/items?fields=a,b&page=9",
+    ]
+    assert find_rel(header, "next") == "https://api.example.com/items?fields=a,b&page=2"
+    assert find_rel(header, "last") == "https://api.example.com/items?fields=a,b&page=9"

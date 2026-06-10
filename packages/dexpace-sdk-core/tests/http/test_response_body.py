@@ -84,6 +84,15 @@ class TestLoggableResponseBody:
         wrapped.close()
         wrapped.close()
 
+    @pytest.mark.parametrize("size", [0, -1])
+    def test_iter_bytes_rejects_invalid_chunk_size(self, size: int) -> None:
+        # A negative chunk_size used to make range(0, n, size) empty so the
+        # body silently yielded nothing; it must raise ValueError like every
+        # sibling body instead.
+        wrapped = LoggableResponseBody(ResponseBody.from_bytes(b"abcdef"))
+        with pytest.raises(ValueError, match="chunk_size"):
+            list(wrapped.iter_bytes(size))
+
 
 @pytest.mark.parametrize(
     "factory",

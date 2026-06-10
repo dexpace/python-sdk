@@ -8,9 +8,12 @@ with ``qop=auth``. ``auth-int`` and mutual-auth (``Authentication-Info``)
 verification are out of scope — matching the Java v1 cut.
 
 A single handler instance is intended to be reused across requests so the
-per-client nonce counter (``nc``) advances monotonically. The counter is
-guarded by a ``threading.Lock`` since CPython integer increment is not
-atomic with respect to other threads' reads of the same variable.
+per-nonce request counter (``nc``) advances correctly. RFC 7616 §3.4 defines
+``nc`` as the count of requests the client has sent with the *current* server
+nonce, so the counter restarts at ``00000001`` for each fresh nonce and
+increments only while a nonce is reused. The per-nonce counts are tracked in a
+bounded mapping guarded by a ``threading.Lock`` since CPython dict mutation and
+integer increment are not atomic with respect to other threads.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
@@ -58,6 +62,13 @@ _HASHERS: Final[dict[str, Callable[[bytes], hashlib._Hash]]] = {
     "SHA-256-SESS": hashlib.sha256,
 }
 
+# Cap on how many distinct server nonces retain a request count. A long-lived
+# handler hitting many rotating nonces would otherwise grow the map without
+# bound; the oldest entry is evicted past this size. The limit is generous —
+# servers rotate nonces rarely — so eviction effectively never affects an
+# active nonce.
+_MAX_TRACKED_NONCES: Final[int] = 1024
+
 
 class DigestChallengeHandler:
     """Satisfy a ``Digest`` challenge per RFC 7616.
@@ -79,8 +90,8 @@ class DigestChallengeHandler:
 
     __slots__ = (
         "_cnonce_factory",
-        "_counter",
         "_lock",
+        "_nonce_counts",
         "_password",
         "_preferred",
         "_username",
@@ -102,7 +113,10 @@ class DigestChallengeHandler:
         self._password = password
         self._preferred = preferred_algorithms
         self._cnonce_factory = cnonce_factory or (lambda: secrets.token_hex(16))
-        self._counter = 0
+        # Maps a server nonce to the count of requests sent with it. Insertion
+        # order is preserved so the oldest nonce can be evicted once the map
+        # exceeds ``_MAX_TRACKED_NONCES``.
+        self._nonce_counts: OrderedDict[str, int] = OrderedDict()
         self._lock = threading.Lock()
 
     def can_handle(self, challenges: list[AuthenticateChallenge]) -> bool:
@@ -122,7 +136,7 @@ class DigestChallengeHandler:
         resolved = self._resolve(selected)
         if resolved is None:
             return None
-        nc = self._next_nc()
+        nc = self._next_nc(resolved.nonce)
         cnonce = self._cnonce_factory()
         uri = _request_uri(url)
         response = self._compute_response(
@@ -223,13 +237,33 @@ class DigestChallengeHandler:
                 return challenge
         return None
 
-    def _next_nc(self) -> str:
+    def _next_nc(self, nonce: str) -> str:
+        """Return the next ``nc`` value for ``nonce`` as 8 lowercase hex digits.
+
+        RFC 7616 §3.4 defines ``nc`` as the count of requests sent with the
+        current server nonce, so the count starts at ``00000001`` for each
+        fresh nonce and increments on every reuse. A bounded, insertion-ordered
+        map tracks the per-nonce counts; the oldest nonce is evicted once the
+        map exceeds ``_MAX_TRACKED_NONCES`` to cap memory on a long-lived
+        handler that sees many rotating nonces.
+
+        Args:
+            nonce: The server nonce the request is being signed against.
+
+        Returns:
+            The request count for ``nonce`` formatted as 8 lowercase hex
+            digits, e.g. ``"00000001"`` for the first request.
+        """
         with self._lock:
             # Clamp to 32 bits — ``nc`` is rendered as 8 hex digits per
             # RFC 7616, and wrapping after 2**32-1 is acceptable since the
             # server hashes the value (no monotonic check).
-            self._counter = (self._counter + 1) & 0xFFFFFFFF
-            value = self._counter
+            value = (self._nonce_counts.get(nonce, 0) + 1) & 0xFFFFFFFF
+            self._nonce_counts[nonce] = value
+            # Refresh recency so an actively reused nonce is never evicted.
+            self._nonce_counts.move_to_end(nonce)
+            if len(self._nonce_counts) > _MAX_TRACKED_NONCES:
+                self._nonce_counts.popitem(last=False)
         return f"{value:08x}"
 
     def _credentials_encodable(self, charset: str) -> bool:

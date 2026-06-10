@@ -70,6 +70,16 @@ class LoggableRequestBody(RequestBody):
         return LoggableRequestBody(self._inner.to_replayable(), self._max)
 
     def iter_bytes(self, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
+        # Reset the tap at the START of each iteration so a replayed body
+        # (retry, redirect 307) captures a single copy of the payload rather
+        # than accumulating ``body + body`` across attempts. The reset is
+        # eager — before the first ``next()`` — so ``snapshot`` reflects only
+        # the most recent attempt even if the returned iterator is not drained.
+        self._tap.seek(0)
+        self._tap.truncate(0)
+        return self._iter(chunk_size)
+
+    def _iter(self, chunk_size: int) -> Iterator[bytes]:
         for chunk in self._inner.iter_bytes(chunk_size):
             remaining = self._max - self._tap.tell()
             if remaining > 0:

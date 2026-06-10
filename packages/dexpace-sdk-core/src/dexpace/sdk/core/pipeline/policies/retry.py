@@ -10,11 +10,14 @@ one ``send`` call; per-attempt history lands in ``ctx.data["retry_history"]``.
 
 Single-use request bodies (``RequestBody.from_stream`` /
 ``RequestBody.from_iter``) are auto-buffered at the top of ``send`` when
-``total_retries > 0``: the policy calls ``body.to_replayable()`` and swaps
-the result onto the request before the first attempt, so a retry can
-re-emit the same payload without raising ``RuntimeError``. The buffering
-step is skipped when ``total_retries == 0`` so callers who explicitly opt
-out of retries pay no memory cost.
+the *effective* per-call retry total is positive: the policy calls
+``body.to_replayable()`` and swaps the result onto the request before the
+first attempt, so a retry can re-emit the same payload without raising
+``RuntimeError``. The decision reads the effective total after merging
+per-call overrides (``retry_total`` in ``ctx.options``) with the
+constructor default, so a per-call ``retry_total=3`` over an instance built
+with ``total_retries=0`` still buffers, and a per-call ``retry_total=0``
+over a retrying instance skips the buffering and pays no memory cost.
 """
 
 from __future__ import annotations
@@ -220,9 +223,9 @@ class RetryPolicy(Policy):
     # ----- main loop ------------------------------------------------------
 
     def send(self, request: Request, ctx: PipelineContext) -> Response:
-        if self.total_retries > 0 and request.body is not None and not request.body.is_replayable():
-            request = request.with_body(request.body.to_replayable())
         settings = self._configure_settings(ctx.options)
+        if settings["total"] > 0 and request.body is not None and not request.body.is_replayable():
+            request = request.with_body(request.body.to_replayable())
         absolute_deadline = self._clock.monotonic() + settings["timeout"]
         history: list[RequestHistory[Response]] = settings["history"]
         tracer = resolve_http_tracer(ctx)
@@ -234,7 +237,7 @@ class RetryPolicy(Policy):
                 raise
             except SdkError as err:
                 history.append(RequestHistory(request=request, error=err))
-                if not self._decrement_for_error(settings, err):
+                if not self._decrement_for_error(settings, request, err):
                     tracer.attempt_retries_exhausted()
                     ctx.data["retry_history"] = tuple(history)
                     raise
@@ -327,17 +330,35 @@ class RetryPolicy(Policy):
     def _decrement_for_error(
         self,
         settings: dict[str, Any],
+        request: Request,
         error: BaseException,
     ) -> bool:
         """Decrement counters after a network-side error.
 
+        ``ServiceRequestError`` is a connect-phase failure: the request never
+        left the client, so re-sending it is safe for every method. A
+        ``ServiceResponseError`` is a read-phase failure — the request may
+        have been fully processed before the read broke — so re-sending a
+        non-idempotent method (POST/PATCH not in the allowlist) risks
+        duplicating the write. Those methods are not retried on the read path,
+        mirroring the careful status-path rule in ``_method_is_retryable``.
+
+        Args:
+            settings: Mutable per-call settings dict.
+            request: The request that triggered the error, used to gate
+                read-phase retries on the method's idempotency.
+            error: The error raised by the downstream chain.
+
         Returns:
             ``True`` if the budget allows another attempt.
         """
-        settings["total"] -= 1
         if isinstance(error, ServiceRequestError):
+            settings["total"] -= 1
             settings["connect"] -= 1
         elif isinstance(error, ServiceResponseError):
+            if not self._method_is_retryable(settings, request, None):
+                return False
+            settings["total"] -= 1
             settings["read"] -= 1
         else:  # pragma: no cover - upstream raised something we don't classify
             return False

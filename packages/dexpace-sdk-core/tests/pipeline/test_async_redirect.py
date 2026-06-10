@@ -274,17 +274,35 @@ class TestHopAndLoopGuards:
 
 
 class TestSecurity:
-    async def test_authorization_stripped_on_redirect(self) -> None:
+    async def test_authorization_kept_on_same_origin_redirect(self) -> None:
+        # Same-origin hop keeps the caller-set Authorization header.
         client = _ScriptedAsyncClient(
             [_Hop(Status.MOVED_PERMANENTLY, "https://example.com/new"), _Hop(Status.OK)],
         )
         policy = AsyncRedirectPolicy(strip_authorization=True)
         await _run(client, policy, _request(auth="Bearer secret"))
+        assert client.requests[1].headers.get("Authorization") == "Bearer secret"
+
+    async def test_authorization_stripped_on_cross_origin_redirect(self) -> None:
+        # A different host is a cross-origin reissue; the header is dropped.
+        client = _ScriptedAsyncClient(
+            [_Hop(Status.MOVED_PERMANENTLY, "https://other.example.org/new"), _Hop(Status.OK)],
+        )
+        policy = AsyncRedirectPolicy(strip_authorization=True)
+        await _run(client, policy, _request(auth="Bearer secret"))
         assert "Authorization" not in client.requests[1].headers
 
-    async def test_strip_authorization_false_preserves_header(self) -> None:
+    async def test_authorization_stripped_on_port_change(self) -> None:
         client = _ScriptedAsyncClient(
-            [_Hop(Status.MOVED_PERMANENTLY, "https://example.com/new"), _Hop(Status.OK)],
+            [_Hop(Status.FOUND, "https://example.com:8443/new"), _Hop(Status.OK)],
+        )
+        policy = AsyncRedirectPolicy(strip_authorization=True)
+        await _run(client, policy, _request(url="https://example.com/start", auth="Bearer secret"))
+        assert "Authorization" not in client.requests[1].headers
+
+    async def test_strip_authorization_false_preserves_header_cross_origin(self) -> None:
+        client = _ScriptedAsyncClient(
+            [_Hop(Status.MOVED_PERMANENTLY, "https://other.example.org/new"), _Hop(Status.OK)],
         )
         policy = AsyncRedirectPolicy(strip_authorization=False)
         await _run(client, policy, _request(auth="Bearer secret"))

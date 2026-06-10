@@ -12,14 +12,19 @@ The implementation handles only:
 
 - HTTP/1.1
 - Plain TCP (``http://``); TLS (``https://``) via ``ssl.create_default_context``
-- ``Content-Length``-framed responses (no chunked transfer-encoding)
+- ``Content-Length``-framed and connection-close-framed responses.
+  ``Transfer-Encoding: chunked`` responses are rejected loudly with a
+  ``ServiceResponseError`` rather than silently truncated — the adapter
+  forces ``Connection: close``, so a body without ``Content-Length`` is read
+  to EOF instead of being fabricated as empty.
 - Connection: close (one request per connection)
 
 Additional limitations that mirror `urllib_http_client`:
 
 - **No streaming uploads.** The request body is fully buffered into memory
-  via ``b"".join(request.body.iter_bytes())`` before send. For streaming
-  uploads, plug in an alternative transport (``httpx``, ``aiohttp``).
+  before send (the blocking iteration runs off the event loop via
+  ``asyncio.to_thread`` so the loop is not stalled). For streaming uploads,
+  plug in an alternative transport (``httpx``, ``aiohttp``).
 - **Coarse timeouts.** A single ``timeout`` value is applied to connect,
   status-line read, header read, and body read. Production transports
   expose per-phase granularity. A connect-phase timeout surfaces as
@@ -41,8 +46,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ssl as _ssl
+from collections.abc import Mapping
 from types import TracebackType
-from typing import Final, Self
+from typing import TYPE_CHECKING, Final, Self
 
 from dexpace.sdk.core.errors import (
     ServiceRequestError,
@@ -58,8 +64,19 @@ from dexpace.sdk.core.http.response.async_response import AsyncResponse
 from dexpace.sdk.core.http.response.async_response_body import AsyncResponseBody
 from dexpace.sdk.core.http.response.status import Status
 
+if TYPE_CHECKING:
+    from dexpace.sdk.core.http.request.request_body import RequestBody
+
 _DEFAULT_TIMEOUT: Final[float] = 30.0
 _CRLF: Final[bytes] = b"\r\n"
+_BODY_METHODS: Final[frozenset[str]] = frozenset({"POST", "PUT", "PATCH"})
+
+# Map the HTTP version token from the status line (``HTTP/1.1``) onto the
+# SDK's protocol enum. Default to HTTP/1.1 when the token is unrecognized.
+_PROTOCOL_BY_VERSION: Final[Mapping[str, Protocol]] = {
+    "HTTP/1.0": Protocol.HTTP_1_0,
+    "HTTP/1.1": Protocol.HTTP_1_1,
+}
 
 
 class AsyncioHttpClient:
@@ -96,7 +113,7 @@ class AsyncioHttpClient:
         host, port, secure, path = _split_url(request.url)
         reader, writer = await self._open(host, port, secure)
         try:
-            await self._send(writer, request, host, path)
+            await self._send(writer, request, host, port, secure, path)
             return await self._read(reader, request)
         except TimeoutError as err:
             # The connection was established (``_open`` already maps connect
@@ -148,7 +165,10 @@ class AsyncioHttpClient:
         port: int,
         secure: bool,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-        ssl_ctx = self._ssl_context or (_ssl.create_default_context() if secure else None)
+        # ``http://`` must never attempt a TLS handshake, even when a caller
+        # supplied an ``ssl_context`` — the ``secure`` guard wraps the whole
+        # expression so a plaintext request stays plaintext.
+        ssl_ctx = (self._ssl_context or _ssl.create_default_context()) if secure else None
         try:
             return await asyncio.wait_for(
                 asyncio.open_connection(host, port, ssl=ssl_ctx),
@@ -166,18 +186,29 @@ class AsyncioHttpClient:
         writer: asyncio.StreamWriter,
         request: Request,
         host: str,
+        port: int,
+        secure: bool,
         path: str,
     ) -> None:
         body_bytes = b""
         if request.body is not None:
-            body_bytes = b"".join(request.body.iter_bytes())
+            # Materialising the body iterates a possibly-blocking sync source
+            # (file / stream reads); run it off the event loop so the loop is
+            # not stalled while the payload is gathered.
+            body_bytes = await asyncio.to_thread(_drain_body, request.body)
         headers = Headers(request.headers.items())
         if "host" not in headers:
             # Preserve a caller-supplied Host (virtual hosting); only derive
-            # it from the URL when the request did not set one.
-            headers = headers.with_set("Host", host)
-        if "content-length" not in headers and body_bytes:
-            headers = headers.with_set("Content-Length", str(len(body_bytes)))
+            # it from the URL when the request did not set one. RFC 9112 §3.2
+            # requires the port for non-default ports.
+            headers = headers.with_set("Host", _host_header(host, port, secure))
+        if "content-length" not in headers:
+            if body_bytes:
+                headers = headers.with_set("Content-Length", str(len(body_bytes)))
+            elif str(request.method) in _BODY_METHODS:
+                # RFC 9110 §8.6 recommends an explicit ``Content-Length: 0``
+                # for body-bearing methods sent without a payload.
+                headers = headers.with_set("Content-Length", "0")
         headers = headers.with_set("Connection", "close")
         request_line = f"{request.method} {path or '/'} HTTP/1.1".encode()
         lines: list[bytes] = [request_line]
@@ -199,24 +230,49 @@ class AsyncioHttpClient:
         parts = status_line.decode("latin-1").rstrip("\r\n").split(" ", 2)
         if len(parts) < 2 or not parts[1].isdigit():
             raise ServiceResponseError(f"Malformed status line: {status_line!r}")
-        try:
-            status = Status(int(parts[1]))
-        except ValueError as err:
-            raise ServiceResponseError(f"Unknown status code: {parts[1]}", error=err) from err
+        protocol = _PROTOCOL_BY_VERSION.get(parts[0], Protocol.HTTP_1_1)
+        status = _parse_status(parts[1])
         reason = parts[2] if len(parts) > 2 else None
         headers = await self._read_headers(reader)
-        content_length = _content_length(headers)
-        body_bytes = await asyncio.wait_for(
-            reader.readexactly(content_length) if content_length > 0 else _empty(),
-            timeout=self.timeout,
-        )
+        body_bytes = await self._read_body(reader, headers)
         return AsyncResponse(
             request=request,
-            protocol=Protocol.HTTP_1_1,
+            protocol=protocol,
             status=status,
             headers=headers,
             reason=reason,
             body=AsyncResponseBody.from_bytes(body_bytes),
+        )
+
+    async def _read_body(self, reader: asyncio.StreamReader, headers: Headers) -> bytes:
+        """Read the response body, honouring the response's framing.
+
+        ``Transfer-Encoding: chunked`` is rejected loudly (this reference
+        client cannot dechunk). With a ``Content-Length`` the exact byte count
+        is read; without one the body is connection-close framed — the adapter
+        forced ``Connection: close``, so reading to EOF is correct.
+
+        Args:
+            reader: The connection's stream reader.
+            headers: The parsed response headers.
+
+        Returns:
+            The raw response body bytes.
+
+        Raises:
+            ServiceResponseError: On a chunked response or a truncated body.
+        """
+        if _is_chunked(headers):
+            raise ServiceResponseError(
+                "Transfer-Encoding: chunked responses are not supported by this transport"
+            )
+        content_length = _content_length(headers)
+        if content_length is None:
+            # No Content-Length: connection-close framed. Read to EOF.
+            return await asyncio.wait_for(reader.read(), timeout=self.timeout)
+        return await asyncio.wait_for(
+            reader.readexactly(content_length) if content_length > 0 else _empty(),
+            timeout=self.timeout,
         )
 
     async def _read_headers(self, reader: asyncio.StreamReader) -> Headers:
@@ -244,10 +300,94 @@ def _split_url(url: Url) -> tuple[str, int, bool, str]:
     return url.host, port, secure, path
 
 
-def _content_length(headers: Headers) -> int:
+def _host_header(host: str, port: int, secure: bool) -> str:
+    """Build the ``Host`` header value, including the port when non-default.
+
+    Args:
+        host: The target host.
+        port: The connection port.
+        secure: Whether the connection is TLS (``https``).
+
+    Returns:
+        ``host`` for the scheme-default port, otherwise ``host:port``.
+    """
+    default = 443 if secure else 80
+    return host if port == default else f"{host}:{port}"
+
+
+def _parse_status(code: str) -> Status:
+    """Build a `Status` from the status-line code, preserving in-range codes.
+
+    ``Status`` synthesizes a member for any code in 100..599, so an
+    unregistered-but-valid code (for example ``218`` or ``599``) yields a
+    usable status carried through to the pipeline instead of being discarded.
+    Only a genuinely out-of-range code raises.
+
+    Args:
+        code: The numeric status token from the status line.
+
+    Returns:
+        The resolved (possibly synthesized) status.
+
+    Raises:
+        ServiceResponseError: When ``code`` is outside the valid HTTP range.
+    """
+    try:
+        return Status(int(code))
+    except ValueError as err:
+        raise ServiceResponseError(f"Unknown status code: {code}", error=err) from err
+
+
+def _drain_body(body: RequestBody) -> bytes:
+    """Materialise a request body into bytes.
+
+    Runs on a worker thread (via ``asyncio.to_thread``) so the possibly-
+    blocking sync iteration of file/stream-backed bodies does not stall the
+    event loop.
+
+    Args:
+        body: The request body to read fully.
+
+    Returns:
+        The concatenated body bytes.
+    """
+    return b"".join(body.iter_bytes())
+
+
+def _is_chunked(headers: Headers) -> bool:
+    """Return whether the response declares chunked transfer-coding.
+
+    Inspects every ``Transfer-Encoding`` line — the header may be split across
+    multiple lines (e.g. ``gzip`` then ``chunked``), so reading only the first
+    value would miss a chunked coding that is not listed first and then parse
+    chunk-framing bytes as the body. Per RFC 9112 §6.1 a response advertising
+    chunked framing cannot be read as a fixed-length body.
+
+    Args:
+        headers: The parsed response headers.
+
+    Returns:
+        ``True`` if any ``Transfer-Encoding`` value names ``chunked``.
+    """
+    return any("chunked" in value.lower() for value in headers.values("Transfer-Encoding"))
+
+
+def _content_length(headers: Headers) -> int | None:
+    """Resolve the declared body length, or ``None`` when absent.
+
+    Args:
+        headers: The parsed response headers.
+
+    Returns:
+        The non-negative byte count, or ``None`` when no ``Content-Length``
+        header is present (the caller then reads to EOF).
+
+    Raises:
+        ServiceResponseError: When the header is present but unparseable.
+    """
     raw = headers.get("Content-Length")
     if raw is None:
-        return 0
+        return None
     try:
         return max(0, int(raw))
     except ValueError as err:

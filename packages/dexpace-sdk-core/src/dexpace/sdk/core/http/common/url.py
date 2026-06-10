@@ -108,6 +108,13 @@ class QueryParams:
         return _construct_query(type(self), tuple(entries))
 
     def with_set(self, name: str, *values: str) -> Self:
+        """Return a new ``QueryParams`` with ``name`` set to exactly ``values``.
+
+        If no values are provided, the parameter is removed (mirroring
+        ``Headers.with_set``) rather than left behind as an empty entry.
+        """
+        if not values:
+            return self.without(name)
         entries: list[tuple[str, tuple[str, ...]]] = []
         replaced = False
         for key, existing in self._data:

@@ -186,3 +186,69 @@ def test_iter_bytes_rejects_invalid_chunk_size(
     body = factory(tmp_path)
     with pytest.raises(ValueError, match="chunk_size"):
         list(body.iter_bytes(size))
+
+
+class TestEagerIterBytesValidation:
+    """``iter_bytes`` must validate at call time, not on first ``next()``.
+
+    A generator-function ``iter_bytes`` defers its argument checks and the
+    consumed-flag flip to the first iteration step, so the documented
+    ``ValueError`` / ``RuntimeError`` only surfaces once the caller starts
+    pulling chunks. The fix wraps each body's generator behind a thin
+    validating function so the errors fire as soon as ``iter_bytes`` is
+    called.
+    """
+
+    @pytest.mark.parametrize(
+        "factory",
+        [
+            lambda _tmp: RequestBody.from_bytes(b"hi"),
+            lambda _tmp: RequestBody.from_string("hi"),
+            lambda _tmp: RequestBody.from_form({"a": "1"}),
+            lambda _tmp: RequestBody.from_iter([b"hi"]),
+            lambda _tmp: RequestBody.from_stream(BytesIO(b"hi")),
+            _make_file_body,
+        ],
+    )
+    @pytest.mark.parametrize("size", [0, -1])
+    def test_invalid_chunk_size_raises_before_iteration(
+        self,
+        factory: Callable[[Path], RequestBody],
+        size: int,
+        tmp_path: Path,
+    ) -> None:
+        # Calling iter_bytes() must raise immediately — without ever calling
+        # next() on the returned iterator.
+        body = factory(tmp_path)
+        with pytest.raises(ValueError, match="chunk_size"):
+            body.iter_bytes(size)
+
+    @pytest.mark.parametrize(
+        "factory",
+        [
+            lambda: RequestBody.from_iter([b"hi"]),
+            lambda: RequestBody.from_stream(BytesIO(b"hi")),
+        ],
+    )
+    def test_consumed_flag_flips_eagerly_on_call(
+        self,
+        factory: Callable[[], RequestBody],
+    ) -> None:
+        # Two un-iterated generators must not both believe the body is fresh:
+        # the second iter_bytes() call must raise RuntimeError at call time,
+        # even though neither iterator has been advanced. This closes the race
+        # where two undrained generators share the consumed flag.
+        body = factory()
+        first = body.iter_bytes()
+        with pytest.raises(RuntimeError, match="already called"):
+            body.iter_bytes()
+        # The first (valid) iterator still works end to end.
+        assert b"".join(first) == b"hi"
+
+    def test_stream_not_consumed_when_chunk_size_invalid(self) -> None:
+        # An eager ValueError must not flip the single-use consumed flag, so a
+        # follow-up valid call still works.
+        body = RequestBody.from_stream(BytesIO(b"payload"))
+        with pytest.raises(ValueError, match="chunk_size"):
+            body.iter_bytes(0)
+        assert b"".join(body.iter_bytes()) == b"payload"

@@ -27,7 +27,7 @@ import enum
 import types
 import typing
 import uuid
-from typing import Final, Union, cast, get_args, get_origin, get_type_hints
+from typing import Annotated, Final, Union, cast, get_args, get_origin, get_type_hints
 
 from ..errors import DeserializationError, SerializationError
 from .tristate import ABSENT, NULL, Present, Tristate
@@ -112,6 +112,16 @@ class _ModelInfo:
 # in practice; the lack of an explicit size cap is acceptable for that reason.
 _MODEL_CACHE: dict[type, _ModelInfo] = {}
 
+_MAX_DEPTH: Final = 200
+"""Recursion ceiling for ``_decode_value``.
+
+A hostile, deeply nested document (e.g. ``[[[[...]]]]`` thousands of levels
+deep) would otherwise exhaust the interpreter stack and surface a bare
+``RecursionError``, escaping the codec's ``CodecError`` contract. The guard
+trips well before CPython's default limit so the failure is a clean
+``CodecError`` instead.
+"""
+
 
 def field_alias(
     wire_name: str,
@@ -133,8 +143,16 @@ def field_alias(
 
     Returns:
         A ``dataclasses.Field`` carrying the alias metadata.
+
+    Raises:
+        ValueError: If both ``default`` and ``default_factory`` are supplied.
     """
     metadata = {ALIAS_KEY: wire_name}
+    if default is not dataclasses.MISSING and default_factory is not None:
+        # ``dataclasses.field`` rejects this combo too, but only at class-body
+        # evaluation; catching it here keeps the failure local to the call and
+        # avoids silently ignoring the factory.
+        raise ValueError("field_alias: pass at most one of default / default_factory")
     if default is not dataclasses.MISSING:
         return dataclasses.field(default=default, metadata=metadata)
     if default_factory is not None:
@@ -209,9 +227,12 @@ class Codec:
     """Stateless engine converting between documents and typed models.
 
     Constructed once and reused. Effectively immutable after construction; its
-    only mutable state is a shared module-level type-hint cache whose dict
-    operations are atomic under CPython's GIL, so instances are safe to share
-    across threads.
+    only mutable state is a shared, append-only module-level type-hint cache.
+    A cache entry is computed independently per model and never mutated once
+    stored, so a concurrent miss merely recomputes the same value and the last
+    write wins with an identical result. The codec therefore does not rely on
+    the GIL or atomic dict operations for correctness and is safe to share
+    across threads, including under free-threaded CPython.
     """
 
     __slots__ = ("_tolerate_unknown",)
@@ -244,7 +265,7 @@ class Codec:
             CodecError: On any structural mismatch or conversion failure, with a
                 wire-name path pointing at the offending location.
         """
-        return cast("T", _decode_value(data, target, (), self._tolerate_unknown))
+        return cast("T", _decode_value(data, target, (), self._tolerate_unknown, 0))
 
     def encode(self, value: object) -> object:
         """Encode a typed value into a plain document.
@@ -273,18 +294,59 @@ def _decode_value(
     target: object,
     path: tuple[str, ...],
     tolerate_unknown: bool,
+    depth: int,
 ) -> object:
     """Decode ``data`` into ``target``, dispatching on the type's shape."""
+    if depth > _MAX_DEPTH:
+        raise CodecError(
+            f"maximum decode depth {_MAX_DEPTH} exceeded (input nested too deeply)",
+            path=path,
+        )
+    if get_origin(target) is Annotated:
+        # ``Annotated[X, ...]`` carries no decode meaning here; strip the
+        # metadata and decode as the underlying ``X`` (without this the value
+        # would fall through to the container branch and be returned undecoded).
+        target = get_args(target)[0]
     if target is object or target is typing.Any:
         return data
     if _is_tristate(target):
-        return _decode_tristate(data, target, path, tolerate_unknown)
+        return _decode_tristate(data, target, path, tolerate_unknown, depth)
     origin = get_origin(target)
     if origin is None:
-        return _decode_atomic(data, target, path, tolerate_unknown)
+        return _decode_atomic(data, target, path, tolerate_unknown, depth)
     if origin in (Union, types.UnionType):
-        return _decode_union(data, target, path, tolerate_unknown)
-    return _decode_container(data, target, origin, path, tolerate_unknown)
+        return _decode_union(data, target, path, tolerate_unknown, depth)
+    if isinstance(origin, type) and dataclasses.is_dataclass(origin):
+        # A parametrised generic dataclass target (``Box[int]``) has a real
+        # dataclass origin; decode it as that dataclass rather than letting it
+        # fall through the container branch and return the raw dict undecoded.
+        # The type arguments are mapped onto the class's type parameters so
+        # generic fields decode against their concrete substitution.
+        return _decode_dataclass(
+            data, origin, path, tolerate_unknown, depth, type_args=_type_arg_map(origin, target)
+        )
+    return _decode_container(data, target, origin, path, tolerate_unknown, depth)
+
+
+def _type_arg_map(origin: type, target: object) -> Mapping[object, object]:
+    """Map a generic dataclass's type parameters onto the supplied arguments.
+
+    For ``Box[int]`` with ``class Box[T]`` this returns ``{T: int}``. Mismatched
+    counts (or a non-generic origin) yield an empty map, leaving each field's
+    declared hint untouched.
+
+    Args:
+        origin: The dataclass origin of the parametrised target.
+        target: The parametrised generic alias (e.g. ``Box[int]``).
+
+    Returns:
+        A mapping from each type parameter to its concrete argument.
+    """
+    params = getattr(origin, "__type_params__", ()) or getattr(origin, "__parameters__", ())
+    args = get_args(target)
+    if not params or len(params) != len(args):
+        return {}
+    return dict(zip(params, args, strict=True))
 
 
 def _decode_atomic(
@@ -292,13 +354,14 @@ def _decode_atomic(
     target: object,
     path: tuple[str, ...],
     tolerate_unknown: bool,
+    depth: int,
 ) -> object:
     """Decode into a non-parametrised target (dataclass, datetime, enum, scalar)."""
     if isinstance(target, type):
         if REGISTRY_KEY in target.__dict__:
-            return _dispatch_union(data, target, path, tolerate_unknown)
+            return _dispatch_union(data, target, path, tolerate_unknown, depth)
         if dataclasses.is_dataclass(target):
-            return _decode_dataclass(data, target, path, tolerate_unknown)
+            return _decode_dataclass(data, target, path, tolerate_unknown, depth)
         if issubclass(target, enum.Enum):
             return _decode_enum(data, target, path)
         if issubclass(target, (_dt.datetime, _dt.date, _dt.time)):
@@ -313,8 +376,10 @@ def _decode_dataclass(
     target: type,
     path: tuple[str, ...],
     tolerate_unknown: bool,
+    depth: int,
     *,
     exempt_key: str | None = None,
+    type_args: Mapping[object, object] | None = None,
 ) -> object:
     """Decode a mapping into a plain dataclass, field by field.
 
@@ -326,6 +391,9 @@ def _decode_dataclass(
         exempt_key: A wire key always permitted under strict mode even when no
             field claims it — used for a discriminated union's tag, which is a
             structural key rather than a stray unknown one.
+        type_args: For a parametrised generic dataclass, a map from the class's
+            type parameters to their concrete arguments, applied to each field's
+            declared hint before decoding.
     """
     if not isinstance(data, cabc.Mapping):
         raise CodecError(
@@ -334,7 +402,7 @@ def _decode_dataclass(
             target_name=target.__name__,
         )
     info = _resolve_info(target)
-    kwargs = _decode_fields(data, target, info, path, tolerate_unknown)
+    kwargs = _decode_fields(data, target, info, path, tolerate_unknown, depth, type_args)
     if not tolerate_unknown:
         _reject_unknown(data, info, path, target.__name__, exempt_key=exempt_key)
     try:
@@ -349,34 +417,92 @@ def _decode_fields(
     info: _ModelInfo,
     path: tuple[str, ...],
     tolerate_unknown: bool,
+    depth: int,
+    type_args: Mapping[object, object] | None = None,
 ) -> dict[str, object]:
     """Build the constructor kwargs for ``target`` from ``data``."""
     kwargs: dict[str, object] = {}
     for f in dataclasses.fields(target):
         wire = info.field_to_wire[f.name]
         hint = info.hints[f.name]
+        if type_args:
+            hint = _substitute_type_vars(hint, type_args)
         if wire not in data:
-            _require_present_or_default(f, wire, path, target.__name__)
+            if (default := _missing_field_value(f, hint, wire, path, target.__name__)) is not _OMIT:
+                kwargs[f.name] = default
             continue
-        kwargs[f.name] = _decode_value(data[wire], hint, (*path, wire), tolerate_unknown)
+        kwargs[f.name] = _decode_value(data[wire], hint, (*path, wire), tolerate_unknown, depth + 1)
     return kwargs
 
 
-def _require_present_or_default(
+def _substitute_type_vars(hint: object, type_args: Mapping[object, object]) -> object:
+    """Replace any type parameters in ``hint`` with their concrete arguments.
+
+    Recurses through parametrised generics so a nested ``list[T]`` resolves to
+    ``list[int]``. A bare type parameter is substituted directly; anything with
+    no parameter to replace is returned unchanged.
+
+    Args:
+        hint: A resolved type hint, possibly mentioning a type parameter.
+        type_args: Map from type parameters to their concrete arguments.
+
+    Returns:
+        ``hint`` with every known type parameter substituted.
+    """
+    if hint in type_args:
+        return type_args[hint]
+    args = get_args(hint)
+    if not args:
+        return hint
+    origin = get_origin(hint)
+    new_args = tuple(_substitute_type_vars(a, type_args) for a in args)
+    if new_args == args or origin is None:
+        return hint
+    return origin[new_args]
+
+
+_OMIT: Final = object()
+"""Sentinel meaning "supply no kwarg; let the constructor's own default apply"."""
+
+
+def _missing_field_value(
     f: dataclasses.Field[object],
+    hint: object,
     wire: str,
     path: tuple[str, ...],
     target_name: str,
-) -> None:
-    """Ensure a missing field has a default; otherwise raise ``CodecError``."""
-    has_default = f.default is not dataclasses.MISSING
-    has_factory = f.default_factory is not dataclasses.MISSING
-    if not (has_default or has_factory):
-        raise CodecError(
-            f"missing required field {f.name!r} (wire {wire!r})",
-            path=path,
-            target_name=target_name,
-        )
+) -> object:
+    """Resolve the value for a field whose wire key is absent.
+
+    A field carrying its own default or default-factory is left for the
+    constructor to fill (signalled by returning ``_OMIT``). A ``Tristate`` field
+    with no declared default still has a meaningful "absent" value — ``ABSENT``
+    is exactly the type's omitted-key inhabitant — so it is supplied rather than
+    treated as a missing required field. Any other defaultless field is a
+    genuine omission and raises.
+
+    Args:
+        f: The dataclass field whose key was absent from the document.
+        hint: The field's resolved type hint.
+        wire: The wire name that was looked up and not found.
+        path: Wire-name breadcrumb to this location.
+        target_name: Name of the dataclass being decoded.
+
+    Returns:
+        ``ABSENT`` for a defaultless ``Tristate`` field, otherwise ``_OMIT``.
+
+    Raises:
+        CodecError: If the field has neither a default nor ``Tristate`` typing.
+    """
+    if f.default is not dataclasses.MISSING or f.default_factory is not dataclasses.MISSING:
+        return _OMIT
+    if _is_tristate(hint):
+        return ABSENT
+    raise CodecError(
+        f"missing required field {f.name!r} (wire {wire!r})",
+        path=path,
+        target_name=target_name,
+    )
 
 
 def _reject_unknown(
@@ -410,15 +536,16 @@ def _decode_container(
     origin: object,
     path: tuple[str, ...],
     tolerate_unknown: bool,
+    depth: int,
 ) -> object:
     """Decode a parametrised container (list/tuple/set/dict/mapping)."""
     args = get_args(target)
     if origin is dict or _is_mapping_origin(origin):
-        return _decode_mapping(data, args, path, tolerate_unknown)
+        return _decode_mapping(data, args, path, tolerate_unknown, depth)
     if origin is tuple:
-        return _decode_tuple(data, args, path, tolerate_unknown)
+        return _decode_tuple(data, args, path, tolerate_unknown, depth)
     if origin in (list, set, frozenset) or _is_sequence_origin(origin):
-        return _decode_sequence(data, origin, args, path, tolerate_unknown)
+        return _decode_sequence(data, origin, args, path, tolerate_unknown, depth)
     return data
 
 
@@ -428,20 +555,49 @@ def _decode_sequence(
     args: tuple[object, ...],
     path: tuple[str, ...],
     tolerate_unknown: bool,
+    depth: int,
 ) -> object:
     """Decode a homogeneous sequence into list/set/frozenset (default list)."""
     if not isinstance(data, cabc.Iterable) or isinstance(data, (str, bytes, cabc.Mapping)):
         raise CodecError(f"expected an array, got {type(data).__name__}", path=path)
     elem = args[0] if args else object
     items = [
-        _decode_value(item, elem, (*path, f"[{i}]"), tolerate_unknown)
+        _decode_value(item, elem, (*path, f"[{i}]"), tolerate_unknown, depth + 1)
         for i, item in enumerate(data)
     ]
     if origin in (set, cabc.Set, cabc.MutableSet):
-        return set(items)
+        return _build_hashed(set, items, path)
     if origin is frozenset:
-        return frozenset(items)
+        return _build_hashed(frozenset, items, path)
     return items
+
+
+def _build_hashed[C](
+    factory: Callable[[list[object]], C],
+    items: list[object],
+    path: tuple[str, ...],
+) -> C:
+    """Build a ``set`` / ``frozenset``, mapping unhashable elements to ``CodecError``.
+
+    A decoded element may be unhashable (e.g. a ``list`` decoded under a
+    ``set[object]`` field), in which case ``set()`` / ``frozenset()`` raises a
+    bare ``TypeError`` that would escape the codec's ``CodecError`` contract.
+
+    Args:
+        factory: ``set`` or ``frozenset``.
+        items: The decoded elements to collect.
+        path: Wire-name breadcrumb to this location.
+
+    Returns:
+        The constructed set or frozenset.
+
+    Raises:
+        CodecError: If any element is unhashable.
+    """
+    try:
+        return factory(items)
+    except TypeError as err:
+        raise CodecError(f"unhashable element in {factory.__name__}", path=path, error=err) from err
 
 
 def _decode_tuple(
@@ -449,6 +605,7 @@ def _decode_tuple(
     args: tuple[object, ...],
     path: tuple[str, ...],
     tolerate_unknown: bool,
+    depth: int,
 ) -> object:
     """Decode a homogeneous (``tuple[X, ...]``) or fixed-arity tuple."""
     if not isinstance(data, cabc.Iterable) or isinstance(data, (str, bytes, cabc.Mapping)):
@@ -457,7 +614,8 @@ def _decode_tuple(
     if len(args) == 2 and args[1] is Ellipsis:
         elem = args[0]
         return tuple(
-            _decode_value(v, elem, (*path, f"[{i}]"), tolerate_unknown) for i, v in enumerate(seq)
+            _decode_value(v, elem, (*path, f"[{i}]"), tolerate_unknown, depth + 1)
+            for i, v in enumerate(seq)
         )
     arity = len(args)
     if len(seq) != arity:
@@ -466,7 +624,7 @@ def _decode_tuple(
             path=path,
         )
     return tuple(
-        _decode_value(v, t, (*path, f"[{i}]"), tolerate_unknown)
+        _decode_value(v, t, (*path, f"[{i}]"), tolerate_unknown, depth + 1)
         for i, (v, t) in enumerate(zip(seq, args, strict=True))
     )
 
@@ -476,6 +634,7 @@ def _decode_mapping(
     args: tuple[object, ...],
     path: tuple[str, ...],
     tolerate_unknown: bool,
+    depth: int,
 ) -> object:
     """Decode a mapping, recovering each key and value through its declared type.
 
@@ -491,11 +650,12 @@ def _decode_mapping(
     key_type = args[0] if len(args) == 2 else object
     value_type = args[1] if len(args) == 2 else object
     return {
-        _decode_value(key, key_type, (*path, str(key)), tolerate_unknown): _decode_value(
+        _decode_value(key, key_type, (*path, str(key)), tolerate_unknown, depth + 1): _decode_value(
             val,
             value_type,
             (*path, str(key)),
             tolerate_unknown,
+            depth + 1,
         )
         for key, val in data.items()
     }
@@ -506,22 +666,24 @@ def _decode_union(
     target: object,
     path: tuple[str, ...],
     tolerate_unknown: bool,
+    depth: int,
 ) -> object:
-    """Decode an ``X | None`` union: ``None`` passthrough, else decode ``X``.
+    """Decode a union, recovering the inner type only for single-arm optionals.
 
-    Only single-arm optionals (``X | None``) recover their inner type; ``None``
-    is passed through only when ``NoneType`` is genuinely a union member, so a
-    non-optional union such as ``int | str`` does not silently accept ``None``.
-    Unions with two or more non-``None`` arms are tagless and cannot be resolved
-    structurally, so their payload passes through untouched — use a discriminated
-    union (``@discriminated`` / ``@variant``) when an arm must be reconstructed.
+    A single-arm optional (``X | None``) recovers ``X`` for a non-``None``
+    payload and yields ``None`` for a ``None`` payload. Any union with two or
+    more non-``None`` arms (``int | str``, ``A | B | None``) is tagless and
+    cannot be resolved structurally, so its payload passes through untouched —
+    including a ``None`` payload, which is returned as-is rather than rejected.
+    Use a discriminated union (``@discriminated`` / ``@variant``) when an arm
+    must be reconstructed.
     """
     all_args = get_args(target)
     args = [a for a in all_args if a is not type(None)]
     if data is None and type(None) in all_args:
         return None
     if len(args) == 1:
-        return _decode_value(data, args[0], path, tolerate_unknown)
+        return _decode_value(data, args[0], path, tolerate_unknown, depth + 1)
     return data
 
 
@@ -530,6 +692,7 @@ def _decode_tristate(
     target: object,
     path: tuple[str, ...],
     tolerate_unknown: bool,
+    depth: int,
 ) -> object:
     """Decode a present key into ``NULL`` or ``Present(inner)``.
 
@@ -539,7 +702,7 @@ def _decode_tristate(
     if data is None:
         return NULL
     inner = _tristate_inner(target)
-    return Present(_decode_value(data, inner, path, tolerate_unknown))
+    return Present(_decode_value(data, inner, path, tolerate_unknown, depth + 1))
 
 
 def _decode_enum(data: object, target: type[enum.Enum], path: tuple[str, ...]) -> object:
@@ -598,6 +761,7 @@ def _dispatch_union(
     base: type,
     path: tuple[str, ...],
     tolerate_unknown: bool,
+    depth: int,
 ) -> object:
     """Resolve a discriminated union to a concrete variant and decode it."""
     if not isinstance(data, cabc.Mapping):
@@ -628,6 +792,7 @@ def _dispatch_union(
         concrete,
         path,
         tolerate_unknown,
+        depth,
         exempt_key=tag_field,
     )
 
@@ -735,11 +900,28 @@ def _resolve_info(target: type) -> _ModelInfo:
     info = _MODEL_CACHE.get(target)
     if info is not None:
         return info
-    hints = get_type_hints(target, include_extras=True)
+    try:
+        hints = get_type_hints(target, include_extras=True)
+    except NameError as err:
+        # An unresolvable forward reference (a string annotation whose name is
+        # not in scope) surfaces as a bare ``NameError`` from ``get_type_hints``;
+        # wrap it so the codec keeps its ``CodecError`` contract.
+        raise CodecError(
+            f"cannot resolve a type hint on {target.__name__}: {err}",
+            target_name=target.__name__,
+            error=err,
+        ) from err
     field_to_wire: dict[str, str] = {}
     wire_to_field: dict[str, str] = {}
     for f in dataclasses.fields(target):
         wire = f.metadata.get(ALIAS_KEY, f.name)
+        if wire in wire_to_field:
+            # Two fields claiming the same wire alias would silently shadow each
+            # other (last-wins on decode, double-write on encode); reject it.
+            raise CodecError(
+                f"fields {wire_to_field[wire]!r} and {f.name!r} both map to wire name {wire!r}",
+                target_name=target.__name__,
+            )
         field_to_wire[f.name] = wire
         wire_to_field[wire] = f.name
     info = _ModelInfo(hints=hints, field_to_wire=field_to_wire, wire_to_field=wire_to_field)
@@ -756,6 +938,11 @@ def _is_tristate(target: object) -> bool:
     both shapes are recognised. A bare, non-parametrised ``Tristate`` field is
     treated as ``Tristate[object]`` (inner type ``object``).
     """
+    if get_origin(target) is Annotated:
+        # An ``Annotated[Tristate[X], ...]`` field is still a Tristate; unwrap
+        # so a defaultless annotated Tristate resolves to ABSENT on an omitted
+        # key (matching the bare ``Tristate[X]`` contract).
+        target = get_args(target)[0]
     if target is Tristate:
         return True
     if get_origin(target) is Tristate:
@@ -767,6 +954,8 @@ def _is_tristate(target: object) -> bool:
 
 def _tristate_inner(target: object) -> object:
     """Recover ``X`` from a ``Tristate[X]`` (or its expanded union form)."""
+    if get_origin(target) is Annotated:
+        target = get_args(target)[0]
     if get_origin(target) is Tristate:
         args = get_args(target)
         return args[0] if args else object

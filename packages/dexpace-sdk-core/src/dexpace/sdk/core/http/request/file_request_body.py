@@ -102,6 +102,9 @@ class FileRequestBody(RequestBody):
 
     def iter_bytes(self, chunk_size: int = _DEFAULT_CHUNK) -> Iterator[bytes]:
         _check_chunk_size(chunk_size)
+        return self._iter(chunk_size)
+
+    def _iter(self, chunk_size: int) -> Iterator[bytes]:
         remaining = self._count
         with self._path.open("rb") as stream:
             if self._offset:

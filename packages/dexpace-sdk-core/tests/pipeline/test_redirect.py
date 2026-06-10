@@ -296,20 +296,82 @@ class TestHopAndLoopGuards:
 
 
 class TestSecurity:
-    def test_authorization_stripped_on_redirect(self) -> None:
+    def test_authorization_kept_on_same_origin_redirect(self) -> None:
+        # A same-origin hop (here a path change on the same host/scheme/port)
+        # keeps a caller-set Authorization header: stripping it would
+        # de-authenticate the request against the very service that issued the
+        # redirect (e.g. a trailing-slash 301).
         client = _ScriptedClient(
             [_Hop(Status.MOVED_PERMANENTLY, "https://example.com/new"), _Hop(Status.OK)],
         )
         policy = RedirectPolicy(strip_authorization=True)
         response = _run(client, policy, _request(auth="Bearer secret"))
         assert response.is_success
-        assert "Authorization" not in client.requests[1].headers
+        assert client.requests[1].headers.get("Authorization") == "Bearer secret"
         # Original request kept its header.
         assert client.requests[0].headers.get("Authorization") == "Bearer secret"
 
-    def test_strip_authorization_false_preserves_header(self) -> None:
+    def test_authorization_stripped_on_cross_origin_redirect(self) -> None:
+        # A reissue that crosses origin (different host) drops a caller-set
+        # Authorization header so credentials never reach the foreign host.
         client = _ScriptedClient(
-            [_Hop(Status.MOVED_PERMANENTLY, "https://example.com/new"), _Hop(Status.OK)],
+            [_Hop(Status.MOVED_PERMANENTLY, "https://other.example.org/new"), _Hop(Status.OK)],
+        )
+        policy = RedirectPolicy(strip_authorization=True)
+        response = _run(client, policy, _request(auth="Bearer secret"))
+        assert response.is_success
+        assert "Authorization" not in client.requests[1].headers
+
+    def test_authorization_stripped_on_scheme_downgrade(self) -> None:
+        # http -> https (or vice versa) is a cross-origin change even with the
+        # same host, so the header is stripped.
+        client = _ScriptedClient(
+            [_Hop(Status.FOUND, "http://example.com/new"), _Hop(Status.OK)],
+        )
+        policy = RedirectPolicy(strip_authorization=True)
+        _run(client, policy, _request(url="https://example.com/start", auth="Bearer secret"))
+        assert "Authorization" not in client.requests[1].headers
+
+    def test_authorization_stripped_on_port_change(self) -> None:
+        # Same scheme and host but a non-default port is a different origin.
+        client = _ScriptedClient(
+            [_Hop(Status.FOUND, "https://example.com:8443/new"), _Hop(Status.OK)],
+        )
+        policy = RedirectPolicy(strip_authorization=True)
+        _run(client, policy, _request(url="https://example.com/start", auth="Bearer secret"))
+        assert "Authorization" not in client.requests[1].headers
+
+    def test_authorization_kept_on_explicit_default_port_redirect(self) -> None:
+        # An explicit :443 against an implied default https port is the same
+        # origin, so the header survives.
+        client = _ScriptedClient(
+            [_Hop(Status.MOVED_PERMANENTLY, "https://example.com:443/new"), _Hop(Status.OK)],
+        )
+        policy = RedirectPolicy(strip_authorization=True)
+        _run(client, policy, _request(url="https://example.com/start", auth="Bearer secret"))
+        assert client.requests[1].headers.get("Authorization") == "Bearer secret"
+
+    def test_authorization_stripped_on_cross_origin_303_get(self) -> None:
+        # The 303 GET-rewrite path also honours cross-origin stripping.
+        client = _ScriptedClient(
+            [_Hop(Status.SEE_OTHER, "https://other.example.org/new"), _Hop(Status.OK)],
+        )
+        policy = RedirectPolicy(strip_authorization=True)
+        _run(client, policy, _request(method=Method.POST, auth="Bearer secret"))
+        assert "Authorization" not in client.requests[1].headers
+
+    def test_authorization_kept_on_same_origin_303_get(self) -> None:
+        client = _ScriptedClient(
+            [_Hop(Status.SEE_OTHER, "https://example.com/new"), _Hop(Status.OK)],
+        )
+        policy = RedirectPolicy(strip_authorization=True)
+        _run(client, policy, _request(method=Method.POST, auth="Bearer secret"))
+        assert client.requests[1].headers.get("Authorization") == "Bearer secret"
+
+    def test_strip_authorization_false_preserves_header_cross_origin(self) -> None:
+        # strip_authorization=False never strips, even across origins.
+        client = _ScriptedClient(
+            [_Hop(Status.MOVED_PERMANENTLY, "https://other.example.org/new"), _Hop(Status.OK)],
         )
         policy = RedirectPolicy(strip_authorization=False)
         _run(client, policy, _request(auth="Bearer secret"))

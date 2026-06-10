@@ -26,6 +26,7 @@ def test_noop_tracer_callbacks_are_silent_and_return_none() -> None:
     tracer.attempt_retries_exhausted()
     tracer.request_url_resolved("https://example.test/v1")
     tracer.request_sent(128)
+    tracer.request_sent(None)  # unknown body length is a valid argument
     tracer.response_headers_received(200, {"content-type": "application/json"})
     tracer.response_received(256)
     tracer.connection_acquired("example.test", 443)
@@ -73,3 +74,17 @@ def test_custom_factory_is_a_factory() -> None:
             return NOOP_HTTP_TRACER
 
     assert isinstance(_Factory(), HttpTracerFactory)
+
+
+def test_request_sent_accepts_known_and_unknown_lengths() -> None:
+    received: list[int | None] = []
+
+    class _RecordingTracer(HttpTracer):
+        def request_sent(self, byte_count: int | None) -> None:
+            received.append(byte_count)
+
+    tracer = _RecordingTracer()
+    tracer.request_sent(64)
+    tracer.request_sent(None)  # unknown length, e.g. an unsized streamed body
+
+    assert received == [64, None]

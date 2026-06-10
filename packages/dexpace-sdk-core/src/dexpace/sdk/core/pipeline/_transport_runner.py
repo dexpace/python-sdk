@@ -23,7 +23,10 @@ class _TransportRunner(Policy):
     runner promotes the immutable telemetry context to an ``ExchangeContext``
     once the response is in hand so post-exchange observers (logging,
     tracing) can look up the latest snapshot via ``ContextStore``. The
-    promotion is a snapshot update; ``ctx.call`` itself is not reassigned.
+    promotion records ``response.request`` — the per-hop request that actually
+    produced the response, which differs from ``ctx.call.request`` after a
+    redirect. The promotion is a snapshot update; ``ctx.call`` itself is not
+    reassigned.
     """
 
     __slots__ = ("_client",)

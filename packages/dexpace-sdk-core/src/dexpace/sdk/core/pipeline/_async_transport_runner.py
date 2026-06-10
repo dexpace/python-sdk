@@ -21,7 +21,10 @@ class _AsyncTransportRunner(AsyncPolicy):
 
     Like the sync transport runner, side-effects the promotion-chain
     context to record the exchange in the ``ContextStore`` after the
-    response arrives, but does not reassign ``ctx.call``.
+    response arrives, but does not reassign ``ctx.call``. The recorded
+    ``ExchangeContext.request`` is ``response.request`` — the per-hop request
+    that produced the response, which differs from ``ctx.call.request`` after
+    a redirect.
     """
 
     __slots__ = ("_client",)

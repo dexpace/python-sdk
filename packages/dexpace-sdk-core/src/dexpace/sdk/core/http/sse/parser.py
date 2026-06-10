@@ -13,7 +13,10 @@ Consumes an iterator of ``bytes`` chunks (typically from
 - Joins multi-line ``data:`` fields with a single ``\n``.
 - Skips comment lines (those beginning with ``:``).
 - Treats blank lines as event terminators; empty events are not emitted.
-- Decodes payloads as UTF-8 (the spec mandates UTF-8 for ``text/event-stream``).
+- Decodes payloads as UTF-8 (the spec mandates UTF-8 for ``text/event-stream``);
+  invalid bytes in a complete line are replaced with U+FFFD rather than raising,
+  per the spec. A codepoint truncated by the stream ending surfaces as a
+  ``StreamingError`` from `SseParser.end`.
 
 Per-event fields:
 - ``data``: the (possibly multi-line) message payload.
@@ -238,8 +241,9 @@ class SseParser:
 
     def _dispatch(self) -> None:
         if not self._data_lines:
-            # Spec: blank line with no data buffered ⇒ no event emitted,
-            # but event name and retry reset.
+            # Spec: blank line with no data buffered ⇒ no event emitted, and the
+            # event name resets to the default. ``retry`` is connection-level and
+            # deliberately persists, so it is not reset here.
             self._event = "message"
             return
         event = SseEvent(
@@ -281,21 +285,42 @@ def _read_line(buffer: bytearray, *, at_eos: bool) -> tuple[str | None, int]:
     """
     for index, byte in enumerate(buffer):
         if byte == _LF:
-            return buffer[:index].decode("utf-8"), index + 1
+            return _decode_line(buffer[:index]), index + 1
         if byte == _CR:
             if index + 1 < len(buffer):
                 # CRLF when the next byte is LF, otherwise a lone-CR terminator.
                 consumed = index + 2 if buffer[index + 1] == _LF else index + 1
-                return buffer[:index].decode("utf-8"), consumed
+                return _decode_line(buffer[:index]), consumed
             # CR is the final byte: hold it open until the next byte arrives so
             # a split CRLF is not mistaken for two terminators. At EOS it is a
             # complete terminator.
             if not at_eos:
                 return None, 0
-            return buffer[:index].decode("utf-8"), index + 1
+            return _decode_line(buffer[:index]), index + 1
     if at_eos and buffer:
+        # Unterminated trailing residue at end-of-stream. Decode strictly so a
+        # truncated multi-byte codepoint cut off by the stream ending surfaces
+        # as a ``UnicodeDecodeError`` for ``end`` to wrap as ``StreamingError``.
         return buffer.decode("utf-8"), len(buffer)
     return None, 0
+
+
+def _decode_line(raw: bytearray) -> str:
+    """Decode one complete SSE line as UTF-8 with replacement on bad bytes.
+
+    The WHATWG ``text/event-stream`` spec mandates UTF-8 decoding with the
+    replacement character (U+FFFD) for invalid sequences rather than failing,
+    so malformed bytes inside an otherwise complete line never raise out of
+    `SseParser.feed`. Truncated codepoints at end-of-stream are handled
+    separately (strictly) by `_read_line` so they can surface as errors.
+
+    Args:
+        raw: The line's bytes, excluding its terminator.
+
+    Returns:
+        The decoded line text, with U+FFFD substituted for invalid bytes.
+    """
+    return bytes(raw).decode("utf-8", errors="replace")
 
 
 def parse_events(chunks: Iterable[bytes]) -> Iterator[SseEvent]:

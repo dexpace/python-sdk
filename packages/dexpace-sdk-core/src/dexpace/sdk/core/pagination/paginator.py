@@ -26,10 +26,12 @@ when draining an unbounded server-side sequence.
 
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import TYPE_CHECKING
 
+from ..errors import DeserializationError
 from ..http.context.dispatch_context import DispatchContext
 from ..pipeline.dispatch import (
     AsyncPipelineLike,
@@ -47,11 +49,59 @@ if TYPE_CHECKING:
 
 
 def _decode_body(raw: str) -> object:
-    """Decode a JSON body string into a Python value (``None`` when empty)."""
+    """Decode a JSON body string into a Python value (``None`` when empty).
+
+    Args:
+        raw: The response body text. An empty or whitespace-only body
+            decodes to ``None``.
+
+    Returns:
+        The decoded Python value, or ``None`` for an empty body.
+
+    Raises:
+        DeserializationError: When the body is not well-formed JSON (e.g. an
+            HTML error page returned with a 200 by a load balancer). The
+            underlying ``json.JSONDecodeError`` never escapes the SDK error
+            hierarchy.
+    """
     text = raw.strip()
     if not text:
         return None
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as err:
+        raise DeserializationError("pagination response body is not valid JSON") from err
+
+
+def _decode_for(raw: str | None, request: Request) -> object:
+    """Decode a page body, stamping the failing request for resumption.
+
+    Mirrors ``Pager``'s resume contract: when decoding fails, the request
+    URL that produced the unparseable page is stamped onto the
+    ``DeserializationError`` (as its ``continuation_token``) so a caller can
+    rebuild the same request and retry from exactly that page rather than
+    restarting the whole sequence.
+
+    Args:
+        raw: The response body text, or ``None`` when the response had no
+            body.
+        request: The request that produced ``raw``; its URL becomes the
+            resume token on a decode failure.
+
+    Returns:
+        The decoded Python value, or ``None`` for an absent or empty body.
+
+    Raises:
+        DeserializationError: When the body is not well-formed JSON.
+    """
+    if raw is None:
+        return None
+    try:
+        return _decode_body(raw)
+    except DeserializationError as err:
+        if err.continuation_token is None:
+            err.continuation_token = str(request.url)
+        raise
 
 
 class Paginator[T]:
@@ -89,11 +139,20 @@ class Paginator[T]:
     def _normalise(self, source: SyncPipelineLike | SendSync) -> SendSync:
         if isinstance(source, SyncPipelineLike):
             pipeline = source
+            if inspect.iscoroutinefunction(pipeline.run):
+                raise TypeError(
+                    "Paginator was given an async pipeline; its run() is a "
+                    "coroutine function. Use AsyncPaginator for async pipelines.",
+                )
 
             def send(request: Request) -> Response:
                 return pipeline.run(request, self._dispatch_factory())
 
             return send
+        if inspect.iscoroutinefunction(source):
+            raise TypeError(
+                "Paginator was given an async send-callable; use AsyncPaginator.",
+            )
         return source
 
     def by_page(self) -> Iterator[Page[T]]:
@@ -116,7 +175,8 @@ class Paginator[T]:
             request = page.next_request
 
     def _parse(self, response: Response) -> Page[T]:
-        payload = _decode_body(response.body.string()) if response.body is not None else None
+        raw = response.body.string() if response.body is not None else None
+        payload = _decode_for(raw, response.request)
         return self._strategy.parse(response, payload, response.request)
 
     def __iter__(self) -> Iterator[T]:
@@ -152,11 +212,20 @@ class AsyncPaginator[T]:
     def _normalise(self, source: AsyncPipelineLike | SendAsync) -> SendAsync:
         if isinstance(source, AsyncPipelineLike):
             pipeline = source
+            if not inspect.iscoroutinefunction(pipeline.run):
+                raise TypeError(
+                    "AsyncPaginator was given a sync pipeline; its run() is "
+                    "not a coroutine function. Use Paginator for sync pipelines.",
+                )
 
             async def send(request: Request) -> AsyncResponse:
                 return await pipeline.run(request, self._dispatch_factory())
 
             return send
+        if not inspect.iscoroutinefunction(source):
+            raise TypeError(
+                "AsyncPaginator was given a sync send-callable; use Paginator.",
+            )
         return source
 
     async def by_page(self) -> AsyncIterator[Page[T]]:
@@ -173,7 +242,8 @@ class AsyncPaginator[T]:
             request = page.next_request
 
     async def _parse(self, response: AsyncResponse) -> Page[T]:
-        payload = _decode_body(await response.body.string()) if response.body is not None else None
+        raw = await response.body.string() if response.body is not None else None
+        payload = _decode_for(raw, response.request)
         return self._strategy.parse(response, payload, response.request)
 
     def __aiter__(self) -> AsyncIterator[T]:

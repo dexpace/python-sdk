@@ -60,6 +60,35 @@ class TestQuotedStringHandling:
         mt = MediaType.parse('multipart/form-data; boundary="foo bar"')
         assert dict(mt.parameters)["boundary"] == "foo bar"
 
+    def test_quoted_value_with_semicolon_not_split(self) -> None:
+        # A ``;`` inside a quoted-string is part of the value, not a parameter
+        # separator: a naive ``value.split(";")`` would mis-parse this.
+        mt = MediaType.parse('multipart/mixed; boundary="a;b;c"')
+        assert dict(mt.parameters)["boundary"] == "a;b;c"
+        assert len(mt.parameters) == 1
+
+    def test_quoted_semicolon_does_not_create_spurious_param(self) -> None:
+        # Two real parameters; the first carries a quoted ``;``. Both must
+        # survive, and the embedded ``;`` must not split off a third entry.
+        mt = MediaType.parse('multipart/mixed; boundary="a;b"; charset=utf-8')
+        params = dict(mt.parameters)
+        assert params["boundary"] == "a;b"
+        assert params["charset"] == "utf-8"
+        assert len(mt.parameters) == 2
+
+    def test_quoted_escaped_quote_before_semicolon(self) -> None:
+        # An escaped quote inside the quoted-string must not prematurely close
+        # the quote, so the following ``;`` stays inside the value.
+        mt = MediaType.parse('text/plain; foo="a\\";b"')
+        assert dict(mt.parameters)["foo"] == 'a";b'
+        assert len(mt.parameters) == 1
+
+    def test_quoted_semicolon_round_trips(self) -> None:
+        # parse -> str -> parse recovers the original value with the embedded
+        # semicolon intact.
+        original = MediaType.of("multipart", "mixed", {"boundary": "a;b;c"})
+        assert MediaType.parse(str(original)) == original
+
 
 class TestCaseFolding:
     def test_type_and_subtype_lowercased(self) -> None:

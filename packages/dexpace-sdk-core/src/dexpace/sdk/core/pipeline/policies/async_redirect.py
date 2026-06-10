@@ -4,9 +4,11 @@
 """Async twin of ``RedirectPolicy``.
 
 Mirrors `RedirectPolicy` exactly — same status-code matrix, same
-credential stripping, same loop guard — but ``send`` is ``async`` and
-operates on ``AsyncResponse``. The per-hop decision helpers are shared via
-delegation to a wrapped sync ``RedirectPolicy`` instance.
+cross-origin credential stripping (a caller-set ``Authorization`` header is
+dropped only when the reissue crosses origin), same loop guard — but
+``send`` is ``async`` and operates on ``AsyncResponse``. The per-hop
+decision helpers are shared via delegation to a wrapped sync
+``RedirectPolicy`` instance, so the cross-origin behaviour is identical.
 """
 
 from __future__ import annotations

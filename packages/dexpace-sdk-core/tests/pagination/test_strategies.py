@@ -74,6 +74,39 @@ class TestCursorStrategy:
         page = strategy.parse(_response(req), payload, req)
         assert page.items == [1, 2]
 
+    def test_integer_cursor_is_coerced_and_drives_next_request(self) -> None:
+        # Real APIs return numeric cursors (`"next_cursor": 17283`); a numeric
+        # cursor must still build the next request rather than silently ending
+        # the sequence after page 1.
+        strategy: CursorStrategy[int] = CursorStrategy(items_field="data")
+        req = _request()
+        page = strategy.parse(_response(req), {"data": [1], "next_cursor": 17283}, req)
+        assert page.next_request is not None
+        assert page.next_request.url.query.get("cursor") == "17283"
+
+    def test_zero_integer_cursor_is_coerced(self) -> None:
+        # A falsy-but-valid scalar cursor (``0``) is a legitimate page key and
+        # must not be mistaken for exhaustion.
+        strategy: CursorStrategy[int] = CursorStrategy(items_field="data")
+        req = _request()
+        page = strategy.parse(_response(req), {"data": [1], "next_cursor": 0}, req)
+        assert page.next_request is not None
+        assert page.next_request.url.query.get("cursor") == "0"
+
+    def test_null_cursor_ends_sequence(self) -> None:
+        strategy: CursorStrategy[int] = CursorStrategy(items_field="data")
+        req = _request()
+        page = strategy.parse(_response(req), {"data": [1], "next_cursor": None}, req)
+        assert page.next_request is None
+
+    def test_boolean_cursor_ends_sequence(self) -> None:
+        # ``bool`` is an ``int`` subclass but is never a real cursor value; it
+        # must terminate rather than send ``cursor=True``.
+        strategy: CursorStrategy[int] = CursorStrategy(items_field="data")
+        req = _request()
+        page = strategy.parse(_response(req), {"data": [1], "next_cursor": True}, req)
+        assert page.next_request is None
+
 
 class TestPageNumberStrategy:
     def test_increments_page_param_when_full_page(self) -> None:
@@ -182,3 +215,37 @@ class TestLinkHeaderStrategy:
         page = strategy.parse(_response(req, headers=headers), {"data": [1]}, req)
         assert page.next_request is not None
         assert str(page.next_request.url) == "https://api.example.com/items?page=2"
+
+    def test_next_across_multiple_link_header_lines(self) -> None:
+        # RFC 9110 permits the Link header to be split across separate header
+        # lines; reading only the first line drops the rel="next" on the
+        # second and stops pagination after page 1 (silent data loss).
+        strategy: LinkHeaderStrategy[int] = LinkHeaderStrategy(items_field="data")
+        headers = Headers(
+            [
+                ("Link", '<https://api.example.com/items?page=1>; rel="prev"'),
+                ("Link", '<https://api.example.com/items?page=3>; rel="next"'),
+            ],
+        )
+        req = _request("https://api.example.com/items?page=2")
+        page = strategy.parse(_response(req, headers=headers), {"data": [1]}, req)
+        assert page.next_request is not None
+        assert str(page.next_request.url) == "https://api.example.com/items?page=3"
+        assert page.prev_request is not None
+        assert str(page.prev_request.url) == "https://api.example.com/items?page=1"
+
+    def test_next_target_with_comma_in_query_is_followed(self) -> None:
+        # A comma is a legal unencoded URI sub-delim (e.g. ?fields=a,b); the
+        # tokenizer must not split inside <...> or the whole next link evaporates.
+        # The re-serialised URL may percent-encode the comma; what matters is
+        # that the link is followed and the decoded query is preserved.
+        strategy: LinkHeaderStrategy[int] = LinkHeaderStrategy(items_field="data")
+        headers = Headers(
+            [("Link", '<https://api.example.com/items?fields=a,b&page=2>; rel="next"')],
+        )
+        req = _request("https://api.example.com/items?fields=a,b&page=1")
+        page = strategy.parse(_response(req, headers=headers), {"data": [1]}, req)
+        assert page.next_request is not None
+        query = page.next_request.url.query
+        assert query.get("fields") == "a,b"
+        assert query.get("page") == "2"

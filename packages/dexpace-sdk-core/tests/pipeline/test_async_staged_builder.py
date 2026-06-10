@@ -41,6 +41,16 @@ class _AsyncMarkerPolicy(AsyncPolicy):
         return await self.next.send(request, ctx)
 
 
+class _AsyncLoggingPillar(AsyncPolicy):
+    """Second pillar (LOGGING) for mutate-while-iterating regression."""
+
+    STAGE = Stage.LOGGING
+    __slots__ = ()
+
+    async def send(self, request: Request, ctx: PipelineContext) -> AsyncResponse:
+        return await self.next.send(request, ctx)
+
+
 @pytest.fixture
 def async_transport() -> _AsyncStubTransport:
     return _AsyncStubTransport()
@@ -75,6 +85,21 @@ def test_replace_pillar(async_transport: _AsyncStubTransport) -> None:
     second = AsyncRetryPolicy()
     b.append(first).replace(AsyncRetryPolicy, second)
     assert b._pillars[Stage.RETRY] is second
+
+
+def test_replace_pillar_with_multiple_pillars_present(
+    async_transport: _AsyncStubTransport,
+) -> None:
+    # Regression: ``replace`` used to ``del`` from ``_pillars`` while
+    # iterating it. With a second pillar present the lookup must finish
+    # before the deletion, leaving the other pillar untouched.
+    b = AsyncStagedPipelineBuilder(async_transport)
+    logging = _AsyncLoggingPillar()
+    b.append(AsyncRetryPolicy()).append(logging)
+    new_retry = AsyncRetryPolicy()
+    b.replace(AsyncRetryPolicy, new_retry)
+    assert b._pillars[Stage.RETRY] is new_retry
+    assert b._pillars[Stage.LOGGING] is logging
 
 
 def test_from_pipeline_round_trip(async_transport: _AsyncStubTransport) -> None:

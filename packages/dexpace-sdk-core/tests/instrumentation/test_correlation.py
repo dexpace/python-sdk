@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 
 import pytest
 from _pytest.logging import LogCaptureFixture
@@ -115,6 +116,27 @@ def test_correlation_filter_installed_once() -> None:
     name = "dexpace.test.corr.once"
     ClientLogger(name)
     ClientLogger(name)
+    installed = [f for f in logging.getLogger(name).filters if isinstance(f, CorrelationFilter)]
+    assert len(installed) == 1
+
+
+def test_correlation_filter_installed_once_under_concurrency() -> None:
+    # Many threads constructing a logger for the same name concurrently must
+    # still end up with exactly one CorrelationFilter: the install guard runs
+    # the check-then-act under a lock, so the race cannot duplicate it.
+    name = "dexpace.test.corr.concurrent"
+    barrier = threading.Barrier(16)
+
+    def _build() -> None:
+        barrier.wait()
+        ClientLogger(name)
+
+    threads = [threading.Thread(target=_build) for _ in range(16)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
     installed = [f for f in logging.getLogger(name).filters if isinstance(f, CorrelationFilter)]
     assert len(installed) == 1
 

@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 from urllib.parse import urljoin
 
 from ..http.common.url import Url
-from .link_header import find_rel
+from .link_header import parse_link_header
 from .page import Page
 
 if TYPE_CHECKING:
@@ -102,6 +102,52 @@ def _with_query_param(request: Request, name: str, value: str) -> Request:
     return request.with_url(url.with_query(url.query.with_set(name, value)))
 
 
+def _rel_targets(header: str) -> dict[str, str]:
+    """Map each relation type in ``header`` to its first link-value target.
+
+    The header is parsed once and every link-value's space-separated ``rel``
+    set is expanded so a single pass resolves any relation (``next``,
+    ``prev``, ...). The first target wins per relation, matching the
+    first-match semantics of a direct lookup.
+
+    Args:
+        header: The folded raw ``Link`` header value (all lines joined).
+
+    Returns:
+        A mapping from lower-cased relation type to its target URI.
+    """
+    targets: dict[str, str] = {}
+    for target, params in parse_link_header(header):
+        for rel in params.get("rel", "").split():
+            targets.setdefault(rel.casefold(), target)
+    return targets
+
+
+def _coerce_cursor(cursor: object) -> str:
+    """Coerce a decoded cursor value to its query-parameter string form.
+
+    Real APIs return cursors as strings *or* numbers (``"next_cursor":
+    17283``); a numeric cursor must still drive the next request rather than
+    silently ending the sequence. Strings pass through, ``int`` and ``float``
+    are stringified, and everything else (``None``, ``bool``, containers)
+    yields the empty string, which the caller treats as exhaustion.
+
+    Args:
+        cursor: The decoded cursor value dug out of the response body.
+
+    Returns:
+        The cursor as a non-empty string when it is a usable scalar, or the
+        empty string when the sequence is exhausted.
+    """
+    if isinstance(cursor, str):
+        return cursor
+    if isinstance(cursor, bool):
+        return ""
+    if isinstance(cursor, (int, float)):
+        return str(cursor)
+    return ""
+
+
 @dataclass(frozen=True, slots=True)
 class CursorStrategy[T]:
     """Cursor / continuation-token pagination.
@@ -115,7 +161,9 @@ class CursorStrategy[T]:
         items_field: Dotted path to the item list in the body (e.g.
             ``"data"`` or ``"result.items"``).
         cursor_response_field: Dotted path to the cursor in the body. An
-            absent, empty, or ``null`` value ends the sequence.
+            absent, empty, ``null``, or boolean value ends the sequence; a
+            non-empty scalar cursor (string, ``int``, or ``float``) is sent
+            verbatim, coerced to its string form for the query parameter.
         cursor_param: Query-parameter name to carry the cursor on the next
             request.
     """
@@ -131,9 +179,9 @@ class CursorStrategy[T]:
         template_request: Request,
     ) -> Page[T]:
         items: list[T] = _items_at(payload, self.items_field.split("."))
-        cursor = _dig(payload, self.cursor_response_field.split("."))
+        cursor = _coerce_cursor(_dig(payload, self.cursor_response_field.split(".")))
         next_request: Request | None = None
-        if isinstance(cursor, str) and cursor:
+        if cursor:
             next_request = _with_query_param(template_request, self.cursor_param, cursor)
         return Page(items=items, next_request=next_request, raw=response)
 
@@ -213,6 +261,12 @@ class LinkHeaderStrategy[T]:
     RFC 5988) is resolved against the template request's URL, so an API that
     returns ``</items?page=2>`` rather than an absolute URI still paginates.
 
+    RFC 9110 permits the ``Link`` header to be split across multiple header
+    lines (a ``rel="prev"`` line and a ``rel="next"`` line, say); every line
+    is folded together before parsing so a ``next`` relation on a later line
+    is never dropped. The header is parsed a single time and both the
+    ``next`` and ``prev`` targets are resolved from that one pass.
+
     Args:
         items_field: Dotted path to the item list in the body.
         link_header_name: Header to read link relations from (default
@@ -229,9 +283,10 @@ class LinkHeaderStrategy[T]:
         template_request: Request,
     ) -> Page[T]:
         items: list[T] = _items_at(payload, self.items_field.split("."))
-        header = response.headers.get(self.link_header_name) or ""
-        next_request = self._request_for(header, "next", template_request)
-        prev_request = self._request_for(header, "prev", template_request)
+        header = ", ".join(response.headers.values(self.link_header_name))
+        targets = _rel_targets(header)
+        next_request = self._request_for(targets.get("next"), template_request)
+        prev_request = self._request_for(targets.get("prev"), template_request)
         return Page(
             items=items,
             next_request=next_request,
@@ -240,8 +295,7 @@ class LinkHeaderStrategy[T]:
         )
 
     @staticmethod
-    def _request_for(header: str, rel: str, template: Request) -> Request | None:
-        target = find_rel(header, rel)
+    def _request_for(target: str | None, template: Request) -> Request | None:
         if target is None:
             return None
         absolute = urljoin(str(template.url), target)

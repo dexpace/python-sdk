@@ -5,8 +5,23 @@
 
 ``RequestsHttpClient`` wraps a ``requests.Session`` configured with
 ``stream=True`` so response bodies are read lazily and surfaced through the
-SDK's `ResponseBody` streaming API. Request bodies are produced via
-`RequestBody.iter_bytes` in 8 KiB chunks.
+SDK's `ResponseBody` streaming API.
+
+Request-body framing follows the rule a recipient can parse unambiguously:
+
+- A body whose length is known (replayable or not) is wrapped in a sized view
+  exposing ``__len__``, so ``requests`` sets ``Content-Length`` itself and
+  frames the upload by length while still streaming it chunk-by-chunk — the
+  payload is never buffered into memory. The adapter never injects
+  ``Content-Length`` next to a bare generator, which would make ``requests``
+  add ``Transfer-Encoding: chunked`` while ``HTTPAdapter`` still sent the body
+  un-framed (RFC 9112 forbids carrying both headers).
+- A body of unknown length is passed as an iterator and ``requests`` applies
+  ``Transfer-Encoding: chunked`` cleanly; the adapter drops any caller-set
+  ``Content-Length`` on this path so the two framing headers are never sent
+  together.
+
+Either way the wire request carries exactly one framing header, never both.
 
 Exception mapping (``requests`` -> SDK):
 
@@ -47,6 +62,15 @@ if TYPE_CHECKING:
 _DEFAULT_TIMEOUT: Final[float] = 30.0
 _CHUNK_SIZE: Final[int] = 8192
 
+# urllib3 reports the negotiated HTTP version as an int on the raw response
+# (``11`` == HTTP/1.1, ``10`` == HTTP/1.0, ``20`` == HTTP/2). Map the ones we
+# can name onto the core ``Protocol`` enum; anything else defaults to HTTP/1.1.
+_PROTOCOL_BY_VERSION: Final[dict[int, Protocol]] = {
+    10: Protocol.HTTP_1_0,
+    11: Protocol.HTTP_1_1,
+    20: Protocol.HTTP_2,
+}
+
 
 class RequestsHttpClient:
     """Synchronous transport over ``requests.Session``.
@@ -57,6 +81,10 @@ class RequestsHttpClient:
     ``stream=True`` and wraps the streamed response into a
     `ResponseBody`.
 
+    A caller-supplied ``session`` is treated as borrowed: ``close`` leaves it
+    open so other components sharing the pooled session keep working. Only a
+    session this client created is closed on ``close``.
+
     Attributes:
         timeout: Single timeout in seconds applied to ``Session.request``;
             covers both connect and read with no per-phase granularity.
@@ -64,7 +92,7 @@ class RequestsHttpClient:
             if finer-grained control is needed.
     """
 
-    __slots__ = ("_closed", "_session", "timeout")
+    __slots__ = ("_closed", "_owns_session", "_session", "timeout")
 
     def __init__(
         self,
@@ -75,32 +103,35 @@ class RequestsHttpClient:
         if timeout <= 0:
             raise ValueError(f"timeout must be positive, got {timeout}")
         self.timeout = timeout
+        self._owns_session = session is None
         self._session = session if session is not None else requests.Session()
         self._closed = False
 
     def execute(self, request: Request) -> Response:
         """Send ``request`` and return the response.
 
+        An in-range HTTP status the server returns is preserved on the
+        response, even when it is not a named member of the registry; only a
+        status outside the valid 100-599 range is treated as a protocol error.
+
         Raises:
             ServiceRequestError: When the request cannot be dispatched
                 (connection refused, DNS failure, generic transport error).
             ServiceRequestTimeoutError: On ``ConnectTimeout``.
             ServiceResponseTimeoutError: On ``ReadTimeout``.
-            ServiceResponseError: When the status code is outside the
-                known IANA registry.
+            ServiceResponseError: When the status code is outside the valid
+                HTTP range (100-599).
         """
         if self._closed:
             raise ServiceRequestError("RequestsHttpClient is closed")
-        data = _body_iterator(request.body)
+        data = _body_payload(request.body)
         headers = {name: ", ".join(values) for name, values in request.headers.items()}
-        # ``requests`` sends an iterator as chunked transfer-encoding by
-        # default. If the body length is known, surface it as
-        # ``Content-Length`` so transports / servers that do not handle
-        # chunked uploads still see a framed request.
-        if request.body is not None and "content-length" not in {k.lower() for k in headers}:
-            length = request.body.content_length()
-            if length >= 0:
-                headers["Content-Length"] = str(length)
+        if not (data is None or isinstance(data, _SizedBody)):
+            # Unknown-length streaming body: requests frames it with
+            # ``Transfer-Encoding: chunked``. Drop any caller-supplied
+            # ``Content-Length`` so the wire never carries both framing headers
+            # (RFC 9112 §6.1) over an un-chunk-framed body.
+            headers = {n: v for n, v in headers.items() if n.lower() != "content-length"}
         try:
             raw = self._session.request(
                 method=str(request.method),
@@ -122,11 +153,12 @@ class RequestsHttpClient:
         return _build_response(request, raw)
 
     def close(self) -> None:
-        """Mark the client as closed and release the underlying session."""
+        """Mark the client as closed; close the session only when owned."""
         if self._closed:
             return
         self._closed = True
-        self._session.close()
+        if self._owns_session:
+            self._session.close()
 
     def __enter__(self) -> Self:
         return self
@@ -140,29 +172,146 @@ class RequestsHttpClient:
         self.close()
 
 
-def _body_iterator(body: RequestBody | None) -> Iterator[bytes] | None:
+def _body_payload(body: RequestBody | None) -> _SizedBody | Iterator[bytes] | None:
+    """Render ``body`` into the payload ``requests`` should send.
+
+    A body whose length is known is wrapped in a `_SizedBody`, so ``requests``
+    frames it with ``Content-Length`` and streams it without buffering the
+    whole payload. A body of unknown length is returned as a chunk iterator,
+    which ``requests`` sends with ``Transfer-Encoding: chunked``. This keeps
+    the two framing headers mutually exclusive on the wire.
+
+    Args:
+        body: The request body, or ``None`` for a body-less request.
+
+    Returns:
+        ``None`` for no body, a `_SizedBody` for a known-length body, or a
+        chunk iterator for an unknown-length body.
+    """
     if body is None:
         return None
+    length = body.content_length()
+    if length >= 0:
+        return _SizedBody(body, length)
     return body.iter_bytes(_CHUNK_SIZE)
 
 
+class _SizedBody:
+    """Length-framed, streaming view over a request body for ``requests``.
+
+    Exposes ``__len__`` so ``requests`` sets ``Content-Length`` instead of
+    falling back to ``Transfer-Encoding: chunked``, and ``__iter__`` so the
+    body is streamed chunk-by-chunk rather than materialised into memory. A
+    multi-gigabyte `FileRequestBody` therefore goes out framed by length
+    without being read into RAM.
+    """
+
+    __slots__ = ("_body", "_length")
+
+    def __init__(self, body: RequestBody, length: int) -> None:
+        self._body = body
+        self._length = length
+
+    def __len__(self) -> int:
+        return self._length
+
+    def __iter__(self) -> Iterator[bytes]:
+        return self._body.iter_bytes(_CHUNK_SIZE)
+
+
 def _build_response(request: Request, raw: requests.Response) -> Response:
+    """Wrap a streamed ``requests`` response into an SDK `Response`.
+
+    Args:
+        request: The originating SDK request, echoed back on the response.
+        raw: The streamed ``requests`` response (``stream=True``).
+
+    Returns:
+        The constructed `Response`, with the body left unread.
+
+    Raises:
+        ServiceResponseError: When the status code is outside the valid HTTP
+            range (100-599). The response handle is released first.
+    """
     try:
         status = Status(raw.status_code)
     except ValueError as err:
         raw.close()
-        raise ServiceResponseError(f"Unknown status code: {raw.status_code}", error=err) from err
-    headers = Headers(list(raw.headers.items()))
-    body = ResponseBody.from_stream(_IterContentStream(raw))  # type: ignore[arg-type]
+        raise ServiceResponseError(f"Invalid status code: {raw.status_code}", error=err) from err
+    headers = Headers(_header_pairs(raw))
+    content_length = _content_length(headers)
+    body = ResponseBody.from_stream(_IterContentStream(raw), content_length=content_length)  # type: ignore[arg-type]
     reason: str | None = raw.reason if raw.reason else None
     return Response(
         request=request,
-        protocol=Protocol.HTTP_1_1,
+        protocol=_protocol_of(raw),
         status=status,
         headers=headers,
         reason=reason,
         body=body,
     )
+
+
+def _header_pairs(raw: requests.Response) -> list[tuple[str, str]]:
+    """Return response headers as ``(name, value)`` pairs preserving repeats.
+
+    ``requests.Response.headers`` is a ``CaseInsensitiveDict`` that comma-joins
+    duplicate header lines, which corrupts repeated headers such as
+    ``Set-Cookie``. The underlying urllib3 ``HTTPHeaderDict`` (``raw.raw``)
+    keeps each line distinct, so read from it when available.
+
+    Args:
+        raw: The streamed ``requests`` response.
+
+    Returns:
+        The header lines as a list of ``(name, value)`` tuples.
+    """
+    underlying = getattr(raw.raw, "headers", None)
+    if underlying is not None:
+        return list(underlying.items())
+    return list(raw.headers.items())
+
+
+def _content_length(headers: Headers) -> int:
+    """Return the framed body length, or ``-1`` when it is unknown or unusable.
+
+    ``requests`` transparently decompresses the body when the response carries
+    ``Content-Encoding``, so the upstream ``Content-Length`` describes the
+    compressed bytes and no longer matches the decoded stream the SDK exposes.
+    In that case the length is dropped.
+
+    Args:
+        headers: The parsed response headers.
+
+    Returns:
+        The non-negative content length, or ``-1`` when absent, unparseable,
+        or invalidated by a ``Content-Encoding`` header.
+    """
+    if "content-encoding" in headers:
+        return -1
+    raw = headers.get("content-length")
+    if raw is None:
+        return -1
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return -1
+
+
+def _protocol_of(raw: requests.Response) -> Protocol:
+    """Map the negotiated HTTP version onto the core ``Protocol`` enum.
+
+    Args:
+        raw: The streamed ``requests`` response.
+
+    Returns:
+        The matching ``Protocol`` member, defaulting to ``HTTP_1_1`` when the
+        version is missing or unrecognised.
+    """
+    version = getattr(raw.raw, "version", None)
+    if isinstance(version, int):
+        return _PROTOCOL_BY_VERSION.get(version, Protocol.HTTP_1_1)
+    return Protocol.HTTP_1_1
 
 
 class _IterContentStream:

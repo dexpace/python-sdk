@@ -24,6 +24,16 @@ class _ContextStore:
     Thread-safe — every operation acquires the lock so the guarantee
     survives free-threaded CPython (PEP 703) and non-CPython runtimes that
     do not guarantee atomic dict ops.
+
+    Two writers coexist deliberately. ``put`` is a *guarded install* that
+    raises on a duplicate trace id; it is part of the public surface for
+    callers that own a trace id exclusively and want a duplicate to surface
+    as a programming error. ``set`` is the *unconditional overwrite* the
+    promotion chain (``DispatchContext.to_request_context`` →
+    ``RequestContext.to_exchange_context``) relies on, where the first
+    promotion installs the entry and later promotions replace it in place.
+    ``put`` therefore has no internal callers, but removing it would narrow
+    the public, test-covered surface — so it stays.
     """
 
     __slots__ = ("_contexts", "_lock")
@@ -39,6 +49,14 @@ class _ContextStore:
 
     def put(self, trace_id: str, context: CallContext) -> None:
         """Register ``context`` under ``trace_id``; reject duplicate ids.
+
+        Guarded install for callers that own a trace id exclusively: a
+        re-registration is treated as a programming error. The promotion
+        chain uses `set` instead, which overwrites unconditionally.
+
+        Args:
+            trace_id: The key to register ``context`` under.
+            context: The context to store.
 
         Raises:
             ValueError: if ``trace_id`` is already registered.

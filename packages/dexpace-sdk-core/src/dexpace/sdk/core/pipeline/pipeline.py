@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from itertools import pairwise
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Self
 
@@ -40,11 +41,17 @@ class Pipeline:
         with Pipeline(transport, policies=[retry, auth, logger]) as p:
             response = p.run(request, dispatch_ctx)
 
-    SansIO steps in the list are auto-wrapped depending on whether they have
-    a ``request_side`` or ``response_side`` attribute (set on the callable
-    by the SDK's built-in step decorators) — by default the runner assumes a
-    request-side step. For policies that need explicit chain control
-    (retry, auth challenges), implement the ``Policy`` ABC directly.
+    Bare-callable SansIO steps in the list are auto-wrapped according to an
+    optional ``side`` attribute on the callable, valued ``"request"`` or
+    ``"response"``. Callables without a ``side`` attribute default to the
+    request side, which suits the common case (header stamping, redaction).
+    For policies that need explicit chain control (retry, auth challenges),
+    implement the ``Policy`` ABC directly.
+
+    Each ``Policy`` instance is owned by a single pipeline: its ``.next`` is
+    wired in place at construction. Passing a policy instance that is already
+    wired into another pipeline raises ``ValueError`` rather than silently
+    re-pointing the original chain.
 
     Attributes:
         transport: The terminal HTTP client.
@@ -69,16 +76,16 @@ class Pipeline:
         Raises:
             TypeError: If an entry in ``policies`` is neither a ``Policy``
                 nor a callable matching the SansIO step shape.
+            ValueError: If a ``Policy`` instance is already wired into
+                another pipeline (its ``.next`` is set). Each policy
+                instance is owned by a single pipeline.
         """
         self.transport = transport
         wrapped: list[Policy] = [
             entry if isinstance(entry, Policy) else _wrap_step(entry) for entry in (policies or [])
         ]
-        for i, policy in enumerate(wrapped[:-1]):
-            policy.next = wrapped[i + 1]
         terminal = _TransportRunner(transport)
-        if wrapped:
-            wrapped[-1].next = terminal
+        _wire_chain(wrapped, terminal)
         self._chain: Policy = wrapped[0] if wrapped else terminal
 
     def __enter__(self) -> Self:
@@ -123,6 +130,36 @@ class Pipeline:
             # The exchange context shares this trace id, so a single close
             # clears both tiers and prevents unbounded growth across calls.
             request_ctx.close()
+
+
+def _wire_chain(wrapped: list[Policy], terminal: Policy) -> None:
+    """Link each policy's ``.next`` to the following node, ending at ``terminal``.
+
+    Detects reuse before mutating any state: a caller-supplied policy whose
+    ``.next`` is already set belongs to another pipeline, and re-pointing it
+    here would silently corrupt that pipeline's chain. Such reuse raises
+    ``ValueError`` instead, leaving every instance untouched.
+
+    Args:
+        wrapped: In-order policies; freshly wrapped SansIO runners carry no
+            ``.next`` yet, so only reused caller policies trip the guard.
+        terminal: The transport runner appended after the last policy.
+
+    Raises:
+        ValueError: If any policy already has its ``.next`` wired, which
+            means it is owned by a different pipeline.
+    """
+    for policy in wrapped:
+        if getattr(policy, "next", None) is not None:
+            raise ValueError(
+                f"{type(policy).__name__} is already wired into another pipeline; "
+                f"a Policy instance is owned by a single pipeline. Construct a fresh "
+                f"instance for each pipeline instead of sharing one."
+            )
+    for current, following in pairwise(wrapped):
+        current.next = following
+    if wrapped:
+        wrapped[-1].next = terminal
 
 
 def _wrap_step(step: Any) -> Policy:

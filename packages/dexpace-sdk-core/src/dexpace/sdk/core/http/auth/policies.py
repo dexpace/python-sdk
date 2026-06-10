@@ -39,6 +39,12 @@ class KeyCredentialPolicy(Policy):
     SansIO-shaped (no chain wrapping needed) but implemented as a ``Policy``
     so it integrates uniformly with the rest of the pipeline.
 
+    The credential header is stamped only while the request stays on the
+    origin recorded on the first pass through the policy. When a downstream
+    redirect reissues the request against a different origin (scheme, host,
+    or effective port), the credential is withheld so it never reaches a
+    foreign host.
+
     Attributes:
         header_name: Header to write.
         prefix: Optional prefix (with trailing space) for the header value.
@@ -63,12 +69,21 @@ class KeyCredentialPolicy(Policy):
         self.prefix = f"{prefix} " if prefix else ""
 
     def send(self, request: Request, ctx: PipelineContext) -> Response:
+        if _crosses_recorded_origin(request, ctx):
+            return self.next.send(request, ctx)
         value = f"{self.prefix}{self._credential.key}"
         return self.next.send(request.with_header(self.header_name, value), ctx)
 
 
 class BasicAuthPolicy(Policy):
-    """Stamp ``Authorization: Basic <base64>`` from a ``BasicAuthCredential``."""
+    """Stamp ``Authorization: Basic <base64>`` from a ``BasicAuthCredential``.
+
+    The credential is stamped only while the request stays on the origin
+    recorded on the first pass through the policy. When a downstream redirect
+    reissues the request against a different origin (scheme, host, or
+    effective port), the credential is withheld so it never reaches a foreign
+    host.
+    """
 
     STAGE = Stage.AUTH
     __slots__ = ("_credential",)
@@ -79,6 +94,8 @@ class BasicAuthPolicy(Policy):
         self._credential = credential
 
     def send(self, request: Request, ctx: PipelineContext) -> Response:
+        if _crosses_recorded_origin(request, ctx):
+            return self.next.send(request, ctx)
         value = f"Basic {self._credential.encoded}"
         return self.next.send(request.with_header("Authorization", value), ctx)
 
@@ -90,6 +107,13 @@ class BearerTokenPolicy(Policy):
     to share tokens across credentials. Refreshes when ``needs_refresh``
     returns True, or after a 401 response with ``WWW-Authenticate``. Enforces
     HTTPS unless ``enforce_https=False`` is passed in ``ctx.options``.
+
+    The token is acquired and stamped only while the request stays on the
+    origin recorded on the first pass. When a downstream redirect reissues the
+    request against a different origin (scheme, host, or effective port), the
+    policy forwards the request unchanged — it does not acquire, refresh, or
+    stamp a token — so the bearer token never reaches a foreign host. The
+    HTTPS-enforcement check applies only on that same-origin stamping path.
 
     Concurrent refreshes are serialized via a ``threading.Lock`` using a
     double-checked pattern so the credential's ``get_token_info`` is invoked
@@ -226,6 +250,11 @@ class BearerTokenPolicy(Policy):
         *,
         force_refresh: bool = False,
     ) -> Request:
+        # A redirect that crossed origin must not receive the bearer token:
+        # forward the request unchanged without acquiring or refreshing one,
+        # and skip the HTTPS enforcement that only governs the stamping path.
+        if _crosses_recorded_origin(request, ctx):
+            return request
         if ctx.options.get("enforce_https", True) and not _is_https(request.url):
             raise ServiceRequestError(
                 "Bearer token authentication is not permitted for non-HTTPS URLs."
@@ -257,6 +286,13 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
     the returned ``(name, value)`` pair is stamped on the retried request.
     A 401 invalidates the cached origin token; a 407 leaves it alone because
     the proxy, not the origin, rejected the request.
+
+    The token is acquired and stamped only while the request stays on the
+    origin recorded on the first pass. When a downstream redirect reissues the
+    request against a different origin (scheme, host, or effective port), the
+    policy forwards the request unchanged — it does not acquire, refresh, or
+    stamp a token — so the bearer token never reaches a foreign host. The
+    HTTPS-enforcement check applies only on that same-origin stamping path.
     """
 
     STAGE = Stage.AUTH
@@ -381,6 +417,11 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         *,
         force_refresh: bool = False,
     ) -> Request:
+        # A redirect that crossed origin must not receive the bearer token:
+        # forward the request unchanged without acquiring or refreshing one,
+        # and skip the HTTPS enforcement that only governs the stamping path.
+        if _crosses_recorded_origin(request, ctx):
+            return request
         if ctx.options.get("enforce_https", True) and not _is_https(request.url):
             raise ServiceRequestError(
                 "Bearer token authentication is not permitted for non-HTTPS URLs."
@@ -396,6 +437,51 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
                     self._cache.set(self._scopes, token, self._audience)
         assert token is not None  # Narrowed by the refresh branch above.
         return request.with_header("Authorization", f"{token.token_type} {token.token}")
+
+
+_DEFAULT_PORTS: dict[str, int] = {"https": 443, "http": 80}
+_AUTH_ORIGIN_KEY: str = "_auth_origin"
+
+
+def _origin(url: Url) -> tuple[str, str, int | None]:
+    """Return the ``(scheme, host, port)`` origin tuple for ``url``.
+
+    The scheme and host are lower-cased and the port is resolved to its
+    scheme default (443 for https, 80 for http) when not explicit, so two
+    URLs that differ only in an implied/explicit default port compare equal.
+
+    Args:
+        url: The URL to derive an origin from.
+
+    Returns:
+        A ``(scheme, host, effective_port)`` tuple suitable for equality
+        comparison.
+    """
+    scheme = url.scheme.lower()
+    port = url.port if url.port is not None else _DEFAULT_PORTS.get(scheme)
+    return scheme, url.host.lower(), port
+
+
+def _crosses_recorded_origin(request: Request, ctx: PipelineContext) -> bool:
+    """Report whether ``request`` left the origin recorded for this operation.
+
+    On the first pass through an auth policy the request's origin is stored in
+    ``ctx.data`` (which is per-operation), so a later redirect reissue can be
+    compared against it. When the current origin differs, the credential must
+    not be stamped — this is what stops a redirect to a foreign host from
+    receiving the caller's credentials.
+
+    Args:
+        request: The request the auth policy is about to forward.
+        ctx: The per-operation pipeline context.
+
+    Returns:
+        ``True`` when the request's origin differs from the one recorded on
+        the first pass; ``False`` on the first pass or a same-origin reissue.
+    """
+    current = _origin(request.url)
+    recorded: tuple[str, str, int | None] = ctx.data.setdefault(_AUTH_ORIGIN_KEY, current)
+    return recorded != current
 
 
 def _is_https(url: Url) -> bool:

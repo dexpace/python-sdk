@@ -14,6 +14,7 @@ from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
 from typing import Any
 
 from ...errors.serialization import DeserializationError
+from ...errors.streaming import StreamingError
 
 
 def iter_jsonl(chunks: Iterable[bytes]) -> Iterator[Any]:
@@ -30,6 +31,8 @@ def iter_jsonl(chunks: Iterable[bytes]) -> Iterator[Any]:
 
     Raises:
         DeserializationError: If a line is not valid JSON.
+        StreamingError: If a line is not valid UTF-8 (e.g. a non-UTF-8 byte
+            sequence or a codepoint truncated by a short final line).
     """
     buffer = bytearray()
     for chunk in chunks:
@@ -66,7 +69,10 @@ def _drain_lines(buffer: bytearray, *, final: bool = False) -> Iterator[Any]:
 
 
 def _parse_line(line: bytes) -> Iterator[Any]:
-    text = line.rstrip(b"\r").decode("utf-8", errors="strict").strip()
+    try:
+        text = line.rstrip(b"\r").decode("utf-8", errors="strict").strip()
+    except UnicodeDecodeError as err:
+        raise StreamingError("JSONL line is not valid UTF-8") from err
     if not text:
         return
     try:

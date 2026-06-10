@@ -36,6 +36,14 @@ if TYPE_CHECKING:
     from ...instrumentation import HttpTracer, Span
     from ..context import PipelineContext
 
+#: ``ctx.data`` flag marking that ``operation_started`` has already fired for
+#: this operation. Because ``TracingPolicy`` sits inside RETRY / REDIRECT it is
+#: re-entered once per attempt / hop; the flag de-duplicates the operation-level
+#: lifecycle events so ``operation_started`` fires once on the outermost entry
+#: and ``operation_succeeded`` / ``operation_failed`` fire once on the
+#: outermost exit. Per-attempt span behaviour is unaffected.
+_OPERATION_STARTED_KEY: str = "tracing_operation_started"
+
 
 class TracingPolicy(Policy):
     """Wrap each request in a tracing span.
@@ -75,9 +83,15 @@ class TracingPolicy(Policy):
         http_tracer = resolve_http_tracer(ctx)
         span = self._tracer.start_span(f"HTTP {request.method}", parent=parent)
         _set_request_attributes(span, request)
-        http_tracer.operation_started()
+        # ``operation_started`` fires once per operation. Because this policy is
+        # re-entered per retry attempt / redirect hop, only the outermost entry
+        # (the one that mints the flag) emits the operation lifecycle events.
+        is_outermost = _OPERATION_STARTED_KEY not in ctx.data
+        if is_outermost:
+            ctx.data[_OPERATION_STARTED_KEY] = True
+            http_tracer.operation_started()
         with bind_correlation(trace_id=_trace_id(span), span_id=_span_id(span)):
-            return self._dispatch(request, ctx, span, http_tracer)
+            return self._dispatch(request, ctx, span, http_tracer, is_outermost)
 
     def _dispatch(
         self,
@@ -85,8 +99,15 @@ class TracingPolicy(Policy):
         ctx: PipelineContext,
         span: Span,
         http_tracer: HttpTracer,
+        is_outermost: bool,
     ) -> Response:
-        """Run the downstream chain, emitting tracer events around it."""
+        """Run the downstream chain, emitting tracer events around it.
+
+        The per-attempt span is opened and closed on every entry, but the
+        operation-level ``operation_succeeded`` / ``operation_failed`` events
+        fire only when the outermost entry unwinds (``is_outermost``), so a
+        retried or redirected call reports a single operation outcome.
+        """
         _notify_request_sent(http_tracer, request)
         try:
             with span.make_current():
@@ -94,7 +115,8 @@ class TracingPolicy(Policy):
         except BaseException as err:
             span.set_error(type(err).__name__)
             span.end(error=err)
-            http_tracer.operation_failed(err)
+            if is_outermost:
+                http_tracer.operation_failed(err)
             raise
         _notify_response(http_tracer, response)
         span.set_attribute("http.response.status_code", int(response.status))
@@ -102,7 +124,8 @@ class TracingPolicy(Policy):
         if isinstance(retry_count, int) and retry_count > 0:
             span.set_attribute("http.request.resend_count", retry_count)
         span.end()
-        http_tracer.operation_succeeded()
+        if is_outermost:
+            http_tracer.operation_succeeded()
         return response
 
 
@@ -118,14 +141,19 @@ def _set_request_attributes(span: Span, request: Request) -> None:
 
 
 def _notify_request_sent(http_tracer: HttpTracer, request: Request) -> None:
-    """Emit ``request_sent`` with the known body byte count, if any."""
+    """Emit ``request_sent`` with the body byte count, or ``None`` if unknown.
+
+    A bodyless request reports ``0``; a body with a known length reports that
+    count; a body whose length is unknown (``content_length()`` returns ``-1``,
+    e.g. a streamed upload) reports ``None`` so the event still fires and
+    consumers see a symmetric request_sent stream regardless of body shape.
+    """
     body = request.body
     if body is None:
         http_tracer.request_sent(0)
         return
     length = body.content_length()
-    if length >= 0:
-        http_tracer.request_sent(length)
+    http_tracer.request_sent(length if length >= 0 else None)
 
 
 def _notify_response(http_tracer: HttpTracer, response: Response) -> None:
