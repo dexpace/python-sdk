@@ -13,6 +13,7 @@ import dataclasses
 import enum
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time
+from uuid import UUID
 
 import pytest
 
@@ -630,6 +631,53 @@ def test_dict_date_key_field_round_trips(codec: Codec) -> None:
 def test_encode_dict_rejects_non_collapsible_key(codec: Codec) -> None:
     with pytest.raises(SerializationError):
         codec.encode({object(): 1})
+
+
+# --------------------------------------------------------------------------- #
+# UUID values and keys (symmetric encode/decode round-trip)                    #
+# --------------------------------------------------------------------------- #
+
+_UUID = UUID("12345678-1234-5678-1234-567812345678")
+
+
+def test_encode_uuid_value_collapses_to_str(codec: Codec) -> None:
+    assert codec.encode(_UUID) == "12345678-1234-5678-1234-567812345678"
+    assert type(codec.encode(_UUID)) is str
+
+
+def test_uuid_value_field_round_trips(codec: Codec) -> None:
+    @dataclass(frozen=True, slots=True)
+    class Holder:
+        id: UUID
+
+    model = Holder(_UUID)
+    decoded = codec.decode(codec.encode(model), Holder)
+    assert decoded == model
+    assert isinstance(decoded.id, UUID)
+
+
+def test_encode_dict_with_uuid_keys_collapses_to_str(codec: Codec) -> None:
+    assert codec.encode({_UUID: 5}) == {"12345678-1234-5678-1234-567812345678": 5}
+
+
+def test_dict_uuid_key_field_round_trips(codec: Codec) -> None:
+    @dataclass(frozen=True, slots=True)
+    class Holder:
+        by_id: dict[UUID, int]
+
+    model = Holder({_UUID: 5})
+    encoded = codec.encode(model)
+    assert isinstance(encoded, dict)
+    assert encoded["by_id"] == {"12345678-1234-5678-1234-567812345678": 5}
+    decoded = codec.decode(encoded, Holder)
+    assert decoded == model
+    assert all(isinstance(k, UUID) for k in decoded.by_id)
+
+
+def test_decode_invalid_uuid_raises_with_path(codec: Codec) -> None:
+    with pytest.raises(CodecError) as info:
+        codec.decode("not-a-uuid", UUID)
+    assert "UUID" in str(info.value)
 
 
 # --------------------------------------------------------------------------- #
