@@ -13,6 +13,15 @@ class Status(IntEnum):
 
     Inheriting from `int` so callers can compare against integers and
     range-check directly: ``response.status == 200`` or ``200 <= status < 300``.
+
+    Lookup is lenient: `Status(code)` for any integer in the HTTP range
+    100..599 that is not a named member returns a synthesized pseudo-member
+    named ``UNKNOWN_<code>`` carrying the raw integer value. This lets
+    responses with unregistered-but-valid codes (for example ``218`` from
+    Apache or ``599`` from a proxy) flow through the SDK with their band
+    classification (`is_success`, `is_redirect`, ...) and integer comparisons
+    intact, instead of being discarded. Integers outside 100..599 (for
+    example ``42`` or ``1000``) remain invalid and raise `ValueError`.
     """
 
     # 1xx Informational
@@ -86,6 +95,25 @@ class Status(IntEnum):
     LOOP_DETECTED = 508
     NOT_EXTENDED = 510
     NETWORK_AUTHENTICATION_REQUIRED = 511
+
+    @classmethod
+    def _missing_(cls, value: object) -> Status | None:
+        """Synthesize a pseudo-member for an unregistered valid HTTP code.
+
+        Args:
+            value: The lookup value passed to `Status(value)`.
+
+        Returns:
+            A pseudo-member carrying `value` when it is an integer in the
+            HTTP range 100..599 with no named member, or `None` to let the
+            enum machinery raise `ValueError` for any other input.
+        """
+        if isinstance(value, int) and 100 <= value <= 599:
+            pseudo = int.__new__(cls, value)
+            pseudo._name_ = f"UNKNOWN_{value}"
+            pseudo._value_ = value
+            return pseudo
+        return None
 
     @property
     def is_informational(self) -> bool:

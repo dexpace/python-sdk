@@ -105,6 +105,30 @@ class TestQueryParams:
         result = q.with_set("a", "only")
         assert result.values("a") == ("only",)
 
+    def test_with_set_no_values_removes_param(self) -> None:
+        # ``with_set`` with zero values must remove the parameter entirely
+        # (mirroring ``Headers.with_set``), not leave a phantom empty entry
+        # where ``name in params`` is True but ``get`` returns None.
+        q = QueryParams([("a", "1"), ("b", "2")])
+        result = q.with_set("a")
+        assert "a" not in result
+        assert result.get("a") is None
+        assert result.values("a") == ()
+        assert "b" in result
+        assert result.get("b") == "2"
+
+    def test_with_set_no_values_on_absent_param_is_noop(self) -> None:
+        q = QueryParams([("a", "1")])
+        result = q.with_set("missing")
+        assert "missing" not in result
+        assert result.get("a") == "1"
+
+    def test_with_set_no_values_removes_all_occurrences(self) -> None:
+        q = QueryParams([("a", "1"), ("a", "2"), ("b", "3")])
+        result = q.with_set("a")
+        assert "a" not in result
+        assert result.values("a") == ()
+
     def test_without(self) -> None:
         q = QueryParams([("a", "1"), ("b", "2")])
         result = q.without("a")

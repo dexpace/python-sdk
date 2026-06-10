@@ -23,10 +23,15 @@ import pytest
 
 from dexpace.sdk.core.client.async_http_client import AsyncHttpClient
 from dexpace.sdk.core.client.http_client import HttpClient
-from dexpace.sdk.core.errors import ServiceResponseTimeoutError
+from dexpace.sdk.core.errors import (
+    ServiceRequestError,
+    ServiceResponseError,
+    ServiceResponseTimeoutError,
+)
 from dexpace.sdk.core.http.common import Protocol, Url
 from dexpace.sdk.core.http.context import DispatchContext
 from dexpace.sdk.core.http.request import Method, Request
+from dexpace.sdk.core.http.request.request_body import RequestBody
 from dexpace.sdk.core.http.response import AsyncResponse, Response, Status
 from dexpace.sdk.core.http.response.async_response_body import AsyncResponseBody
 from dexpace.sdk.core.http.response.response_body import ResponseBody
@@ -59,6 +64,10 @@ def _instr(trace: str) -> InstrumentationContext:
 
 def _get() -> Request:
     return Request(method=Method.GET, url=Url.parse("https://example.com/"))
+
+
+def _post(body: RequestBody | None = None) -> Request:
+    return Request(method=Method.POST, url=Url.parse("https://example.com/"), body=body)
 
 
 class _AsyncFakeClock:
@@ -295,3 +304,94 @@ def test_returned_response_not_closed_on_no_retry() -> None:
     # The caller owns it and closes it explicitly.
     response.close()
     assert client.bodies[0].closed is True
+
+
+class _AsyncBodyRecordingClient(AsyncHttpClient):
+    """Async client that records the request body bytes consumed per attempt."""
+
+    def __init__(
+        self,
+        outcomes: Sequence[Status | BaseException],
+        consumed: list[bytes],
+    ) -> None:
+        self._outcomes = list(outcomes)
+        self._consumed = consumed
+        self.attempts = 0
+
+    async def execute(self, request: Request) -> AsyncResponse:
+        body = request.body
+        captured = b"".join(body.iter_bytes()) if body is not None else b""
+        self._consumed.append(captured)
+        outcome = self._outcomes[self.attempts]
+        self.attempts += 1
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return AsyncResponse(request=request, protocol=Protocol.HTTP_1_1, status=outcome)
+
+
+class _AsyncErrorClient(AsyncHttpClient):
+    """Async client that raises one error or returns one status per call."""
+
+    def __init__(self, outcomes: Sequence[Status | BaseException]) -> None:
+        self._outcomes = list(outcomes)
+        self.attempts = 0
+
+    async def execute(self, request: Request) -> AsyncResponse:
+        outcome = self._outcomes[self.attempts]
+        self.attempts += 1
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return AsyncResponse(request=request, protocol=Protocol.HTTP_1_1, status=outcome)
+
+
+class TestAsyncBodyBufferingHonorsPerCallTotal:
+    """The async loop keys body buffering off the effective per-call total.
+
+    Mirrors the sync H2 contract: an ``AsyncRetryPolicy`` built with
+    ``total_retries=0`` plus a per-call ``retry_total=3`` and a single-use
+    body must buffer the payload for replay (drained off the event loop via
+    ``asyncio.to_thread``) instead of raising ``RuntimeError`` on the second
+    consumption.
+    """
+
+    async def test_per_call_retry_total_over_zero_instance_buffers_body(self) -> None:
+        consumed: list[bytes] = []
+        body = RequestBody.from_iter(iter([b"hello", b"world"]))
+        client = _AsyncBodyRecordingClient(
+            [Status.SERVICE_UNAVAILABLE, Status.SERVICE_UNAVAILABLE, Status.OK],
+            consumed,
+        )
+        retry = AsyncRetryPolicy(total_retries=0, backoff_factor=0, clock=_AsyncFakeClock())
+        async with AsyncPipeline(client, policies=[retry]) as p:
+            response = await p.run(
+                _post(body),
+                DispatchContext(_instr("0" * 16 + "a")),
+                retry_total=3,
+            )
+        assert response.status is Status.OK
+        assert consumed == [b"helloworld", b"helloworld", b"helloworld"]
+
+
+class TestAsyncReadPhaseMethodGating:
+    """Async twin of the read-phase idempotency gating.
+
+    A read-phase ``ServiceResponseError`` is not retried for POST (the write
+    may already have landed), but a connect-phase ``ServiceRequestError`` is
+    — the request never left the client.
+    """
+
+    async def test_post_not_retried_on_read_phase_error(self) -> None:
+        client = _AsyncErrorClient([ServiceResponseError("connection reset"), Status.OK])
+        retry = AsyncRetryPolicy(clock=_AsyncFakeClock())
+        with pytest.raises(ServiceResponseError):
+            async with AsyncPipeline(client, policies=[retry]) as p:
+                await p.run(_post(), DispatchContext(_instr("0" * 16 + "b")))
+        assert client.attempts == 1
+
+    async def test_post_still_retried_on_connect_phase_error(self) -> None:
+        client = _AsyncErrorClient([ServiceRequestError("dns fail"), Status.OK])
+        retry = AsyncRetryPolicy(clock=_AsyncFakeClock())
+        async with AsyncPipeline(client, policies=[retry]) as p:
+            response = await p.run(_post(), DispatchContext(_instr("0" * 16 + "c")))
+        assert response.status is Status.OK
+        assert client.attempts == 2

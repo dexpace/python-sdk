@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from dexpace.sdk.core.errors import DeserializationError
+from dexpace.sdk.core.errors import DeserializationError, StreamingError
 from dexpace.sdk.core.http.common import (
     aiter_chunked_frame,
     aiter_jsonl,
@@ -51,6 +51,24 @@ class TestIterJsonl:
         with pytest.raises(DeserializationError):
             list(iter_jsonl([b"{not json}\n"]))
 
+    def test_invalid_utf8_line_raises_streaming_error(self) -> None:
+        # 0xff is never valid UTF-8; the bare UnicodeDecodeError must be wrapped
+        # as StreamingError to honour the documented streaming error contract.
+        with pytest.raises(StreamingError):
+            list(iter_jsonl([b'{"a": "\xff"}\n']))
+
+    def test_truncated_codepoint_final_line_raises_streaming_error(self) -> None:
+        # A multi-byte codepoint cut short on the final (unterminated) line is
+        # an invalid UTF-8 sequence and must surface as StreamingError, not a
+        # bare UnicodeDecodeError.
+        with pytest.raises(StreamingError):
+            list(iter_jsonl([b'{"a": "\xc3']))
+
+    def test_streaming_error_chains_unicode_cause(self) -> None:
+        with pytest.raises(StreamingError) as exc_info:
+            list(iter_jsonl([b"\xff\n"]))
+        assert isinstance(exc_info.value.__cause__, UnicodeDecodeError)
+
 
 class TestChunkedFrame:
     def test_simple_chunks(self) -> None:
@@ -77,6 +95,15 @@ async def test_aiter_jsonl() -> None:
     async for value in aiter_jsonl(stream()):
         items.append(value)
     assert items == [{"a": 1}, {"b": 2}]
+
+
+async def test_aiter_jsonl_invalid_utf8_raises_streaming_error() -> None:
+    async def stream() -> AsyncIterator[bytes]:
+        yield b'{"a": "\xff"}\n'
+
+    with pytest.raises(StreamingError):
+        async for _ in aiter_jsonl(stream()):
+            pass
 
 
 async def test_aiter_chunked_frame() -> None:

@@ -8,6 +8,9 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 
+import pytest
+
+from dexpace.sdk.core.errors import DeserializationError
 from dexpace.sdk.core.http.common import Headers, MediaType, Protocol, Url
 from dexpace.sdk.core.http.context import DispatchContext
 from dexpace.sdk.core.http.request import Method, Request
@@ -133,3 +136,27 @@ async def test_accepts_a_plain_async_send_callable() -> None:
     paginator: AsyncPaginator[int] = AsyncPaginator(send, _strategy(), _first_request())
     items = [item async for item in paginator]
     assert items == [1, 2, 3, 4, 5]
+
+
+class _RawBodyAsyncPipeline:
+    """Async pipeline returning a fixed, possibly non-JSON, body."""
+
+    def __init__(self, raw: bytes) -> None:
+        self._raw = raw
+
+    async def run(self, request: Request, _dispatch: DispatchContext) -> AsyncResponse:
+        return AsyncResponse(
+            request=request,
+            protocol=Protocol.HTTP_1_1,
+            status=Status.OK,
+            headers=Headers(),
+            body=_TrackingAsyncBody(self._raw),
+        )
+
+
+async def test_malformed_json_body_raises_deserialization_error() -> None:
+    pipeline = _RawBodyAsyncPipeline(b"<html>nope</html>")
+    paginator: AsyncPaginator[int] = AsyncPaginator(pipeline, _strategy(), _first_request())
+    with pytest.raises(DeserializationError) as info:
+        _ = [item async for item in paginator]
+    assert info.value.continuation_token == "https://api.example.com/items"

@@ -15,6 +15,7 @@ for the rare legitimate use case (test fixtures, runtime composition).
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING, Self
 
 from .pipeline import Pipeline
@@ -98,12 +99,16 @@ class StagedPipelineBuilder:
         Raises:
             ValueError: If no instance of ``target`` exists in the builder.
         """
-        for stage, pillar in self._pillars.items():
-            if isinstance(pillar, target):
-                # Install new at its declared stage; remove the old pillar.
-                del self._pillars[stage]
-                self.append(new, force=True)
-                return self
+        pillar_stage = next(
+            (stage for stage, pillar in self._pillars.items() if isinstance(pillar, target)),
+            None,
+        )
+        if pillar_stage is not None:
+            # Install new at its declared stage; remove the old pillar. The
+            # lookup above finished iterating before we mutate ``_pillars``.
+            del self._pillars[pillar_stage]
+            self.append(new, force=True)
+            return self
         for stage, bucket in self._buckets.items():
             for i, p in enumerate(bucket):
                 if isinstance(p, target):
@@ -145,6 +150,11 @@ class StagedPipelineBuilder:
         for "build a default pipeline, then surgically swap one piece"
         workflows.
 
+        The harvested policy instances are detached from ``pipeline`` (their
+        ``.next`` links are cleared) so they can be re-wired into the rebuilt
+        pipeline. ``pipeline`` is consumed by this call — each policy is owned
+        by a single pipeline, so the source pipeline must not be run again.
+
         Raises:
             ValueError: If the input pipeline's policies do not satisfy
                 stage ordering — i.e. their declared stages do not appear
@@ -176,6 +186,7 @@ class StagedPipelineBuilder:
                     f"non-decreasing stage order. Use the list constructor instead."
                 )
             last_stage = policy.STAGE
+            _detach(policy)
             builder.append(policy, force=True)
         return builder
 
@@ -219,6 +230,20 @@ class StagedPipelineBuilder:
                 self._pillars[p.STAGE] = p
             else:
                 self._buckets.setdefault(p.STAGE, []).append(p)
+
+
+def _detach(policy: Policy) -> None:
+    """Clear ``policy.next`` so the instance can be re-wired into a new chain.
+
+    A policy harvested from an existing pipeline still points at that
+    pipeline's chain. Clearing the link makes it look freshly constructed to
+    ``Pipeline``'s single-ownership guard, allowing the rebuild to re-wire it.
+
+    Args:
+        policy: The policy whose ``.next`` link is removed if present.
+    """
+    with contextlib.suppress(AttributeError):
+        del policy.next
 
 
 __all__ = ["StagedPipelineBuilder"]

@@ -8,12 +8,15 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 
+import pytest
+
+from dexpace.sdk.core.errors import DeserializationError
 from dexpace.sdk.core.http.common import Headers, MediaType, Protocol, Url
 from dexpace.sdk.core.http.context import DispatchContext
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.response import Response, Status
 from dexpace.sdk.core.http.response.response_body import ResponseBody
-from dexpace.sdk.core.pagination import CursorStrategy, Paginator
+from dexpace.sdk.core.pagination import AsyncPaginator, CursorStrategy, Paginator
 
 
 class _MockPipeline:
@@ -142,3 +145,60 @@ def test_single_page_sequence_terminates() -> None:
     paginator: Paginator[int] = Paginator(pipeline, _strategy(), _first_request())
     assert list(paginator) == [7, 8]
     assert len(pipeline.calls) == 1
+
+
+class _RawBodyPipeline:
+    """Pipeline returning a fixed, possibly non-JSON, body for every request."""
+
+    def __init__(self, raw: bytes) -> None:
+        self._raw = raw
+
+    def run(self, request: Request, _dispatch: DispatchContext) -> Response:
+        return Response(
+            request=request,
+            protocol=Protocol.HTTP_1_1,
+            status=Status.OK,
+            headers=Headers(),
+            body=_TrackingBody(self._raw),
+        )
+
+
+def test_malformed_json_body_raises_deserialization_error() -> None:
+    # An HTML error page served with a 200 by a load balancer must surface as
+    # an SDK error, not a bare json.JSONDecodeError that escapes the hierarchy.
+    pipeline = _RawBodyPipeline(b"<html><body>502 Bad Gateway</body></html>")
+    paginator: Paginator[int] = Paginator(pipeline, _strategy(), _first_request())
+    with pytest.raises(DeserializationError) as info:
+        list(paginator)
+    assert info.value.continuation_token == "https://api.example.com/items"
+
+
+def test_async_pipeline_handed_to_sync_paginator_fails_fast() -> None:
+    class _AsyncPipeline:
+        async def run(self, request: Request, _dispatch: DispatchContext) -> Response:
+            raise AssertionError("should never run")  # pragma: no cover
+
+    with pytest.raises(TypeError, match="async pipeline"):
+        Paginator(_AsyncPipeline(), _strategy(), _first_request())  # type: ignore[arg-type]
+
+
+def test_async_send_callable_handed_to_sync_paginator_fails_fast() -> None:
+    async def send(request: Request) -> Response:
+        raise AssertionError("should never run")  # pragma: no cover
+
+    with pytest.raises(TypeError, match="async send-callable"):
+        Paginator(send, _strategy(), _first_request())  # type: ignore[arg-type]
+
+
+def test_sync_pipeline_handed_to_async_paginator_fails_fast() -> None:
+    pipeline = _three_page_pipeline()
+    with pytest.raises(TypeError, match="sync pipeline"):
+        AsyncPaginator(pipeline, _strategy(), _first_request())  # type: ignore[arg-type]
+
+
+def test_sync_send_callable_handed_to_async_paginator_fails_fast() -> None:
+    def send(request: Request) -> Response:
+        raise AssertionError("should never run")  # pragma: no cover
+
+    with pytest.raises(TypeError, match="sync send-callable"):
+        AsyncPaginator(send, _strategy(), _first_request())  # type: ignore[arg-type]

@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Iterator
+
 import pytest
 
 from dexpace.sdk.core.client.async_http_client import AsyncHttpClient
@@ -273,6 +276,46 @@ async def test_async_retry_count_set_when_retry_happens() -> None:
     async with AsyncPipeline(client, policies=[_Probe(), retry]) as p:
         await p.run(_request(), DispatchContext(_instr("0" * 15 + "10")))
     assert captured["retry_count"] == 1
+
+
+async def test_async_retry_buffers_single_use_body_off_the_event_loop() -> None:
+    """The single-use body buffering (``to_replayable``) must run off the loop.
+
+    With retries enabled and a non-replayable body, the retry policy calls
+    ``to_replayable`` before the first attempt. Draining a sync stream there
+    inline would block the event loop, so it runs on a worker thread via
+    ``asyncio.to_thread``. This pins that the drain happens on a thread other
+    than the loop thread (an inline drain would record the loop's own id).
+    """
+
+    class _ThreadRecordingBody(RequestBody):
+        def __init__(self) -> None:
+            self.replay_thread_id: int | None = None
+
+        def media_type(self) -> None:
+            return None
+
+        def is_replayable(self) -> bool:
+            return False
+
+        def content_length(self) -> int:
+            return -1
+
+        def iter_bytes(self, chunk_size: int = 65536) -> Iterator[bytes]:
+            yield b"x"
+
+        def to_replayable(self) -> RequestBody:
+            self.replay_thread_id = threading.get_ident()
+            return RequestBody.from_bytes(b"x")
+
+    body = _ThreadRecordingBody()
+    request = Request(method=Method.POST, url=Url.parse("https://example.com/"), body=body)
+    retry = AsyncRetryPolicy(total_retries=2, backoff_factor=0, clock=_AsyncFakeClock())
+    loop_thread_id = threading.get_ident()
+    async with AsyncPipeline(_StubAsyncClient(), policies=[retry]) as p:
+        await p.run(request, DispatchContext(_instr("0" * 15 + "11")))
+    assert body.replay_thread_id is not None
+    assert body.replay_thread_id != loop_thread_id
 
 
 def test_invalid_step_raises_type_error() -> None:

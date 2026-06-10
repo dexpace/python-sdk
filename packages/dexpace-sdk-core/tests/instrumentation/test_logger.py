@@ -10,6 +10,7 @@ import logging
 from _pytest.logging import LogCaptureFixture
 
 from dexpace.sdk.core.instrumentation import ClientLogger, LogLevel
+from dexpace.sdk.core.instrumentation.client_logger import _format_fields
 
 
 def test_emits_at_info(caplog: LogCaptureFixture) -> None:
@@ -30,6 +31,26 @@ def test_quotes_values_with_whitespace(caplog: LogCaptureFixture) -> None:
 
     rendered = caplog.records[-1].getMessage()
     assert 'detail="hello world"' in rendered
+
+
+def test_format_fields_quotes_value_containing_equals() -> None:
+    # A value embedding '=' is ambiguous to a logfmt parser unless quoted: the
+    # parser cannot tell where the field's value ends and the next key begins.
+    assert _format_fields({"k": "a=b"}) == 'k="a=b"'
+
+
+def test_quotes_value_with_equals_through_logger(caplog: LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="dexpace.test.equals")
+    logger = ClientLogger("dexpace.test.equals")
+    logger.info("event", token="a=b")
+
+    rendered = caplog.records[-1].getMessage()
+    assert 'token="a=b"' in rendered
+
+
+def test_plain_value_unquoted() -> None:
+    # No quoting trigger present -> emitted bare.
+    assert _format_fields({"k": "plain"}) == "k=plain"
 
 
 def test_levels_dispatch_correctly(caplog: LogCaptureFixture) -> None:

@@ -18,9 +18,12 @@ behaviour so existing ``*.example.com`` style patterns continue to work.
 
 The ``ProxyOptions.from_configuration`` factory bridges the proxy value
 type to the layered ``Configuration`` lookup: it reads ``HTTPS_PROXY``
-(preferred) or ``HTTP_PROXY`` as full URLs and ``NO_PROXY`` as a
-comma-separated bypass list. Parse failures degrade to ``None`` rather than
-raising — bad proxy configuration should never bring down the caller.
+(preferred) or ``HTTP_PROXY`` as proxy URLs and ``NO_PROXY`` as a
+comma-separated bypass list. The URL scheme selects the transport flavour, a
+missing port defaults by scheme, scheme-less ``host:port`` forms are accepted,
+and percent-encoded credentials are decoded. Bad proxy configuration degrades
+to ``None`` rather than raising — but because a silently-unused proxy is an
+outage-grade misconfiguration, an unusable value is logged at WARNING.
 """
 
 from __future__ import annotations
@@ -32,7 +35,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Self
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, unquote, urlsplit
 
 from ..config.configuration import Configuration
 
@@ -43,6 +46,16 @@ _LOG = logging.getLogger(__name__)
 
 # Glob metacharacters that switch an entry into ``fnmatch`` mode.
 _GLOB_CHARS: frozenset[str] = frozenset("*?[")
+
+# Default proxy port per URL scheme when the proxy URL omits one. SOCKS
+# proxies conventionally listen on 1080.
+_DEFAULT_PORTS: dict[str, int] = {
+    "http": 80,
+    "https": 443,
+    "socks4": 1080,
+    "socks5": 1080,
+    "socks5h": 1080,
+}
 
 
 def _strip_port(host: str) -> str:
@@ -75,8 +88,10 @@ def _compile_bypass(pattern: str) -> Callable[[str], bool]:
     their ``fnmatch`` semantics. Every other (bare) entry uses conventional
     suffix matching: a candidate matches when it equals the entry or ends
     with ``"." + entry``. Leading dot(s) on the entry are stripped so
-    ``.example.com`` and ``example.com`` behave identically, and a trailing
-    ``:port`` is dropped so ``example.com:443`` matches on its host part.
+    ``.example.com`` and ``example.com`` behave identically. A trailing
+    ``:port`` is dropped from both bare and glob entries — candidate hosts are
+    matched on their host part alone, so a ported glob like
+    ``*.example.com:443`` would otherwise never match.
 
     Args:
         pattern: A raw ``NO_PROXY`` list entry (already stripped).
@@ -85,7 +100,8 @@ def _compile_bypass(pattern: str) -> Callable[[str], bool]:
         A predicate mapping a lower-cased candidate host to a bypass boolean.
     """
     if any(char in pattern for char in _GLOB_CHARS):
-        regex = re.compile(fnmatch.translate(pattern), re.IGNORECASE)
+        glob = _strip_port(pattern)
+        regex = re.compile(fnmatch.translate(glob), re.IGNORECASE)
         return lambda host: regex.match(host) is not None
     suffix = _strip_port(pattern).lstrip(".").lower()
     dotted = "." + suffix
@@ -95,6 +111,26 @@ def _compile_bypass(pattern: str) -> Callable[[str], bool]:
         return candidate == suffix or candidate.endswith(dotted)
 
     return matches
+
+
+def _split_proxy_url(proxy_url: str) -> SplitResult:
+    """Parse a proxy URL, tolerating a missing ``scheme://`` prefix.
+
+    ``urlsplit`` parses a scheme-less ``proxy:8080`` as scheme ``proxy`` with
+    path ``8080`` — losing the host and port entirely. When the value has no
+    recognised ``scheme://`` authority marker, this prepends ``//`` so the
+    whole value is parsed as a network location (host:port), matching how
+    callers conventionally write a bare proxy address.
+
+    Args:
+        proxy_url: A proxy URL, possibly scheme-less.
+
+    Returns:
+        The ``SplitResult`` of parsing the (possibly normalised) URL.
+    """
+    if "//" not in proxy_url:
+        return urlsplit("//" + proxy_url)
+    return urlsplit(proxy_url)
 
 
 class ProxyType(StrEnum):
@@ -109,6 +145,56 @@ class ProxyType(StrEnum):
     HTTP = "HTTP"
     SOCKS4 = "SOCKS4"
     SOCKS5 = "SOCKS5"
+
+
+# Map a proxy URL scheme to the modelled transport flavour. A scheme absent
+# from this table is unsupported and is rejected (with a WARNING) rather than
+# silently downgraded to HTTP. ``socks5h`` (remote DNS) maps to ``SOCKS5``.
+_SCHEME_TO_TYPE: dict[str, ProxyType] = {
+    "http": ProxyType.HTTP,
+    "https": ProxyType.HTTP,
+    "socks4": ProxyType.SOCKS4,
+    "socks5": ProxyType.SOCKS5,
+    "socks5h": ProxyType.SOCKS5,
+}
+
+
+def _resolve_endpoint(proxy_url: str) -> tuple[SplitResult, ProxyType, str, int] | None:
+    """Resolve a proxy URL into its parsed parts, type, host, and port.
+
+    Applies scheme→type mapping, scheme-by-default port resolution, and
+    scheme-less ``host:port`` handling. Any value that cannot yield a usable
+    endpoint is logged at WARNING (a silently-disabled proxy is outage-grade)
+    and yields ``None``.
+
+    Args:
+        proxy_url: The raw proxy URL string.
+
+    Returns:
+        A ``(SplitResult, ProxyType, host, port)`` tuple, or ``None`` if the
+        URL is unusable.
+    """
+    try:
+        split = _split_proxy_url(proxy_url)
+    except ValueError:
+        _LOG.warning("ignoring proxy URL %r: failed to parse", proxy_url)
+        return None
+    scheme = split.scheme.lower()
+    proxy_type = _SCHEME_TO_TYPE["http"] if scheme == "" else _SCHEME_TO_TYPE.get(scheme)
+    if proxy_type is None:
+        _LOG.warning("ignoring proxy URL %r: unsupported scheme %r", proxy_url, scheme)
+        return None
+    if not split.hostname:
+        _LOG.warning("ignoring proxy URL %r: missing hostname", proxy_url)
+        return None
+    try:
+        port = split.port
+    except ValueError:
+        _LOG.warning("ignoring proxy URL %r: invalid port", proxy_url)
+        return None
+    if port is None:
+        port = _DEFAULT_PORTS.get(scheme, 80)
+    return split, proxy_type, split.hostname, port
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,55 +281,58 @@ class ProxyOptions:
     def from_configuration(cls, config: Configuration) -> Self | None:
         """Build a ``ProxyOptions`` from layered configuration env vars.
 
-        Reads ``HTTPS_PROXY`` (preferred) or ``HTTP_PROXY`` as full proxy
-        URLs (``http://user:pass@proxy.corp:8080``). Reads ``NO_PROXY`` as
-        a comma-separated bypass list. A ``NO_PROXY`` value of ``"*"``
-        bypasses everything and short-circuits to ``None``.
+        Reads ``HTTPS_PROXY`` (preferred) or ``HTTP_PROXY`` as proxy URLs and
+        ``NO_PROXY`` as a comma-separated bypass list. A ``NO_PROXY`` value of
+        ``"*"`` bypasses everything and short-circuits to ``None``.
+
+        The proxy URL is parsed leniently so common real-world forms work:
+
+        - The URL ``scheme`` selects the transport flavour: ``http``/``https``
+          map to ``HTTP``, ``socks4`` to ``SOCKS4``, ``socks5``/``socks5h`` to
+          ``SOCKS5``. An *unsupported* scheme is rejected (logged at WARNING),
+          never silently downgraded to HTTP.
+        - A missing port defaults by scheme (``http`` 80, ``https`` 443, SOCKS
+          1080) instead of dropping the proxy.
+        - A scheme-less ``proxy:8080`` is parsed as host:port (assumed HTTP).
+        - Percent-encoded credentials are ``unquote()``-decoded.
+
+        Because a silently-unused proxy is an outage-grade misconfiguration, a
+        genuinely unusable proxy value is logged at WARNING (not DEBUG).
 
         Args:
             config: Layered configuration to read from.
 
         Returns:
             A populated ``ProxyOptions``, or ``None`` when no proxy is
-            configured, when ``NO_PROXY=*``, or when the proxy URL fails to
-            parse (a debug-level log line records the failure).
+            configured, when ``NO_PROXY=*``, or when the proxy URL is
+            unusable (a WARNING log line records why).
         """
         no_proxy_raw = config.get(Configuration.NO_PROXY)
         if no_proxy_raw is not None and no_proxy_raw.strip() == "*":
             return None
         proxy_url = config.get(Configuration.HTTPS_PROXY) or config.get(Configuration.HTTP_PROXY)
-        if proxy_url is None or proxy_url == "":
+        if not proxy_url:
             return None
-        try:
-            parsed = urlsplit(proxy_url)
-        except ValueError:
-            _LOG.debug("failed to parse proxy URL %r", proxy_url)
+        endpoint = _resolve_endpoint(proxy_url)
+        if endpoint is None:
             return None
-        if not parsed.hostname:
-            _LOG.debug("proxy URL %r missing hostname", proxy_url)
-            return None
-        try:
-            port = parsed.port
-        except ValueError:
-            _LOG.debug("proxy URL %r has invalid port", proxy_url)
-            return None
-        if port is None:
-            _LOG.debug("proxy URL %r missing port", proxy_url)
-            return None
+        split, proxy_type, host, port = endpoint
         non_proxy_hosts: tuple[str, ...] = ()
         if no_proxy_raw is not None and no_proxy_raw.strip():
             non_proxy_hosts = tuple(
                 entry.strip() for entry in no_proxy_raw.split(",") if entry.strip()
             )
+        username = unquote(split.username) if split.username is not None else None
+        password = unquote(split.password) if split.password is not None else None
         try:
             return cls(
-                type=ProxyType.HTTP,
-                host=parsed.hostname,
+                type=proxy_type,
+                host=host,
                 port=port,
                 non_proxy_hosts=non_proxy_hosts,
-                username=parsed.username,
-                password=parsed.password,
+                username=username,
+                password=password,
             )
         except ValueError:
-            _LOG.debug("proxy URL %r failed ProxyOptions validation", proxy_url)
+            _LOG.warning("ignoring proxy URL %r: failed ProxyOptions validation", proxy_url)
             return None

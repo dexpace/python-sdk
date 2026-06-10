@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from typing import Final
 
 from ..common.media_type import MediaType
-from .response_body import ResponseBody
+from .response_body import ResponseBody, _check_chunk_size
 
 _DEFAULT_CAP: Final[int] = (1 << 31) - 9
 
@@ -72,6 +72,7 @@ class LoggableResponseBody(ResponseBody):
         return self._inner.content_length()
 
     def iter_bytes(self, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
+        _check_chunk_size(chunk_size)
         self._drain()
         if self._error is not None:
             raise self._error

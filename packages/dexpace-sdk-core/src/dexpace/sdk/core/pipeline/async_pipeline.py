@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
+from itertools import pairwise
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Self
 
@@ -42,9 +43,14 @@ type _AsyncStep = (
 class AsyncPipeline:
     """Composes an ordered sequence of async policies around an ``AsyncHttpClient``.
 
-    Mirrors ``Pipeline`` exactly with ``async`` semantics. SansIO steps are
-    auto-wrapped via the ``side`` attribute (``"request"`` / ``"response"``,
-    default ``"request"``). The terminal node is an ``_AsyncTransportRunner``.
+    Mirrors ``Pipeline`` exactly with ``async`` semantics. Bare-callable
+    SansIO steps are auto-wrapped via an optional ``side`` attribute on the
+    callable (``"request"`` / ``"response"``, default ``"request"``). The
+    terminal node is an ``_AsyncTransportRunner``.
+
+    Each ``AsyncPolicy`` instance is owned by a single pipeline: passing one
+    already wired into another pipeline raises ``ValueError`` rather than
+    silently re-pointing the original chain.
 
     Use as an async context manager so transport ``aclose`` (when defined)
     runs deterministically::
@@ -65,11 +71,8 @@ class AsyncPipeline:
             entry if isinstance(entry, AsyncPolicy) else _wrap_step(entry)
             for entry in (policies or [])
         ]
-        for i, policy in enumerate(wrapped[:-1]):
-            policy.next = wrapped[i + 1]
         terminal = _AsyncTransportRunner(transport)
-        if wrapped:
-            wrapped[-1].next = terminal
+        _wire_chain(wrapped, terminal)
         self._chain: AsyncPolicy = wrapped[0] if wrapped else terminal
 
     async def __aenter__(self) -> Self:
@@ -103,6 +106,36 @@ class AsyncPipeline:
             # The exchange context shares this trace id, so a single close
             # clears both tiers and prevents unbounded growth across calls.
             request_ctx.close()
+
+
+def _wire_chain(wrapped: list[AsyncPolicy], terminal: AsyncPolicy) -> None:
+    """Link each policy's ``.next`` to the following node, ending at ``terminal``.
+
+    Detects reuse before mutating any state: a caller-supplied policy whose
+    ``.next`` is already set belongs to another pipeline, and re-pointing it
+    here would silently corrupt that pipeline's chain. Such reuse raises
+    ``ValueError`` instead, leaving every instance untouched.
+
+    Args:
+        wrapped: In-order policies; freshly wrapped SansIO runners carry no
+            ``.next`` yet, so only reused caller policies trip the guard.
+        terminal: The transport runner appended after the last policy.
+
+    Raises:
+        ValueError: If any policy already has its ``.next`` wired, which
+            means it is owned by a different pipeline.
+    """
+    for policy in wrapped:
+        if getattr(policy, "next", None) is not None:
+            raise ValueError(
+                f"{type(policy).__name__} is already wired into another pipeline; "
+                f"an AsyncPolicy instance is owned by a single pipeline. Construct a "
+                f"fresh instance for each pipeline instead of sharing one."
+            )
+    for current, following in pairwise(wrapped):
+        current.next = following
+    if wrapped:
+        wrapped[-1].next = terminal
 
 
 def _wrap_step(step: Any) -> AsyncPolicy:

@@ -78,11 +78,13 @@ class HttpTracer(ABC):
             url: The absolute URL the attempt targets.
         """
 
-    def request_sent(self, byte_count: int) -> None:
+    def request_sent(self, byte_count: int | None) -> None:
         """The request body finished writing to the wire.
 
         Args:
-            byte_count: Number of body bytes written.
+            byte_count: Number of body bytes written, or ``None`` when the
+                length is unknown (for example a streamed body whose size is
+                not declared up front).
         """
 
     def response_headers_received(self, status: int, headers: Mapping[str, str]) -> None:

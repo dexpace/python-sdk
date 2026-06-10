@@ -310,6 +310,9 @@ class _BytesBody(RequestBody):
 
     def iter_bytes(self, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
         _check_chunk_size(chunk_size)
+        return self._iter(chunk_size)
+
+    def _iter(self, chunk_size: int) -> Iterator[bytes]:
         view = memoryview(self._data)
         for start in range(0, len(view), chunk_size):
             yield bytes(view[start : start + chunk_size])
@@ -346,6 +349,9 @@ class _StreamBody(RequestBody):
                 "if retries may be needed."
             )
         self._consumed = True
+        return self._iter(chunk_size)
+
+    def _iter(self, chunk_size: int) -> Iterator[bytes]:
         try:
             while True:
                 chunk = self._stream.read(chunk_size)
@@ -388,6 +394,9 @@ class _IterBody(RequestBody):
                 "if retries may be needed."
             )
         self._consumed = True
+        return self._iter()
+
+    def _iter(self) -> Iterator[bytes]:
         yield from self._chunks
 
 

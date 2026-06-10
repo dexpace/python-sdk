@@ -7,6 +7,10 @@ Shares the per-attempt classification helpers with the sync variant by
 delegating into the same private methods on ``RetryPolicy``. The async
 twin reimplements only the dispatch loop (using ``await``) and the sleep
 helper (using an async sleep callable).
+
+Auto-buffering a single-use body for replay drains a synchronous
+iterator/stream, which is blocking; the async loop offloads that drain to a
+worker thread via ``asyncio.to_thread`` so the event loop keeps running.
 """
 
 from __future__ import annotations
@@ -136,9 +140,15 @@ class AsyncRetryPolicy(AsyncPolicy):
 
     async def send(self, request: Request, ctx: PipelineContext) -> AsyncResponse:
         cfg = self.config
-        if cfg.total_retries > 0 and request.body is not None and not request.body.is_replayable():
-            request = request.with_body(request.body.to_replayable())
         settings = cfg._configure_settings(ctx.options)
+        body = request.body
+        if settings["total"] > 0 and body is not None and not body.is_replayable():
+            # ``to_replayable`` synchronously drains the sync iterator/stream
+            # backing the body. Offload that blocking read to a worker thread
+            # so the event loop is not stalled while a file or socket-backed
+            # body is buffered into memory.
+            replayed = await asyncio.to_thread(body.to_replayable)
+            request = request.with_body(replayed)
         absolute_deadline = self._clock.monotonic() + settings["timeout"]
         history: list[RequestHistory[AsyncResponse]] = settings["history"]
         tracer = resolve_http_tracer(ctx)
@@ -156,7 +166,7 @@ class AsyncRetryPolicy(AsyncPolicy):
                 raise
             except SdkError as err:
                 history.append(RequestHistory(request=request, error=err))
-                if not cfg._decrement_for_error(settings, err):
+                if not cfg._decrement_for_error(settings, request, err):
                     tracer.attempt_retries_exhausted()
                     ctx.data["retry_history"] = tuple(history)
                     raise

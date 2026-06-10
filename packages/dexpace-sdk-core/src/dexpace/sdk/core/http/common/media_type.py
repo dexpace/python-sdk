@@ -17,6 +17,47 @@ from typing import Self
 _TOKEN_SEPARATORS = frozenset('()<>@,;:\\"/[]?={} \t')
 
 
+def _split_params(value: str) -> list[str]:
+    """Split a media-type wire string on ``;`` outside quoted-strings.
+
+    A naive ``value.split(";")`` mis-parses a quoted parameter value that
+    legitimately contains a semicolon (legal inside an RFC 7230 §3.2.6
+    quoted-string, e.g. an exotic multipart boundary). This walks the string
+    with a small state machine that treats ``;`` as a separator only when it
+    is not enclosed in double quotes, honouring the ``\\X`` quoted-pair escape
+    so an escaped quote does not toggle the quoted state.
+
+    Args:
+        value: The full wire-form media-type string.
+
+    Returns:
+        The segments split on top-level ``;`` separators, in order. Surrounding
+        whitespace is not stripped here — callers strip per segment.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    in_quotes = False
+    i = 0
+    while i < len(value):
+        ch = value[i]
+        if in_quotes and ch == "\\" and i + 1 < len(value):
+            current.append(ch)
+            current.append(value[i + 1])
+            i += 2
+            continue
+        if ch == '"':
+            in_quotes = not in_quotes
+        elif ch == ";" and not in_quotes:
+            segments.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    segments.append("".join(current))
+    return segments
+
+
 def _unquote(s: str) -> str:
     """Decode a quoted-string parameter value per RFC 7230 §3.2.6.
 
@@ -146,7 +187,7 @@ class MediaType:
         """
         if not value or not value.strip():
             raise ValueError("media type must not be blank")
-        segments = [segment.strip() for segment in value.split(";")]
+        segments = [segment.strip() for segment in _split_params(value)]
         mime = segments[0]
         slash = mime.find("/")
         if slash <= 0 or slash == len(mime) - 1:

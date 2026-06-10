@@ -167,6 +167,46 @@ class TestRetryOnError:
         assert client.attempts == 3
 
 
+class TestReadPhaseMethodGating:
+    """Read-phase errors are retried per the same idempotency rule as status.
+
+    A ``ServiceResponseError`` is a read-phase failure: the request may have
+    been fully processed before the read broke, so re-sending a non-idempotent
+    method (POST/PATCH) risks duplicating the write. A ``ServiceRequestError``
+    is a connect-phase failure — the request never left the client — so it is
+    safe to retry for every method.
+    """
+
+    def test_post_not_retried_on_read_phase_error(self) -> None:
+        # A ``ServiceResponseError`` on a POST must propagate after the first
+        # attempt rather than re-sending and risking a duplicate write.
+        client = _ScriptedClient([ServiceResponseError("connection reset"), Status.OK])
+        retry = RetryPolicy(clock=FakeClock())
+        with Pipeline(client, policies=[retry]) as p, pytest.raises(ServiceResponseError):
+            p.run(_post(), DispatchContext(_instr("0" * 15 + "40")))
+        assert client.attempts == 1
+
+    def test_post_still_retried_on_connect_phase_error(self) -> None:
+        # A ``ServiceRequestError`` means the request never left the client, so
+        # re-sending a POST is safe and must still happen.
+        client = _ScriptedClient([ServiceRequestError("dns fail"), Status.OK])
+        retry = RetryPolicy(clock=FakeClock())
+        with Pipeline(client, policies=[retry]) as p:
+            response = p.run(_post(), DispatchContext(_instr("0" * 15 + "41")))
+        assert response.is_success
+        assert client.attempts == 2
+
+    def test_get_still_retried_on_read_phase_error(self) -> None:
+        # GET is idempotent and in the allowlist, so a read-phase error is
+        # still retried — the gating only suppresses non-idempotent methods.
+        client = _ScriptedClient([ServiceResponseError("connection reset"), Status.OK])
+        retry = RetryPolicy(clock=FakeClock())
+        with Pipeline(client, policies=[retry]) as p:
+            response = p.run(_get(), DispatchContext(_instr("0" * 15 + "42")))
+        assert response.is_success
+        assert client.attempts == 2
+
+
 class TestRetryAfterHeader:
     def test_parse_delta_seconds(self) -> None:
         assert _parse_retry_after("5", now=0.0) == pytest.approx(5.0)
@@ -343,6 +383,58 @@ class TestRetryAutoReplaysBody:
         assert response.is_success
         # ``total_retries=0`` skips the auto-replay buffering — the body the
         # transport receives is the original single-use instance.
+        assert observed == [body]
+        assert not body.is_replayable()
+
+    def test_per_call_retry_total_over_zero_instance_buffers_body(self) -> None:
+        # The exact H2 failure scenario: an instance built with
+        # ``total_retries=0`` plus a per-call ``retry_total=3`` and a
+        # single-use ``from_iter`` body. Buffering keyed off the constructor
+        # default would skip ``to_replayable`` and the second ``iter_bytes``
+        # would raise ``RuntimeError`` mid-retry. Keying off the effective
+        # per-call total buffers the body, so the retry re-emits the payload.
+        consumed: list[bytes] = []
+        body = RequestBody.from_iter(iter([b"hello", b"world"]))
+        request = Request(method=Method.POST, url=Url.parse("https://example.com/"), body=body)
+        client = _BodyRecordingClient(
+            [Status.SERVICE_UNAVAILABLE, Status.SERVICE_UNAVAILABLE, Status.OK],
+            consumed,
+        )
+        retry = RetryPolicy(total_retries=0, backoff_factor=0, clock=FakeClock())
+        with Pipeline(client, policies=[retry]) as p:
+            response = p.run(
+                request,
+                DispatchContext(_instr("0" * 15 + "30")),
+                retry_total=3,
+            )
+        assert response.is_success
+        # Every attempt re-emitted the full payload — no ``RuntimeError`` from a
+        # second consumption of the single-use iterator.
+        assert consumed == [b"helloworld", b"helloworld", b"helloworld"]
+
+    def test_per_call_retry_total_zero_over_retrying_instance_skips_buffering(self) -> None:
+        # Inverse of the H2 scenario: a retrying instance with a per-call
+        # ``retry_total=0`` must not pay the memory cost of buffering a
+        # single-use body it will never replay.
+        observed: list[RequestBody | None] = []
+
+        class _CapturingClient(HttpClient):
+            def execute(self, request: Request) -> Response:
+                observed.append(request.body)
+                return Response(request=request, protocol=Protocol.HTTP_1_1, status=Status.OK)
+
+        body = RequestBody.from_iter(iter([b"hello", b"world"]))
+        request = Request(method=Method.POST, url=Url.parse("https://example.com/"), body=body)
+        retry = RetryPolicy(total_retries=5, clock=FakeClock())
+        with Pipeline(_CapturingClient(), policies=[retry]) as p:
+            response = p.run(
+                request,
+                DispatchContext(_instr("0" * 15 + "31")),
+                retry_total=0,
+            )
+        assert response.is_success
+        # The per-call override drives the buffering decision: ``retry_total=0``
+        # leaves the original single-use body untouched.
         assert observed == [body]
         assert not body.is_replayable()
 

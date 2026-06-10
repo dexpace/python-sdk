@@ -39,6 +39,27 @@ def _has_filename_star_header(headers: Sequence[tuple[str, str]]) -> bool:
     return any("filename*=" in v for _, v in headers)
 
 
+def _reject_control_chars(label: str, value: str) -> None:
+    """Reject CR, LF, and NUL to prevent multipart header injection.
+
+    Field names, filenames, and custom part-header names/values are
+    interpolated verbatim into CRLF-delimited part headers. An attacker-
+    controlled ``\\r`` or ``\\n`` (both ASCII, so the ASCII guard lets them
+    through) could inject additional part headers or a fabricated boundary
+    line. This mirrors ``Headers._check_value`` in ``http.common.headers``.
+
+    Args:
+        label: Human-readable description of the rejected value, used in
+            the error message (e.g. ``"field name"``).
+        value: The candidate string to validate.
+
+    Raises:
+        ValueError: If ``value`` contains ``\\r``, ``\\n``, or ``\\0``.
+    """
+    if "\r" in value or "\n" in value or "\0" in value:
+        raise ValueError(f"multipart {label} contains control characters: {value!r}")
+
+
 @dataclass(frozen=True, slots=True)
 class MultipartField:
     """One part of a ``multipart/form-data`` body.
@@ -56,9 +77,10 @@ class MultipartField:
         headers: Optional extra headers as ``(name, value)`` pairs.
 
     Raises:
-        ValueError: If ``name`` is not ASCII, or if ``filename`` is not
-            ASCII and no ``filename*=`` parameter was provided through
-            ``headers``.
+        ValueError: If ``name`` is not ASCII; if ``filename`` is not ASCII
+            and no ``filename*=`` parameter was provided through ``headers``;
+            or if ``name``, ``filename``, the rendered ``media_type``, or any
+            custom header name/value contains CR, LF, or NUL.
     """
 
     name: str
@@ -70,6 +92,9 @@ class MultipartField:
     def __post_init__(self) -> None:
         if not _is_ascii(self.name):
             raise ValueError(f"multipart field name must be pure ASCII: {self.name!r}")
+        _reject_control_chars("field name", self.name)
+        if self.filename is not None:
+            _reject_control_chars("filename", self.filename)
         if (
             self.filename is not None
             and not _is_ascii(self.filename)
@@ -80,6 +105,14 @@ class MultipartField:
                 "MultipartField.with_utf8_filename(...) or supply a "
                 f"filename*=UTF-8''… header: {self.filename!r}"
             )
+        if self.media_type is not None:
+            # The rendered media type becomes a ``Content-Type:`` part header,
+            # so a subtype or parameter value carrying CR/LF would inject an
+            # extra header line just like a malicious filename.
+            _reject_control_chars("media type", str(self.media_type))
+        for header_name, header_value in self.headers:
+            _reject_control_chars("header name", header_name)
+            _reject_control_chars("header value", header_value)
 
     @classmethod
     def with_utf8_filename(
@@ -187,6 +220,12 @@ class MultipartRequestBody(RequestBody):
     Build via ``RequestBody.from_multipart(fields)`` or instantiate directly.
     The boundary is generated once at construction so retries see identical
     bytes (and so loggable wrappers can capture the payload deterministically).
+    A caller-supplied ``boundary`` is rejected if it contains CR, LF, or NUL,
+    since it is interpolated into delimiter and header lines.
+
+    Raises:
+        ValueError: If ``fields`` is empty, or if ``boundary`` contains CR,
+            LF, or NUL.
     """
 
     __slots__ = ("_boundary", "_payload")
@@ -200,6 +239,10 @@ class MultipartRequestBody(RequestBody):
         if not fields:
             raise ValueError("at least one field is required")
         self._boundary = boundary or _generate_boundary()
+        # The boundary is interpolated into every ``--boundary`` delimiter line
+        # and the ``Content-Type`` header, so a caller-supplied boundary with
+        # CR/LF/NUL would inject delimiter or header lines into the payload.
+        _reject_control_chars("boundary", self._boundary)
         parts: list[bytes] = [_build_part(f, self._boundary) for f in fields]
         parts.append(f"--{self._boundary}--\r\n".encode("ascii"))
         self._payload = b"".join(parts)
@@ -222,6 +265,9 @@ class MultipartRequestBody(RequestBody):
 
     def iter_bytes(self, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
         _check_chunk_size(chunk_size)
+        return self._iter(chunk_size)
+
+    def _iter(self, chunk_size: int) -> Iterator[bytes]:
         view = memoryview(self._payload)
         for start in range(0, len(view), chunk_size):
             yield bytes(view[start : start + chunk_size])

@@ -37,9 +37,32 @@ def test_accepts_parsed_url() -> None:
     assert "value" not in out
 
 
-def test_unparseable_input_returns_input_unchanged() -> None:
+def test_unparseable_input_fails_closed() -> None:
+    # A URL that cannot be parsed must never reach the log verbatim: it may
+    # embed a secret. The redactor fails closed to a constant placeholder.
     redactor = UrlRedactor()
-    assert redactor.redact("not a url") == "not a url"
+    assert redactor.redact("not a url") == "REDACTED:unparseable"
+
+
+def test_unparseable_secret_does_not_leak() -> None:
+    redactor = UrlRedactor()
+    secret = "Bearer sk-live-abc123def456"
+    out = redactor.redact(f"://{secret}")
+    assert secret not in out
+    assert out == "REDACTED:unparseable"
+
+
+def test_invalid_port_fails_closed() -> None:
+    # furl raises ValueError("Invalid port ...") for a non-numeric port; the
+    # redactor catches it and fails closed rather than crashing the log path.
+    redactor = UrlRedactor()
+    assert redactor.redact("http://host:notaport/path") == "REDACTED:unparseable"
+
+
+def test_invalid_ipv6_fails_closed() -> None:
+    # An unterminated IPv6 literal makes furl raise ValueError; fail closed.
+    redactor = UrlRedactor()
+    assert redactor.redact("http://[bad") == "REDACTED:unparseable"
 
 
 def test_custom_allowlist() -> None:

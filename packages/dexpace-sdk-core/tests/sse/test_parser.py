@@ -112,6 +112,24 @@ def test_partial_utf8_at_eof_does_not_crash() -> None:
         list(parser.end())
 
 
+def test_invalid_utf8_in_complete_line_decodes_with_replacement() -> None:
+    # Per the WHATWG text/event-stream spec, invalid UTF-8 inside a complete
+    # (terminated) line is decoded with U+FFFD replacement rather than raising
+    # out of SseParser.feed. 0xff is never valid UTF-8.
+    stream = b"data: \xffbad\n\n"
+    events = _events(stream)
+    assert events == [SseEvent(data="�bad")]
+
+
+def test_invalid_utf8_in_complete_line_does_not_raise_from_feed() -> None:
+    # Feeding a complete line containing invalid UTF-8 must not raise; the
+    # replacement-char decoding keeps the parser running on the same stream.
+    parser = SseParser()
+    parser.feed(b"data: \xff\n\n")
+    events = list(parser.drain())
+    assert events == [SseEvent(data="�")]
+
+
 async def test_async_parser() -> None:
     from dexpace.sdk.core.http.sse import parse_async_events
 

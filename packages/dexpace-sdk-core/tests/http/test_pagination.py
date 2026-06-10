@@ -54,6 +54,34 @@ class TestPager:
             list(pager)
         assert info.value.continuation_token == "abc"
 
+    def test_extract_data_failure_stamps_continuation_token(self) -> None:
+        # A failure inside extract_data (not just get_next) must also stamp the
+        # current continuation token so the caller can resume from that page.
+        pages: dict[str | None, _Page] = {"resume": _Page(items=[1], next_token=None)}
+
+        def _bad_extract(_page: _Page) -> tuple[str | None, Iterable[int]]:
+            raise SdkError("extract failed")
+
+        pager: Pager[int, _Page] = Pager(
+            _build_get_next(pages),
+            _bad_extract,
+            continuation_token="resume",
+        )
+        with pytest.raises(SdkError) as info:
+            list(pager)
+        assert info.value.continuation_token == "resume"
+
+    def test_max_pages_bounds_iteration(self) -> None:
+        # A buggy server returning the same token forever must not loop
+        # indefinitely; max_pages caps the number of pages produced.
+        pages: dict[str | None, _Page] = {
+            None: _Page(items=[1], next_token="loop"),
+            "loop": _Page(items=[2], next_token="loop"),
+        }
+        pager: Pager[int, _Page] = Pager(_build_get_next(pages), _extract, max_pages=3)
+        collected = [list(page) for page in pager]
+        assert collected == [[1], [2], [2]]
+
 
 class TestItemPaged:
     def test_flat_iteration(self) -> None:
@@ -83,6 +111,30 @@ class TestItemPaged:
         result = [list(page) for page in items.by_page(continuation_token="page2")]
         assert result == [[2, 3]]
 
+    def test_max_pages_bounds_flat_iteration(self) -> None:
+        pages: dict[str | None, _Page] = {
+            None: _Page(items=[1], next_token="loop"),
+            "loop": _Page(items=[2], next_token="loop"),
+        }
+        items: ItemPaged[int, _Page] = ItemPaged(
+            _build_get_next(pages),
+            _extract,
+            max_pages=2,
+        )
+        assert list(items) == [1, 2]
+
+    def test_max_pages_is_forwarded_to_by_page(self) -> None:
+        pages: dict[str | None, _Page] = {
+            None: _Page(items=[1], next_token="loop"),
+            "loop": _Page(items=[2], next_token="loop"),
+        }
+        items: ItemPaged[int, _Page] = ItemPaged(
+            _build_get_next(pages),
+            _extract,
+            max_pages=2,
+        )
+        assert [list(page) for page in items.by_page()] == [[1], [2]]
+
 
 class TestAsyncPager:
     async def test_iterates_pages(self) -> None:
@@ -102,6 +154,41 @@ class TestAsyncPager:
         async for page in pager:
             collected.append([item async for item in page])
         assert collected == [[1, 2], [3]]
+
+    async def test_max_pages_bounds_iteration(self) -> None:
+        pages: dict[str | None, _Page] = {
+            None: _Page(items=[1], next_token="loop"),
+            "loop": _Page(items=[2], next_token="loop"),
+        }
+
+        async def get_next(token: str | None) -> _Page:
+            return pages[token]
+
+        async def extract(page: _Page) -> tuple[str | None, Iterable[int]]:
+            return page.next_token, page.items
+
+        pager: AsyncPager[int, _Page] = AsyncPager(get_next, extract, max_pages=2)
+        collected: list[list[int]] = []
+        async for page in pager:
+            collected.append([item async for item in page])
+        assert collected == [[1], [2]]
+
+    async def test_extract_data_failure_stamps_continuation_token(self) -> None:
+        async def get_next(_token: str | None) -> _Page:
+            return _Page(items=[1], next_token=None)
+
+        async def extract(_page: _Page) -> tuple[str | None, Iterable[int]]:
+            raise SdkError("extract failed")
+
+        pager: AsyncPager[int, _Page] = AsyncPager(
+            get_next,
+            extract,
+            continuation_token="resume",
+        )
+        with pytest.raises(SdkError) as info:
+            async for _page in pager:
+                pass
+        assert info.value.continuation_token == "resume"
 
 
 class TestAsyncItemPaged:
@@ -140,3 +227,21 @@ class TestAsyncItemPaged:
         async for page in items.by_page(continuation_token="next"):
             collected.append([item async for item in page])
         assert collected == [[2, 3]]
+
+    async def test_max_pages_bounds_flat_iteration(self) -> None:
+        pages: dict[str | None, _Page] = {
+            None: _Page(items=[1], next_token="loop"),
+            "loop": _Page(items=[2], next_token="loop"),
+        }
+
+        async def get_next(token: str | None) -> _Page:
+            return pages[token]
+
+        async def extract(page: _Page) -> tuple[str | None, Iterable[int]]:
+            return page.next_token, page.items
+
+        items: AsyncItemPaged[int, _Page] = AsyncItemPaged(get_next, extract, max_pages=2)
+        collected: list[int] = []
+        async for item in items:
+            collected.append(item)
+        assert collected == [1, 2]

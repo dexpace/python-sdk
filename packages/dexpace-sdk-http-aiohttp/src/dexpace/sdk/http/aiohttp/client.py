@@ -8,7 +8,12 @@ async transport without a sync twin. The adapter is a thin pass-through:
 
 - Request bodies are forwarded to ``aiohttp`` via an async-iterable shim
   over `RequestBody.iter_bytes`, so uploads stream without buffering
-  the full payload into memory.
+  the full payload into memory. Each sync chunk read is pumped on a worker
+  thread (``asyncio.to_thread``) so file/stream-backed bodies never block
+  the event loop. When the body reports a known length and no
+  ``Content-Length`` header is already present, the adapter sets one so
+  ``aiohttp`` frames the request by length instead of falling back to
+  ``Transfer-Encoding: chunked``.
 - Response content streams through ``aiohttp.StreamReader``; we wrap it as
   an `AsyncResponseBody` so the SDK's body lifecycle (deferred
   read, deterministic close) is preserved.
@@ -20,7 +25,8 @@ For sync callers, use ``dexpace-sdk-http-stdlib``'s ``UrllibHttpClient`` or
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import asyncio
+from collections.abc import AsyncIterator, Iterator
 from types import TracebackType
 from typing import TYPE_CHECKING, Final, Self
 
@@ -31,6 +37,7 @@ from dexpace.sdk.core.errors import (
     ServiceResponseError,
     ServiceResponseTimeoutError,
 )
+from dexpace.sdk.core.http.common import http_header_name
 from dexpace.sdk.core.http.common.headers import Headers
 from dexpace.sdk.core.http.common.protocol import Protocol
 from dexpace.sdk.core.http.response.async_response import AsyncResponse
@@ -90,11 +97,12 @@ class AiohttpHttpClient:
             else None
         )
         data = _payload(request.body)
+        headers = _request_headers(_frame_length(request))
         try:
             ctx = session.request(
                 method=str(request.method),
                 url=request.url.wire_form(),
-                headers=_request_headers(request.headers),
+                headers=headers,
                 data=data,
                 timeout=timeout_cfg,
                 allow_redirects=False,
@@ -144,6 +152,31 @@ class AiohttpHttpClient:
         return self._session
 
 
+def _frame_length(request: Request) -> Headers:
+    """Stamp ``Content-Length`` for a known-length body that lacks one.
+
+    aiohttp frames a request by ``Content-Length`` when the header is present
+    and otherwise falls back to ``Transfer-Encoding: chunked`` for any
+    async-iterable payload — including a fully buffered, known-length body.
+    Setting the length up front keeps known-length uploads (bytes, file)
+    length-framed and wire-consistent with the other transports.
+
+    Args:
+        request: The outgoing request.
+
+    Returns:
+        The request headers, with ``Content-Length`` added when the body
+        reports a non-negative length and no such header is already set.
+    """
+    body = request.body
+    if body is None:
+        return request.headers
+    length = body.content_length()
+    if length < 0 or http_header_name.CONTENT_LENGTH in request.headers:
+        return request.headers
+    return request.headers.with_set(http_header_name.CONTENT_LENGTH, str(length))
+
+
 def _request_headers(headers: Headers) -> list[tuple[str, str]]:
     """Flatten ``Headers`` to a list of ``(name, value)`` pairs.
 
@@ -170,35 +203,102 @@ def _payload(body: RequestBody | None) -> AsyncIterator[bytes] | None:
 
 
 async def _aiter_body(body: RequestBody) -> AsyncIterator[bytes]:
-    for chunk in body.iter_bytes(_UPLOAD_CHUNK):
+    """Yield a sync body's chunks without blocking the event loop.
+
+    ``RequestBody.iter_bytes`` is synchronous, and for file/stream-backed
+    bodies each ``next`` is a blocking disk or socket read. Pulling chunks
+    via ``asyncio.to_thread`` keeps those reads off the loop thread.
+
+    Args:
+        body: The request body to stream.
+
+    Yields:
+        Successive non-empty payload chunks.
+    """
+    iterator = await asyncio.to_thread(body.iter_bytes, _UPLOAD_CHUNK)
+    while True:
+        chunk = await asyncio.to_thread(_next_chunk, iterator)
+        if chunk is None:
+            return
         if chunk:
             yield chunk
 
 
+def _next_chunk(iterator: Iterator[bytes]) -> bytes | None:
+    """Advance a sync byte iterator by one step.
+
+    Args:
+        iterator: The iterator to advance.
+
+    Returns:
+        The next chunk, or ``None`` once the iterator is exhausted.
+    """
+    return next(iterator, None)
+
+
 def _wrap_response(request: Request, aio_response: aiohttp.ClientResponse) -> AsyncResponse:
+    """Build an `AsyncResponse` from an `aiohttp.ClientResponse`.
+
+    An in-range HTTP status (100..599), named or not, is preserved on a live
+    response so the body still reaches retry/error-map policies. Only a status
+    outside that range maps to `ServiceResponseError` (releasing the handle
+    first).
+
+    Args:
+        request: The originating request.
+        aio_response: The aiohttp response to adapt.
+
+    Returns:
+        The wrapped async response.
+
+    Raises:
+        ServiceResponseError: If the status code is outside 100..599.
+    """
     try:
         status = Status(aio_response.status)
     except ValueError as err:
-        # Release the handle before bailing so the connection returns to the
-        # pool instead of leaking (aiohttp's release() is synchronous).
+        # Genuinely invalid status (outside 100..599): release the handle
+        # before bailing so the connection returns to the pool rather than
+        # leaking (aiohttp's release() is synchronous).
         aio_response.release()
         raise ServiceResponseError(
-            f"Unknown status code: {aio_response.status}", error=err
+            f"Invalid status code: {aio_response.status}", error=err
         ) from err
     headers = Headers(tuple(aio_response.headers.items()))
     reason = aio_response.reason
-    content_length = _content_length(aio_response)
+    content_length = _content_length(aio_response, headers)
     body = AsyncResponseBody.from_async_stream(
         _StreamReaderAdapter(aio_response), content_length=content_length
     )
     return AsyncResponse(
         request=request,
-        protocol=Protocol.HTTP_1_1,
+        protocol=_protocol(aio_response),
         status=status,
         headers=headers,
         reason=reason,
         body=body,
     )
+
+
+def _protocol(aio_response: aiohttp.ClientResponse) -> Protocol:
+    """Map aiohttp's reported HTTP version onto core's `Protocol`.
+
+    Args:
+        aio_response: The aiohttp response carrying a ``version`` namedtuple.
+
+    Returns:
+        The matching `Protocol`, defaulting to ``HTTP_1_1`` when the version
+        is absent or unrecognised.
+    """
+    version = aio_response.version
+    if version is None:
+        return Protocol.HTTP_1_1
+    pair = (version.major, version.minor)
+    if pair == (1, 0):
+        return Protocol.HTTP_1_0
+    if pair[0] == 2:
+        return Protocol.HTTP_2
+    return Protocol.HTTP_1_1
 
 
 class _StreamReaderAdapter:
@@ -233,8 +333,24 @@ class _StreamReaderAdapter:
         self._response.release()
 
 
-def _content_length(aio_response: aiohttp.ClientResponse) -> int:
-    """Extract ``Content-Length`` from the response, or ``-1`` when absent/invalid."""
+def _content_length(aio_response: aiohttp.ClientResponse, headers: Headers) -> int:
+    """Resolve the decoded body length for the constructed response body.
+
+    aiohttp transparently decodes ``Content-Encoding`` (gzip/deflate/br), so
+    the stream yields decompressed bytes whose count no longer matches the
+    upstream ``Content-Length``. In that case the header is dropped to avoid
+    advertising a length the body does not produce.
+
+    Args:
+        aio_response: The aiohttp response carrying the raw headers.
+        headers: The parsed response headers.
+
+    Returns:
+        The non-negative ``Content-Length``, or ``-1`` when absent, invalid,
+        or rendered inaccurate by a ``Content-Encoding``.
+    """
+    if http_header_name.CONTENT_ENCODING in headers:
+        return -1
     raw = aio_response.headers.get("Content-Length")
     if raw is None:
         return -1

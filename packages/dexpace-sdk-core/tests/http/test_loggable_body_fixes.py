@@ -238,3 +238,37 @@ class TestRequestBoundedSnapshot:
         list(body.iter_bytes())
         assert body.snapshot(max_bytes=2) == b"01"
         assert body.snapshot() == b"0123456789"
+
+
+class TestRequestTapResetOnReplay:
+    """A replayed loggable request body captures one copy, not body+body."""
+
+    def test_second_iteration_does_not_double_the_capture(self) -> None:
+        # A replayable inner body iterated twice (retry / 307 redirect) must
+        # not accumulate ``body + body`` in the tap. Each iter_bytes resets
+        # the tap so snapshot/captured_size reflect a single payload.
+        body = LoggableRequestBody(RequestBody.from_bytes(b"payload"))
+        assert b"".join(body.iter_bytes()) == b"payload"
+        assert b"".join(body.iter_bytes()) == b"payload"
+        assert body.snapshot() == b"payload"
+        assert body.captured_size == len(b"payload")
+
+    def test_capture_reflects_only_the_latest_attempt(self) -> None:
+        # After many replays the capture is still one copy, never N copies.
+        body = LoggableRequestBody(RequestBody.from_bytes(b"abc"))
+        for _ in range(5):
+            assert b"".join(body.iter_bytes()) == b"abc"
+        assert body.snapshot() == b"abc"
+        assert body.captured_size == 3
+
+    def test_tap_reset_is_eager_before_first_chunk(self) -> None:
+        # The reset happens at call time, so a fresh (undrained) iterator from
+        # a replay already shows an empty capture rather than the prior copy.
+        body = LoggableRequestBody(RequestBody.from_bytes(b"hello"))
+        list(body.iter_bytes())
+        assert body.captured_size == 5
+        # Obtain a new iterator without draining it; the tap must already be
+        # cleared by the eager reset inside iter_bytes.
+        body.iter_bytes()
+        assert body.captured_size == 0
+        assert body.snapshot() == b""

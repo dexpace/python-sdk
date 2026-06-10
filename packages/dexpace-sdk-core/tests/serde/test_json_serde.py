@@ -160,3 +160,30 @@ def test_custom_default_encodes_both_datetime_and_custom() -> None:
     text = ser.serialize({"at": when, "x": _Custom()})
     assert "2024-01-01T12:00:00+00:00" in text
     assert '"x":"custom"' in text
+
+
+def test_encoder_built_once_and_reused_across_serialize_calls() -> None:
+    # The encoder is derived at construction, not per serialize() call, even
+    # when a custom default forces a chained encoder subclass.
+    def my_default(o: object) -> object:
+        raise TypeError(o)
+
+    ser = JsonSerializer(default=my_default)
+    first = ser._encoder
+    second = ser._encoder
+    assert first is second
+
+
+def test_custom_default_serializer_repeatable_across_calls() -> None:
+    class _Custom:
+        pass
+
+    def my_default(o: object) -> object:
+        if isinstance(o, _Custom):
+            return "custom"
+        raise TypeError(o)
+
+    ser = JsonSerializer(default=my_default)
+    # A serializer reusing one encoder must stay correct across repeated calls.
+    assert ser.serialize({"x": _Custom()}) == '{"x":"custom"}'
+    assert ser.serialize({"x": _Custom()}) == '{"x":"custom"}'

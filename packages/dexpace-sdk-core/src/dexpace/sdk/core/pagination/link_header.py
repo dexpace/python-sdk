@@ -69,9 +69,17 @@ def _iter_links(value: str) -> Iterator[ParsedLink]:
 
 
 def _split_links(value: str) -> Iterator[str]:
-    """Split a header into link-value segments, ignoring commas inside quotes."""
+    """Split a header into link-value segments on the link-value separators.
+
+    Commas inside a quoted parameter value (between ``"``) or inside the
+    bracketed ``<URI>`` target are not separators: a comma is a legal
+    unencoded URI sub-delim (e.g. ``?fields=a,b``), so splitting on it would
+    shred the target. The angle-bracket depth is tracked alongside quote
+    state and suppresses the split while inside ``<...>``.
+    """
     buffer: list[str] = []
     in_quotes = False
+    in_brackets = False
     escaped = False
     for char in value:
         if escaped:
@@ -83,7 +91,13 @@ def _split_links(value: str) -> Iterator[str]:
         elif char == '"':
             in_quotes = not in_quotes
             buffer.append(char)
-        elif char == "," and not in_quotes:
+        elif char == "<" and not in_quotes:
+            in_brackets = True
+            buffer.append(char)
+        elif char == ">" and not in_quotes:
+            in_brackets = False
+            buffer.append(char)
+        elif char == "," and not in_quotes and not in_brackets:
             yield "".join(buffer)
             buffer = []
         else:

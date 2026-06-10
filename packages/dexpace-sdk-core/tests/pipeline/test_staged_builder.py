@@ -101,6 +101,22 @@ class TestSurgicalEdits:
         b.append(original).replace(RetryPolicy, new)
         assert b._pillars[Stage.RETRY] is new
 
+    def test_replace_pillar_with_multiple_pillars_present(
+        self,
+        transport: _StubTransport,
+    ) -> None:
+        # Regression: ``replace`` used to ``del`` from ``_pillars`` while
+        # iterating it. With more than one pillar installed, the lookup must
+        # complete before the deletion so no RuntimeError surfaces and the
+        # other pillars survive untouched.
+        b = StagedPipelineBuilder(transport)
+        logging = LoggingPolicy()
+        b.append(RetryPolicy()).append(logging)
+        new_retry = RetryPolicy()
+        b.replace(RetryPolicy, new_retry)
+        assert b._pillars[Stage.RETRY] is new_retry
+        assert b._pillars[Stage.LOGGING] is logging
+
     def test_replace_non_pillar(self, transport: _StubTransport) -> None:
         b = StagedPipelineBuilder(transport)
         b.append(_MarkerPolicy("a")).append(_MarkerPolicy("b"))
@@ -173,9 +189,6 @@ class TestFromPipeline:
             transport,
             policies=[RetryPolicy(), LoggingPolicy(), TracingPolicy()],
         )
-        b = StagedPipelineBuilder.from_pipeline(original)
-        rebuilt = b.build()
-        # The rebuilt pipeline should have the same stage ordering
         from dexpace.sdk.core.pipeline._transport_runner import _TransportRunner
 
         def stages(p: Pipeline) -> list[Stage]:
@@ -186,7 +199,12 @@ class TestFromPipeline:
                 node = getattr(node, "next", None)
             return out
 
-        assert stages(rebuilt) == stages(original)
+        # Snapshot before harvesting: ``from_pipeline`` consumes ``original``
+        # by detaching its policies for re-wiring, so the rebuilt pipeline
+        # must carry the same stage ordering the original had.
+        expected = stages(original)
+        rebuilt = StagedPipelineBuilder.from_pipeline(original).build()
+        assert stages(rebuilt) == expected
 
     def test_misordered_pipeline_raises(self, transport: _StubTransport) -> None:
         # Build a misordered pipeline: LOGGING before RETRY

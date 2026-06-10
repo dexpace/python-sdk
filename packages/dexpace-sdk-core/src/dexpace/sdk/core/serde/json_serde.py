@@ -28,10 +28,56 @@ class _JsonEncoder(json.JSONEncoder):
         return super().default(o)
 
 
-class JsonSerializer:
-    """Serialise Python values into JSON strings / bytes / streams."""
+def _build_encoder(
+    encoder_cls: type[json.JSONEncoder],
+    default: Callable[[Any], Any] | None,
+    sort_keys: bool,
+    allow_nan: bool,
+) -> json.JSONEncoder:
+    """Build an encoder, chaining the built-in ``default`` to a user one.
 
-    __slots__ = ("_allow_nan", "_default", "_encoder_cls", "_sort_keys")
+    Called once per ``JsonSerializer``. When a custom ``default`` is supplied,
+    a small subclass routes its callable behind the encoder class so the
+    built-in datetime / date / time / bytes handling still runs first.
+
+    Args:
+        encoder_cls: The base ``json.JSONEncoder`` subclass.
+        default: Optional user fallback for unencodable values.
+        sort_keys: Whether to emit object keys in sorted order.
+        allow_nan: Whether to permit ``NaN`` / ``Infinity`` tokens.
+
+    Returns:
+        A configured, reusable encoder instance.
+    """
+    kwargs: dict[str, Any] = {
+        "sort_keys": sort_keys,
+        "allow_nan": allow_nan,
+        "separators": (",", ":"),
+    }
+    if default is None:
+        return encoder_cls(**kwargs)
+    fallback: Callable[[Any], Any] = default
+
+    class _ChainedEncoder(encoder_cls):  # type: ignore[valid-type, misc]
+        def default(self, o: Any) -> Any:
+            try:
+                return super().default(o)
+            except TypeError:
+                return fallback(o)
+
+    return _ChainedEncoder(**kwargs)
+
+
+class JsonSerializer:
+    """Serialise Python values into JSON strings / bytes / streams.
+
+    The encoder is built once at construction and reused for every
+    ``serialize`` call. A ``json.JSONEncoder`` instance is stateless across
+    ``encode`` calls, so sharing it costs nothing and avoids re-deriving an
+    encoder class on every serialize when a custom ``default`` is configured.
+    """
+
+    __slots__ = ("_encoder",)
 
     def __init__(
         self,
@@ -52,10 +98,7 @@ class JsonSerializer:
                 non-standard JSON tokens.
             encoder_cls: ``json.JSONEncoder`` subclass to use.
         """
-        self._default = default
-        self._sort_keys = sort_keys
-        self._allow_nan = allow_nan
-        self._encoder_cls = encoder_cls
+        self._encoder = _build_encoder(encoder_cls, default, sort_keys, allow_nan)
 
     def serialize(self, value: Any) -> str:
         """Serialise ``value`` to a JSON string.
@@ -70,32 +113,10 @@ class JsonSerializer:
         Raises:
             SerializationError: If encoding fails.
         """
-        encoder = self._build_encoder()
         try:
-            return encoder.encode(value)
+            return self._encoder.encode(value)
         except (TypeError, ValueError, UnicodeDecodeError) as err:
             raise SerializationError(str(err), error=err) from err
-
-    def _build_encoder(self) -> json.JSONEncoder:
-        """Build an encoder chaining the built-in ``default`` to the user one."""
-        encoder_cls = self._encoder_cls
-        kwargs: dict[str, Any] = {
-            "sort_keys": self._sort_keys,
-            "allow_nan": self._allow_nan,
-            "separators": (",", ":"),
-        }
-        if self._default is None:
-            return encoder_cls(**kwargs)
-        fallback: Callable[[Any], Any] = self._default
-
-        class _ChainedEncoder(encoder_cls):  # type: ignore[valid-type, misc]
-            def default(self, o: Any) -> Any:
-                try:
-                    return super().default(o)
-                except TypeError:
-                    return fallback(o)
-
-        return _ChainedEncoder(**kwargs)
 
     def serialize_to_bytes(self, value: Any) -> bytes:
         """Serialise ``value`` to UTF-8-encoded JSON bytes."""

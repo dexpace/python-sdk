@@ -11,7 +11,10 @@ Production-grade alternative to the urllib reference client shipped in
 The transport delegates to `httpx.Client`, streaming the request
 body via `RequestBody.iter_bytes` and exposing the response as a
 `ResponseBody` whose ``iter_bytes`` walks the httpx response's own
-``iter_bytes`` iterator. Closing the SDK response closes the underlying
+``iter_bytes`` iterator. When the request body reports a known length,
+the adapter sets ``Content-Length`` so httpx frames the upload by length
+instead of falling back to ``Transfer-Encoding: chunked``; unknown-length
+bodies stay chunked. Closing the SDK response closes the underlying
 httpx response and releases the connection back to the pool.
 """
 
@@ -28,9 +31,11 @@ from dexpace.sdk.core.errors import (
     ServiceResponseError,
     ServiceResponseTimeoutError,
 )
+from dexpace.sdk.core.http.common import http_header_name
 from dexpace.sdk.core.http.common.headers import Headers
 from dexpace.sdk.core.http.common.protocol import Protocol
 from dexpace.sdk.core.http.request.request import Request
+from dexpace.sdk.core.http.request.request_body import RequestBody
 from dexpace.sdk.core.http.response.response import Response
 from dexpace.sdk.core.http.response.response_body import ResponseBody
 from dexpace.sdk.core.http.response.status import Status
@@ -61,8 +66,9 @@ class HttpxHttpClient:
         transport: Optional `httpx.BaseTransport`; the primary
             extension hook for tests (``httpx.MockTransport``).
         client: Optional pre-built `httpx.Client` — overrides the
-            timeout / transport kwargs entirely. Ownership transfers to
-            this transport.
+            timeout / transport kwargs entirely. Ownership stays with the
+            caller: ``close`` does not close a client passed in this way,
+            so the caller remains responsible for closing it.
     """
 
     __slots__ = ("_client", "_closed", "_owns_client")
@@ -122,9 +128,10 @@ class HttpxHttpClient:
 
     def _build_request(self, request: Request) -> httpx.Request:
         headers = _headers_to_pairs(request.headers)
-        content: Iterator[bytes] | None = (
-            request.body.iter_bytes(_DEFAULT_CHUNK_SIZE) if request.body is not None else None
-        )
+        content: Iterator[bytes] | None = None
+        if request.body is not None:
+            content = request.body.iter_bytes(_DEFAULT_CHUNK_SIZE)
+            _frame_known_length(headers, request.headers, request.body)
         return self._client.build_request(
             method=str(request.method),
             url=request.url.wire_form(),
@@ -213,9 +220,11 @@ def _build_response(request: Request, httpx_response: httpx.Response) -> Respons
     try:
         status = Status(int(httpx_response.status_code))
     except ValueError as err:
+        # Genuinely invalid status (outside 100..599); release the socket
+        # back to the pool before surfacing the error.
         httpx_response.close()
         raise ServiceResponseError(
-            f"Unknown status code: {httpx_response.status_code}", error=err
+            f"Invalid status code: {httpx_response.status_code}", error=err
         ) from err
     headers = Headers(httpx_response.headers.multi_items())
     stream = _HttpxStreamAdapter(httpx_response, _DEFAULT_CHUNK_SIZE)
@@ -223,7 +232,7 @@ def _build_response(request: Request, httpx_response: httpx.Response) -> Respons
     body: Any = ResponseBody.from_stream(stream, content_length=content_length)  # type: ignore[arg-type]
     return Response(
         request=request,
-        protocol=Protocol.HTTP_1_1,
+        protocol=_protocol(httpx_response),
         status=status,
         headers=headers,
         reason=httpx_response.reason_phrase or None,
@@ -231,14 +240,54 @@ def _build_response(request: Request, httpx_response: httpx.Response) -> Respons
     )
 
 
+def _protocol(httpx_response: httpx.Response) -> Protocol:
+    """Map httpx's reported HTTP version onto core's `Protocol` enum.
+
+    Args:
+        httpx_response: The streamed httpx response.
+
+    Returns:
+        The negotiated protocol, or `Protocol.HTTP_1_1` when httpx does not
+        report a recognizable version.
+    """
+    try:
+        return Protocol.parse(httpx_response.http_version)
+    except ValueError:
+        return Protocol.HTTP_1_1
+
+
 def _content_length(httpx_response: httpx.Response) -> int:
-    raw = httpx_response.headers.get("content-length")
+    # The stream yields decompressed bytes, so a Content-Length that describes
+    # the compressed payload would misreport the decoded length. Omit it when
+    # the response is content-encoded.
+    if httpx_response.headers.get(http_header_name.CONTENT_ENCODING.value):
+        return -1
+    raw = httpx_response.headers.get(http_header_name.CONTENT_LENGTH.value)
     if raw is None:
         return -1
     try:
         return max(0, int(raw))
     except ValueError:
         return -1
+
+
+def _frame_known_length(pairs: list[tuple[str, str]], headers: Headers, body: RequestBody) -> None:
+    """Add a ``Content-Length`` pair for a known-length body.
+
+    httpx receives the body as a bare iterator with no declared length, so it
+    falls back to ``Transfer-Encoding: chunked``. Declaring the length lets it
+    frame the upload by length instead. Unknown-length bodies (``-1``) are left
+    chunked, and an explicit caller-supplied ``Content-Length`` is preserved.
+
+    Args:
+        pairs: The header name/value pairs forwarded to httpx; mutated in place.
+        headers: The SDK request headers, consulted case-insensitively.
+        body: The outgoing request body.
+    """
+    length = body.content_length()
+    if length < 0 or http_header_name.CONTENT_LENGTH in headers:
+        return
+    pairs.append((http_header_name.CONTENT_LENGTH.canonical_name, str(length)))
 
 
 def _headers_to_pairs(headers: Headers) -> list[tuple[str, str]]:

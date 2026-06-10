@@ -112,7 +112,9 @@ class TestDigestChallengeHandler:
         params = _parse_auth(value)
         assert params["algorithm"] == "SHA-256"
 
-    def test_digest_nonce_counter_increments(self) -> None:
+    def test_digest_nonce_counter_increments_on_reuse(self) -> None:
+        # Reusing the same server nonce across requests increments ``nc``
+        # (RFC 7616 §3.4: count of requests sent with this nonce).
         handler = DigestChallengeHandler(
             _USERNAME,
             _PASSWORD,
@@ -128,6 +130,78 @@ class TestDigestChallengeHandler:
         assert first is not None and second is not None
         assert _parse_auth(first[1])["nc"] == "00000001"
         assert _parse_auth(second[1])["nc"] == "00000002"
+
+    def test_digest_nc_resets_for_new_nonce(self) -> None:
+        # A fresh server nonce restarts ``nc`` at 00000001 (RFC 7616 §3.4),
+        # even after a prior nonce advanced the count. A single global counter
+        # would wrongly emit 00000003 here.
+        handler = DigestChallengeHandler(
+            _USERNAME,
+            _PASSWORD,
+            preferred_algorithms=("MD5",),
+            cnonce_factory=lambda: _FIXED_CNONCE,
+        )
+        first_nonce = AuthenticateChallenge(
+            scheme="Digest",
+            parameters={**_RFC_PARAMS, "algorithm": "MD5", "nonce": "nonce-aaa"},
+        )
+        second_nonce = AuthenticateChallenge(
+            scheme="Digest",
+            parameters={**_RFC_PARAMS, "algorithm": "MD5", "nonce": "nonce-bbb"},
+        )
+        # Advance the count on the first nonce.
+        handler.handle(Method.GET, _URL, [first_nonce], is_proxy=False)
+        second = handler.handle(Method.GET, _URL, [first_nonce], is_proxy=False)
+        assert second is not None
+        assert _parse_auth(second[1])["nc"] == "00000002"
+        # A different nonce must reset to 00000001.
+        fresh = handler.handle(Method.GET, _URL, [second_nonce], is_proxy=False)
+        assert fresh is not None
+        assert _parse_auth(fresh[1])["nc"] == "00000001"
+
+    def test_digest_nc_resumes_per_nonce_when_alternating(self) -> None:
+        # Each nonce keeps its own independent count: alternating between two
+        # nonces must resume each one's count rather than share a global one.
+        handler = DigestChallengeHandler(
+            _USERNAME,
+            _PASSWORD,
+            preferred_algorithms=("MD5",),
+            cnonce_factory=lambda: _FIXED_CNONCE,
+        )
+
+        def nc_for(nonce: str) -> str:
+            challenge = AuthenticateChallenge(
+                scheme="Digest",
+                parameters={**_RFC_PARAMS, "algorithm": "MD5", "nonce": nonce},
+            )
+            result = handler.handle(Method.GET, _URL, [challenge], is_proxy=False)
+            assert result is not None
+            return _parse_auth(result[1])["nc"]
+
+        assert nc_for("nonce-aaa") == "00000001"
+        assert nc_for("nonce-bbb") == "00000001"
+        assert nc_for("nonce-aaa") == "00000002"
+        assert nc_for("nonce-bbb") == "00000002"
+        assert nc_for("nonce-aaa") == "00000003"
+
+    def test_digest_nonce_count_map_is_bounded(self) -> None:
+        # A long-lived handler hitting many distinct nonces must not grow the
+        # per-nonce map without bound; the oldest entry is evicted past the cap.
+        from dexpace.sdk.core.http.auth.digest import _MAX_TRACKED_NONCES
+
+        handler = DigestChallengeHandler(
+            _USERNAME,
+            _PASSWORD,
+            preferred_algorithms=("MD5",),
+            cnonce_factory=lambda: _FIXED_CNONCE,
+        )
+        for index in range(_MAX_TRACKED_NONCES + 50):
+            challenge = AuthenticateChallenge(
+                scheme="Digest",
+                parameters={**_RFC_PARAMS, "algorithm": "MD5", "nonce": f"nonce-{index}"},
+            )
+            handler.handle(Method.GET, _URL, [challenge], is_proxy=False)
+        assert len(handler._nonce_counts) == _MAX_TRACKED_NONCES
 
     def test_digest_is_proxy_returns_proxy_authorization_header(self) -> None:
         handler = DigestChallengeHandler(

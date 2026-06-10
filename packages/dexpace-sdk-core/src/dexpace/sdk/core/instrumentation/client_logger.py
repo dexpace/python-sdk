@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Final
 
 from .correlation import get_span_id, get_trace_id
@@ -17,6 +18,12 @@ _LEVEL_MAP: Final[dict[LogLevel, int]] = {
     LogLevel.INFO: logging.INFO,
     LogLevel.VERBOSE: logging.DEBUG,
 }
+
+#: Serialises the check-then-act in ``_install_correlation_filter`` so two
+#: threads constructing loggers concurrently cannot both add a filter. A single
+#: process-wide lock is sufficient: installation is a one-time, low-contention
+#: operation gated by an idempotent membership check.
+_INSTALL_LOCK: Final[threading.Lock] = threading.Lock()
 
 
 class CorrelationFilter(logging.Filter):
@@ -97,10 +104,16 @@ class ClientLogger:
 
 
 def _install_correlation_filter(logger: logging.Logger) -> None:
-    """Attach a `CorrelationFilter` to ``logger`` exactly once."""
-    if any(isinstance(existing, CorrelationFilter) for existing in logger.filters):
-        return
-    logger.addFilter(CorrelationFilter())
+    """Attach a `CorrelationFilter` to ``logger`` exactly once.
+
+    The membership check and the ``addFilter`` call run under a process-wide
+    lock so concurrent ``ClientLogger`` construction on the same logger can
+    never install two filters (the check-then-act would otherwise race).
+    """
+    with _INSTALL_LOCK:
+        if any(isinstance(existing, CorrelationFilter) for existing in logger.filters):
+            return
+        logger.addFilter(CorrelationFilter())
 
 
 def _correlation_fields() -> dict[str, str]:
@@ -119,7 +132,7 @@ def _format_fields(fields: dict[str, Any]) -> str:
     parts: list[str] = []
     for key, value in fields.items():
         rendered = str(value)
-        if any(c in rendered for c in ' \t"\n\r'):
+        if any(c in rendered for c in ' \t"\n\r='):
             rendered = (
                 '"'
                 + rendered.replace("\\", "\\\\")

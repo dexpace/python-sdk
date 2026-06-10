@@ -5,11 +5,12 @@
 
 Walks the response's ``Location`` header through up to ``max_hops``
 intermediate responses, following the per-status method/body rules from
-RFC 7231 §6.4 and RFC 7538 / RFC 7231 §6.4.7. Credentials are stripped on
-every reissue by default (``Authorization`` header dropped, ``userinfo``
-in the ``Location`` URL discarded); loops are detected via a visited-URL
-set and cause the policy to return the current response instead of
-raising.
+RFC 7231 §6.4 and RFC 7538 / RFC 7231 §6.4.7. A caller-set
+``Authorization`` header is stripped by default only when the reissue
+crosses origin relative to the request being redirected; same-origin hops
+keep it. ``userinfo`` in the ``Location`` URL is always discarded. Loops
+are detected via a visited-URL set and cause the policy to return the
+current response instead of raising.
 
 Status-code matrix:
 
@@ -42,6 +43,27 @@ if TYPE_CHECKING:
 
 _REDIRECT_STATUSES: frozenset[int] = frozenset({301, 302, 303, 307, 308})
 _CONTENT_HEADER_PREFIX: str = "content-"
+_DEFAULT_PORTS: dict[str, int] = {"https": 443, "http": 80}
+
+
+def _origin(url: Url) -> tuple[str, str, int | None]:
+    """Return the ``(scheme, host, port)`` origin tuple for ``url``.
+
+    The scheme and host are lower-cased and the port is resolved to its
+    scheme default (443 for https, 80 for http) when not explicit, so two
+    URLs that differ only in an implied/explicit default port compare equal.
+
+    Args:
+        url: The URL to derive an origin from.
+
+    Returns:
+        A ``(scheme, host, effective_port)`` tuple suitable for equality
+        comparison.
+    """
+    scheme = url.scheme.lower()
+    port = url.port if url.port is not None else _DEFAULT_PORTS.get(scheme)
+    return scheme, url.host.lower(), port
+
 
 #: ``ctx.data`` key holding the per-operation ``HttpTracer``. The first policy
 #: in the chain to need it mints one from the call's
@@ -91,10 +113,13 @@ class RedirectPolicy(Policy):
         allowed_methods: Methods that are followed on ``301`` / ``302`` /
             ``307`` / ``308``. ``303`` is always rewritten to ``GET`` (which
             is implicitly allowed). Defaults to ``{GET, HEAD}``.
-        strip_authorization: When ``True`` (the default), the
-            ``Authorization`` header is stripped before every redirect
-            reissue. Set ``False`` only when the redirect chain is
-            same-origin and the caller has audited the destinations.
+        strip_authorization: When ``True`` (the default), a caller-set
+            ``Authorization`` header is stripped before a redirect reissue
+            only when the reissue crosses origin — a change in scheme, host,
+            or effective port — relative to the request being redirected.
+            Same-origin hops (e.g. a trailing-slash 301) keep the header.
+            Set ``False`` to never strip, e.g. when the caller has audited
+            every destination in the chain.
 
     Example:
         ```python
@@ -182,19 +207,20 @@ class RedirectPolicy(Policy):
             RuntimeError: 307/308 with a non-replayable body.
         """
         next_url = self._resolve_location(request.url, location)
+        cross_origin = _origin(request.url) != _origin(next_url)
         if status == 303:
             if not self.follow_303:
                 return None
-            return self._reissue_as_get(request, next_url)
+            return self._reissue_as_get(request, next_url, cross_origin=cross_origin)
         # 301, 302, 307, 308 all require the original method to be allowed.
         if request.method not in self.allowed_methods:
             return None
         if status in (307, 308):
-            return self._reissue_preserving_body(request, next_url)
+            return self._reissue_preserving_body(request, next_url, cross_origin=cross_origin)
         # 301 / 302: follow with the original method; body carries over
         # (matches Java's DefaultRedirectStep — caller can downgrade to GET
         # by setting follow_303 plus allowing only safe methods).
-        return self._reissue_preserving_body(request, next_url)
+        return self._reissue_preserving_body(request, next_url, cross_origin=cross_origin)
 
     def _resolve_location(self, base: Url, location: str) -> Url:
         """Resolve a possibly-relative Location header into an absolute Url.
@@ -208,27 +234,58 @@ class RedirectPolicy(Policy):
             return parsed
         return replace(parsed, userinfo=None)
 
-    def _reissue_as_get(self, request: Request, next_url: Url) -> Request:
+    def _reissue_as_get(
+        self,
+        request: Request,
+        next_url: Url,
+        *,
+        cross_origin: bool,
+    ) -> Request:
         """Build the reissued GET for a 303 hop.
 
         Drops the request body and every ``Content-*`` header (per RFC 7231
-        §6.4.4 — the body no longer applies to a GET).
+        §6.4.4 — the body no longer applies to a GET). A caller-set
+        ``Authorization`` header is stripped only on a cross-origin hop when
+        ``strip_authorization`` is enabled.
+
+        Args:
+            request: The request being redirected (the current hop).
+            next_url: The resolved absolute target of the redirect.
+            cross_origin: Whether ``next_url`` differs in origin from
+                ``request.url``.
         """
         stripped = request.with_method(Method.GET).with_url(next_url).with_body(None)
         for name in tuple(stripped.headers):
             if name.startswith(_CONTENT_HEADER_PREFIX):
                 stripped = stripped.without_header(name)
-        if self.strip_authorization:
+        if self.strip_authorization and cross_origin:
             stripped = stripped.without_header("Authorization")
         return stripped
 
-    def _reissue_preserving_body(self, request: Request, next_url: Url) -> Request:
+    def _reissue_preserving_body(
+        self,
+        request: Request,
+        next_url: Url,
+        *,
+        cross_origin: bool,
+    ) -> Request:
         """Build the reissued request for 301/302/307/308 hops.
 
         307/308 must preserve the body, so a non-replayable body raises
         ``RuntimeError`` — sending the same payload twice with a single-use
         body is not possible. 301/302 also carry the body (matches Java's
-        ``DefaultRedirectStep``); the same replay requirement applies.
+        ``DefaultRedirectStep``); the same replay requirement applies. A
+        caller-set ``Authorization`` header is stripped only on a cross-origin
+        hop when ``strip_authorization`` is enabled.
+
+        Args:
+            request: The request being redirected (the current hop).
+            next_url: The resolved absolute target of the redirect.
+            cross_origin: Whether ``next_url`` differs in origin from
+                ``request.url``.
+
+        Raises:
+            RuntimeError: 307/308 with a non-replayable body.
         """
         body = request.body
         if body is not None and not body.is_replayable():
@@ -238,7 +295,7 @@ class RedirectPolicy(Policy):
                 "expected."
             )
         reissued = request.with_url(next_url)
-        if self.strip_authorization:
+        if self.strip_authorization and cross_origin:
             reissued = reissued.without_header("Authorization")
         return reissued
 

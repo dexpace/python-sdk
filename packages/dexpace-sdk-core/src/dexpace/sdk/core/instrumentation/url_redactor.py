@@ -38,6 +38,10 @@ DEFAULT_QUERY_ALLOWLIST: Final[frozenset[str]] = frozenset(
 _REDACTED: Final[str] = "REDACTED"
 _REDACTED_PATH: Final[str] = "/REDACTED"
 
+#: Returned in place of a URL that cannot be parsed. Failing closed keeps an
+#: unparseable, possibly secret-bearing string out of the logs entirely.
+_REDACTED_UNPARSEABLE: Final[str] = "REDACTED:unparseable"
+
 
 class UrlRedactor:
     """Strip userinfo and non-allowlisted query parameters from a URL.
@@ -75,18 +79,20 @@ class UrlRedactor:
 
         Args:
             url: Either a parsed ``Url`` or a wire-form string. Strings are
-                parsed via ``Url.parse``; parse failures fall through to
-                returning the input unchanged (so logging never silently
-                drops a URL because it's malformed).
+                parsed via ``Url.parse``; parse failures fail closed and return
+                the constant ``"REDACTED:unparseable"`` rather than the input,
+                so a malformed string that may embed a secret never reaches the
+                log sink verbatim.
 
         Returns:
             A wire-form URL with userinfo stripped and each non-allowlisted
             parameter collapsed to ``REDACTED=REDACTED`` (both key and value),
-            so neither the secret nor the parameter name leaks.
+            so neither the secret nor the parameter name leaks. When the input
+            string cannot be parsed, returns ``"REDACTED:unparseable"``.
         """
         parsed = url if isinstance(url, Url) else _safe_parse(url)
         if parsed is None:
-            return str(url)
+            return _REDACTED_UNPARSEABLE
         return str(self._redact_parsed(parsed))
 
     def _redact_parsed(self, parsed: Url) -> Url:
@@ -111,9 +117,24 @@ class UrlRedactor:
 
 
 def _safe_parse(raw: str) -> Url | None:
+    """Parse ``raw`` into a ``Url`` or return ``None`` if it is malformed.
+
+    ``Url.parse`` delegates to ``furl``, which raises stdlib exceptions for
+    bad input (``ValueError`` for missing scheme/host or an invalid port,
+    ``UnicodeError`` for IDNA failures, and ``LookupError`` / ``TypeError``
+    for other structural surprises). Catching the broad set keeps the caller
+    failing closed instead of letting an exotic furl error escape into the
+    logging path.
+
+    Args:
+        raw: A wire-form URL string.
+
+    Returns:
+        The parsed ``Url``, or ``None`` if ``raw`` could not be parsed.
+    """
     try:
         return Url.parse(raw)
-    except ValueError:
+    except (ValueError, LookupError, TypeError):
         return None
 
 

@@ -111,6 +111,53 @@ def test_basic_auth_policy_stamps_header() -> None:
     assert client.calls[0].headers.get("authorization") == "Basic dXNlcjpwYXNz"
 
 
+class _RedirectingClient(HttpClient):
+    """302s the first request to ``location`` then replies 200.
+
+    Records every request so a test can inspect which headers reached the
+    foreign host on the reissued hop.
+    """
+
+    def __init__(self, location: str) -> None:
+        self._location = location
+        self.calls: list[Request] = []
+
+    def execute(self, request: Request) -> Response:
+        from dexpace.sdk.core.http.common import Headers
+
+        self.calls.append(request)
+        if len(self.calls) == 1:
+            return Response(
+                request=request,
+                protocol=Protocol.HTTP_1_1,
+                status=Status.FOUND,
+                headers=Headers([("Location", self._location)]),
+            )
+        return Response(request=request, protocol=Protocol.HTTP_1_1, status=Status.OK)
+
+
+def test_key_credential_policy_withholds_credential_cross_origin() -> None:
+    from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
+
+    client = _RedirectingClient("https://attacker.example.net/loot")
+    policy = KeyCredentialPolicy(KeyCredential("hunter2"), "X-API-Key")
+    with Pipeline(client, policies=[RedirectPolicy(), policy]) as p:
+        p.run(_request(), DispatchContext(_instr("0" * 15 + "30")))
+    assert client.calls[0].headers.get("x-api-key") == "hunter2"
+    assert "x-api-key" not in client.calls[1].headers
+
+
+def test_basic_auth_policy_withholds_credential_cross_origin() -> None:
+    from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
+
+    client = _RedirectingClient("https://attacker.example.net/loot")
+    policy = BasicAuthPolicy(BasicAuthCredential("user", "pass"))
+    with Pipeline(client, policies=[RedirectPolicy(), policy]) as p:
+        p.run(_request(), DispatchContext(_instr("0" * 15 + "31")))
+    assert client.calls[0].headers.get("authorization") == "Basic dXNlcjpwYXNz"
+    assert "authorization" not in client.calls[1].headers
+
+
 class _StaticCredential:
     """Minimal TokenCredential — returns the same token unless explicitly told."""
 
@@ -214,6 +261,36 @@ def test_bearer_token_policy_on_challenge_hook() -> None:
     assert len(client.calls) == 2
 
 
+def test_bearer_token_policy_withholds_token_cross_origin() -> None:
+    """A redirect to a foreign host must not receive the bearer token."""
+    from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
+
+    client = _RedirectingClient("https://attacker.example.net/loot")
+    cred = _StaticCredential()
+    policy = BearerTokenPolicy(cred, "scope-a")
+    with Pipeline(client, policies=[RedirectPolicy(), policy]) as p:
+        p.run(_request(), DispatchContext(_instr("0" * 15 + "32")))
+    assert client.calls[0].headers.get("authorization") == "Bearer abc"
+    assert "authorization" not in client.calls[1].headers
+    # The foreign hop neither acquired nor refreshed a token.
+    assert cred.calls == 1
+
+
+def test_bearer_token_policy_skips_https_enforcement_cross_origin() -> None:
+    """A cross-origin reissue to http:// forwards unchanged, no HTTPS error."""
+    from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
+
+    # http:// target is cross-origin (scheme + host differ); the bearer policy
+    # must forward it unchanged rather than raising the HTTPS-only error.
+    client = _RedirectingClient("http://other.example.org/next")
+    cred = _StaticCredential()
+    policy = BearerTokenPolicy(cred, "scope-a")
+    with Pipeline(client, policies=[RedirectPolicy(), policy]) as p:
+        response = p.run(_request(), DispatchContext(_instr("0" * 15 + "33")))
+    assert response.status is Status.OK
+    assert "authorization" not in client.calls[1].headers
+
+
 class _SlowCredential:
     """TokenCredential whose token fetch is slow — exercises concurrent refresh."""
 
@@ -248,15 +325,20 @@ def test_bearer_token_policy_serializes_concurrent_refresh() -> None:
 
     trace_ids = [f"{i:032x}" for i in range(1, 9)]
 
-    def _send(trace: str) -> None:
-        with Pipeline(client, policies=[policy]) as p:
+    # A single pipeline (and thus a single policy instance, whose lock and
+    # cache serialize the refresh) is shared across the worker threads. The
+    # pipeline run is concurrency-safe; reusing one policy across separately
+    # constructed pipelines is not — each Policy is owned by one pipeline.
+    with Pipeline(client, policies=[policy]) as p:
+
+        def _send(trace: str) -> None:
             p.run(_request(), DispatchContext(_instr(trace)))
 
-    threads = [threading.Thread(target=_send, args=(t,)) for t in trace_ids]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+        threads = [threading.Thread(target=_send, args=(t,)) for t in trace_ids]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
     assert cred.calls == 1
 
