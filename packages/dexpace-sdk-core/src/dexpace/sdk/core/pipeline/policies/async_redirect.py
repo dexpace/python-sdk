@@ -3,7 +3,7 @@
 
 """Async twin of ``RedirectPolicy``.
 
-Mirrors :class:`RedirectPolicy` exactly — same status-code matrix, same
+Mirrors `RedirectPolicy` exactly — same status-code matrix, same
 credential stripping, same loop guard — but ``send`` is ``async`` and
 operates on ``AsyncResponse``. The per-hop decision helpers are shared via
 delegation to a wrapped sync ``RedirectPolicy`` instance.
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 class AsyncRedirectPolicy(AsyncPolicy):
     """Async redirect policy.
 
-    Reuses :class:`RedirectPolicy` for configuration and per-hop request
+    Reuses `RedirectPolicy` for configuration and per-hop request
     construction (status-code matrix, credential stripping, body replay
     check). Only the dispatch loop is awaited — ``self.next.send`` is the
     async chain head.
@@ -75,7 +75,14 @@ class AsyncRedirectPolicy(AsyncPolicy):
             location = response.headers.get("Location")
             if location is None or not location.strip():
                 return response
-            next_request = cfg._build_next_request(current_request, status, location)
+            try:
+                next_request = cfg._build_next_request(current_request, status, location)
+            except RuntimeError:
+                # A body-preserving redirect with a non-replayable body cannot
+                # be reissued. Close the in-hand 3xx response before the error
+                # escapes so the connection is not leaked.
+                await response.close()
+                raise
             if next_request is None:
                 return response
             next_key = str(next_request.url)

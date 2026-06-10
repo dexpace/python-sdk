@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 import pytest
 
@@ -14,7 +14,7 @@ from dexpace.sdk.core.http.common import Protocol, Url
 from dexpace.sdk.core.http.context import DispatchContext
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.request.request_body import RequestBody
-from dexpace.sdk.core.http.response import Response, Status
+from dexpace.sdk.core.http.response import Response, ResponseBody, Status
 from dexpace.sdk.core.instrumentation import (
     InstrumentationContext,
     SpanId,
@@ -52,20 +52,44 @@ def _request(
     return req
 
 
+class _TrackingBody(ResponseBody):
+    """Response body that records whether ``close`` was called."""
+
+    __slots__ = ("closed",)
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def media_type(self) -> None:
+        return None
+
+    def content_length(self) -> int:
+        return 0
+
+    def iter_bytes(self, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
+        self.close()
+        return iter(())
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class _Hop:
     """One scripted transport response: status + Location header."""
 
-    __slots__ = ("extra_headers", "location", "status")
+    __slots__ = ("body", "extra_headers", "location", "status")
 
     def __init__(
         self,
         status: Status,
         location: str | None = None,
         extra_headers: tuple[tuple[str, str], ...] = (),
+        body: ResponseBody | None = None,
     ) -> None:
         self.status = status
         self.location = location
         self.extra_headers = extra_headers
+        self.body = body
 
 
 class _ScriptedClient(HttpClient):
@@ -79,7 +103,12 @@ class _ScriptedClient(HttpClient):
         idx = len(self.requests)
         self.requests.append(request)
         hop = self._hops[idx]
-        response = Response(request=request, protocol=Protocol.HTTP_1_1, status=hop.status)
+        response = Response(
+            request=request,
+            protocol=Protocol.HTTP_1_1,
+            status=hop.status,
+            body=hop.body,
+        )
         if hop.location is not None:
             response = response.with_header("Location", hop.location)
         for name, value in hop.extra_headers:
@@ -178,6 +207,30 @@ class TestStatusCodeMatrix:
         )
         with pytest.raises(RuntimeError):
             _run(client, policy, request)
+
+    def test_307_non_replayable_body_closes_intermediate_response(self) -> None:
+        # The 3xx hop carries a body; when the body-preserving rebuild raises
+        # because the request body is single-use, the in-hand 307 response must
+        # be closed before the RuntimeError propagates — otherwise the
+        # connection leaks.
+        tracking_body = _TrackingBody()
+        body = RequestBody.from_iter(iter([b"chunk"]))
+        request = _request(method=Method.POST, body=body)
+        client = _ScriptedClient(
+            [
+                _Hop(
+                    Status.TEMPORARY_REDIRECT,
+                    "https://example.com/new",
+                    body=tracking_body,
+                ),
+            ],
+        )
+        policy = RedirectPolicy(
+            allowed_methods=frozenset({Method.GET, Method.HEAD, Method.POST}),
+        )
+        with pytest.raises(RuntimeError):
+            _run(client, policy, request)
+        assert tracking_body.closed
 
     def test_308_follows_with_original_method_and_body(self) -> None:
         body = RequestBody.from_bytes(b"payload")

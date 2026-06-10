@@ -19,6 +19,7 @@ from dexpace.sdk.core.pipeline.async_policy import AsyncPolicy
 from dexpace.sdk.core.pipeline.policies.async_retry import AsyncRetryPolicy
 
 if TYPE_CHECKING:
+    from dexpace.sdk.core.http.context.call_context import CallContext
     from dexpace.sdk.core.http.request.request import Request
     from dexpace.sdk.core.http.response.async_response import AsyncResponse
     from dexpace.sdk.core.pipeline.context import PipelineContext
@@ -83,3 +84,16 @@ def test_from_pipeline_round_trip(async_transport: _AsyncStubTransport) -> None:
     )
     rebuilt = AsyncStagedPipelineBuilder.from_pipeline(original).build()
     assert isinstance(rebuilt, AsyncPipeline)
+
+
+def test_from_pipeline_sansio_step_raises_value_error(
+    async_transport: _AsyncStubTransport,
+) -> None:
+    # A bare callable becomes an internal SansIO runner with no STAGE.
+    # from_pipeline must surface a clear ValueError, not a raw AttributeError.
+    def stamp(request: Request, ctx: CallContext) -> Request:
+        return request
+
+    original = AsyncPipeline(async_transport, policies=[stamp])
+    with pytest.raises(ValueError, match="SansIO"):
+        AsyncStagedPipelineBuilder.from_pipeline(original)

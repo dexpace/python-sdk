@@ -142,7 +142,14 @@ class RedirectPolicy(Policy):
             location = response.headers.get("Location")
             if location is None or not location.strip():
                 return response
-            next_request = self._build_next_request(current_request, status, location)
+            try:
+                next_request = self._build_next_request(current_request, status, location)
+            except RuntimeError:
+                # A body-preserving redirect with a non-replayable body cannot
+                # be reissued. Close the in-hand 3xx response before the error
+                # escapes so the connection is not leaked.
+                response.close()
+                raise
             if next_request is None:
                 return response
             next_key = str(next_request.url)

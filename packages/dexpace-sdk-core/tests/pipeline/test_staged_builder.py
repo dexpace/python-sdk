@@ -15,6 +15,7 @@ from dexpace.sdk.core.pipeline.policies.retry import RetryPolicy
 from dexpace.sdk.core.pipeline.policies.tracing_policy import TracingPolicy
 
 if TYPE_CHECKING:
+    from dexpace.sdk.core.http.context.call_context import CallContext
     from dexpace.sdk.core.http.request.request import Request
     from dexpace.sdk.core.http.response.response import Response
     from dexpace.sdk.core.pipeline.context import PipelineContext
@@ -194,6 +195,16 @@ class TestFromPipeline:
             policies=[LoggingPolicy(), RetryPolicy()],
         )
         with pytest.raises(ValueError, match="non-decreasing stage order"):
+            StagedPipelineBuilder.from_pipeline(original)
+
+    def test_sansio_step_raises_value_error(self, transport: _StubTransport) -> None:
+        # A bare callable becomes an internal SansIO runner with no STAGE.
+        # from_pipeline must surface a clear ValueError, not a raw AttributeError.
+        def stamp(request: Request, ctx: CallContext) -> Request:
+            return request
+
+        original = Pipeline(transport, policies=[stamp])
+        with pytest.raises(ValueError, match="SansIO"):
             StagedPipelineBuilder.from_pipeline(original)
 
 

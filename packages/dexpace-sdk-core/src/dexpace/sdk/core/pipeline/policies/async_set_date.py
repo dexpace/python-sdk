@@ -1,7 +1,7 @@
 # Copyright (c) 2026 dexpace and Omar Aljarrah.
 # Licensed under the MIT License. See LICENSE.md in the repository root for details.
 
-"""Async twin of :class:`SetDatePolicy`."""
+"""Async twin of `SetDatePolicy`."""
 
 from __future__ import annotations
 
@@ -19,17 +19,17 @@ if TYPE_CHECKING:
 
 
 class AsyncSetDatePolicy(AsyncPolicy):
-    """Async variant of :class:`SetDatePolicy`.
+    """Async variant of `SetDatePolicy`.
 
     The clock reading itself is synchronous (``AsyncClock.now`` returns a
-    plain float), so the body of :meth:`send` is identical to the sync
+    plain float), so the body of `send` is identical to the sync
     twin apart from the ``await`` on the downstream send.
 
-    The policy is placed at :attr:`Stage.POST_RETRY` so each retry
+    The policy is placed at `Stage.POST_RETRY` so each retry
     attempt receives a fresh timestamp.
 
     Attributes:
-        STAGE: Pinned to :attr:`Stage.POST_RETRY` at the type level so
+        STAGE: Pinned to `Stage.POST_RETRY` at the type level so
             mis-slotting is caught by ``mypy``.
     """
 
@@ -41,7 +41,7 @@ class AsyncSetDatePolicy(AsyncPolicy):
 
         Args:
             clock: Source of wall-clock time. Defaults to the process-wide
-                :data:`ASYNC_SYSTEM_CLOCK`; tests substitute a deterministic
+                `ASYNC_SYSTEM_CLOCK`; tests substitute a deterministic
                 fake.
         """
         self._clock = clock

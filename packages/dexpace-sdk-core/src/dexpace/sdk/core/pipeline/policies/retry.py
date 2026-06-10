@@ -22,7 +22,6 @@ from __future__ import annotations
 import logging
 import random
 import re
-import time
 from collections.abc import Iterable
 from email.utils import parsedate_to_datetime
 from enum import StrEnum
@@ -116,8 +115,10 @@ class RetryPolicy(Policy):
         retry_mode: ``EXPONENTIAL`` or ``FIXED`` (the latter sleeps
             ``backoff_factor`` between every attempt).
         timeout: Absolute time budget for the entire chain, in seconds.
-        method_allowlist: HTTP methods that get full retry semantics.
-            POST and PATCH are retried only on 500/503/504.
+        method_allowlist: HTTP methods that get full retry semantics on any
+            code in ``retry_on_status_codes``. POST and PATCH are special-cased
+            and unconditionally limited to status retries on 500/503/504 — they
+            cannot be widened by adding them to this allowlist.
         retry_on_status_codes: Status codes that trigger a retry.
         respect_retry_after: When ``True``, sleep for the server-supplied
             delay (``Retry-After`` header in seconds/HTTP-date, or an
@@ -152,6 +153,25 @@ class RetryPolicy(Policy):
     """
 
     STAGE = Stage.RETRY
+
+    __slots__ = (
+        "_clock",
+        "_full_jitter",
+        "_jitter",
+        "_rand",
+        "backoff_factor",
+        "backoff_max",
+        "connect_retries",
+        "method_allowlist",
+        "read_retries",
+        "respect_retry_after",
+        "retry_after_max",
+        "retry_mode",
+        "retry_on_status_codes",
+        "status_retries",
+        "timeout",
+        "total_retries",
+    )
 
     def __init__(
         self,
@@ -210,19 +230,6 @@ class RetryPolicy(Policy):
             tracer.attempt_started(len(history))
             try:
                 response = self.next.send(request, ctx)
-                if not self._is_retry(settings, request, response):
-                    ctx.data["retry_history"] = tuple(history)
-                    return response
-                history.append(RequestHistory(request=request, response=response))
-                if not self._decrement_status(settings):
-                    tracer.attempt_retries_exhausted()
-                    ctx.data["retry_history"] = tuple(history)
-                    return response
-                ctx.data["retry_count"] = len(history)
-                delay = self._delay_for(settings, response)
-                tracer.attempt_failed(_StatusRetryError(int(response.status)), delay)
-                self._sleep_bounded(delay, absolute_deadline)
-                continue
             except ClientAuthenticationError:
                 raise
             except SdkError as err:
@@ -234,9 +241,28 @@ class RetryPolicy(Policy):
                 ctx.data["retry_count"] = len(history)
                 delay = self._delay_for(settings, None)
                 tracer.attempt_failed(err, delay)
+                # Sleep outside the try so a deadline crossed during the
+                # backoff raises ``ServiceResponseTimeoutError`` straight to
+                # the caller instead of being swallowed by ``except SdkError``.
                 self._sleep_bounded(delay, absolute_deadline)
                 _LOGGER.debug("retrying after %s: %s", type(err).__name__, err)
                 continue
+            if not self._is_retry(settings, request, response):
+                ctx.data["retry_history"] = tuple(history)
+                return response
+            history.append(RequestHistory(request=request, response=response))
+            if not self._decrement_status(settings):
+                tracer.attempt_retries_exhausted()
+                ctx.data["retry_history"] = tuple(history)
+                return response
+            ctx.data["retry_count"] = len(history)
+            delay = self._delay_for(settings, response)
+            tracer.attempt_failed(_StatusRetryError(int(response.status)), delay)
+            # The intermediate response is not handed back to the caller, so
+            # close it to release the pooled connection before sleeping. The
+            # return branches above keep the response open — the caller owns it.
+            response.close()
+            self._sleep_bounded(delay, absolute_deadline)
 
     # ----- configuration --------------------------------------------------
 
@@ -359,12 +385,13 @@ class RetryPolicy(Policy):
         Returns:
             Seconds to wait, or ``None`` when neither header is present.
         """
-        retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+        now = self._clock.now()
+        retry_after = _parse_retry_after(response.headers.get("Retry-After"), now)
         if retry_after is not None:
             return min(retry_after, self.retry_after_max)
         reset = _parse_rate_limit_reset(
             response.headers.get(_RATE_LIMIT_RESET_HEADER),
-            self._clock.now(),
+            now,
         )
         if reset is None:
             return None
@@ -435,11 +462,14 @@ class _StatusRetryError(Exception):
 _RETRY_AFTER_DELTA_PATTERN = re.compile(r"^\s*\d+(\.\d+)?\s*$")
 
 
-def _parse_retry_after(value: str | None) -> float | None:
+def _parse_retry_after(value: str | None, now: float) -> float | None:
     """Parse a ``Retry-After`` header value (delta-seconds or HTTP-date).
 
     Args:
         value: Raw header value. ``None`` returns ``None`` directly.
+        now: Current wall-clock time, in seconds since the epoch, used to
+            convert an HTTP-date into a delay. Injected so the value is
+            deterministic in tests.
 
     Returns:
         Seconds to wait (>= 0), or ``None`` when ``value`` is missing or
@@ -455,7 +485,7 @@ def _parse_retry_after(value: str | None) -> float | None:
         return None
     if when is None:
         return None
-    delta = when.timestamp() - time.time()
+    delta = when.timestamp() - now
     return max(0.0, delta)
 
 

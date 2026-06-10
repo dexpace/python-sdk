@@ -169,24 +169,37 @@ class TestRetryOnError:
 
 class TestRetryAfterHeader:
     def test_parse_delta_seconds(self) -> None:
-        assert _parse_retry_after("5") == pytest.approx(5.0)
-        assert _parse_retry_after("0") == pytest.approx(0.0)
-        assert _parse_retry_after("0.5") == pytest.approx(0.5)
+        assert _parse_retry_after("5", now=0.0) == pytest.approx(5.0)
+        assert _parse_retry_after("0", now=0.0) == pytest.approx(0.0)
+        assert _parse_retry_after("0.5", now=0.0) == pytest.approx(0.5)
 
     def test_parse_http_date_future(self) -> None:
         # Far-future date should be a positive delta.
-        result = _parse_retry_after("Sun, 06 Nov 2099 08:49:37 GMT")
+        result = _parse_retry_after("Sun, 06 Nov 2099 08:49:37 GMT", now=0.0)
         assert result is not None
         assert result > 0
 
     def test_parse_http_date_past_clamps_to_zero(self) -> None:
-        result = _parse_retry_after("Mon, 01 Jan 1990 00:00:00 GMT")
+        # ``now`` is well past the 1990 header instant, so the delta is
+        # negative and clamps to zero.
+        result = _parse_retry_after("Mon, 01 Jan 1990 00:00:00 GMT", now=2_000_000_000.0)
         assert result == pytest.approx(0.0)
 
+    def test_parse_http_date_uses_injected_now(self) -> None:
+        # The HTTP-date branch computes ``when.timestamp() - now`` from the
+        # injected clock, not the wall clock. 2000-01-01T00:00:00Z is epoch
+        # 946684800; with ``now`` set 60s before it, the delay is exactly 60s.
+        epoch_2000 = 946_684_800.0
+        result = _parse_retry_after(
+            "Sat, 01 Jan 2000 00:00:00 GMT",
+            now=epoch_2000 - 60.0,
+        )
+        assert result == pytest.approx(60.0)
+
     def test_parse_invalid_returns_none(self) -> None:
-        assert _parse_retry_after("not-a-date") is None
-        assert _parse_retry_after("") is None
-        assert _parse_retry_after(None) is None
+        assert _parse_retry_after("not-a-date", now=0.0) is None
+        assert _parse_retry_after("", now=0.0) is None
+        assert _parse_retry_after(None, now=0.0) is None
 
     def test_respected_during_retry(self) -> None:
         sleeps: list[float] = []
@@ -204,6 +217,26 @@ class TestRetryAfterHeader:
         with Pipeline(client, policies=[retry]) as p:
             p.run(_get(), DispatchContext(_instr("0" * 16 + "a")))
         assert sleeps and sleeps[0] == pytest.approx(2.0)
+
+    def test_http_date_uses_injected_clock_not_wall_clock(self) -> None:
+        # An HTTP-date ``Retry-After`` must be measured against the injected
+        # clock's wall-time. The FakeClock starts 30s before the header's
+        # instant, so the policy sleeps exactly 30s — deterministic regardless
+        # of the real wall clock.
+        epoch_2000 = 946_684_800.0
+        clock = FakeClock(start=epoch_2000 - 30.0)
+        client = _ScriptedClient(
+            [Status.SERVICE_UNAVAILABLE, Status.OK],
+            retry_after="Sat, 01 Jan 2000 00:00:00 GMT",
+        )
+        retry = RetryPolicy(clock=clock)
+        with Pipeline(client, policies=[retry]) as p:
+            response = p.run(_get(), DispatchContext(_instr("0" * 16 + "f1")))
+        assert response.status is Status.OK
+        # Wall clock advanced by the slept 30s (FakeClock.sleep moves both).
+        # Absolute tolerance: a relative approx at this magnitude (~946s band)
+        # would mask a clock that never advanced.
+        assert clock.monotonic() == pytest.approx(epoch_2000, abs=1.0)
 
 
 class TestRetryHistory:

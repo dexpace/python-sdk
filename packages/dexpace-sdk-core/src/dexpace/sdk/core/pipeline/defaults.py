@@ -41,7 +41,7 @@ def default_pipeline(
     logging: LoggingPolicy | None = None,
     tracing: TracingPolicy | None = None,
 ) -> StagedPipelineBuilder:
-    """Pre-configured :class:`StagedPipelineBuilder` with the canonical stack.
+    """Pre-configured `StagedPipelineBuilder` with the canonical stack.
 
     Wires the policies that most consumers want by default in the order their
     stages dictate: redirect → idempotency → retry → set-date →
@@ -55,21 +55,21 @@ def default_pipeline(
 
     Args:
         client: Terminal HTTP transport.
-        redirect: Override for :class:`RedirectPolicy`. ``None`` uses defaults.
-        idempotency: Override for :class:`IdempotencyPolicy`. ``None`` uses
+        redirect: Override for `RedirectPolicy`. ``None`` uses defaults.
+        idempotency: Override for `IdempotencyPolicy`. ``None`` uses
             defaults.
-        retry: Override for :class:`RetryPolicy`. ``None`` uses defaults.
-        set_date: Override for :class:`SetDatePolicy`. ``None`` uses defaults.
-        client_identity: Override for :class:`ClientIdentityPolicy`. ``None``
+        retry: Override for `RetryPolicy`. ``None`` uses defaults.
+        set_date: Override for `SetDatePolicy`. ``None`` uses defaults.
+        client_identity: Override for `ClientIdentityPolicy`. ``None``
             uses defaults.
         auth: Optional authentication policy (``BearerTokenPolicy``,
             ``BasicAuthPolicy``, ``KeyCredentialPolicy``, etc.). No default —
             requests pass without authentication when this is ``None``.
-        logging: Override for :class:`LoggingPolicy`. ``None`` uses defaults.
-        tracing: Override for :class:`TracingPolicy`. ``None`` uses defaults.
+        logging: Override for `LoggingPolicy`. ``None`` uses defaults.
+        tracing: Override for `TracingPolicy`. ``None`` uses defaults.
 
     Returns:
-        A :class:`StagedPipelineBuilder` ready for further customisation or
+        A `StagedPipelineBuilder` ready for further customisation or
         immediate ``.build()``.
     """
     builder = StagedPipelineBuilder(client)
@@ -95,7 +95,7 @@ def default_async_pipeline(
     client_identity: AsyncClientIdentityPolicy | None = None,
     auth: AsyncPolicy | None = None,
 ) -> AsyncStagedPipelineBuilder:
-    """Async twin of :func:`default_pipeline`.
+    """Async twin of `default_pipeline`.
 
     Mirrors the sync version's stack minus logging/tracing, which currently
     only ship as sync policies. Async-side observability lives on the caller's

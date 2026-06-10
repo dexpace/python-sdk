@@ -94,12 +94,18 @@ def test_retry_options_preserved_in_ctx_options() -> None:
 
 
 def test_async_transport_runner_promotes_context() -> None:
-    """Fix #6: the async pipeline records the ExchangeContext after the call."""
+    """Fix #6: the async transport runner records the ExchangeContext.
+
+    The promotion is observed while the call is in flight — once
+    ``AsyncPipeline.run`` returns, the entry is evicted to keep the store from
+    growing without bound across calls with distinct trace ids.
+    """
     import asyncio
 
     from dexpace.sdk.core.client.async_http_client import AsyncHttpClient
+    from dexpace.sdk.core.http.context import ExchangeContext
     from dexpace.sdk.core.http.response import AsyncResponse
-    from dexpace.sdk.core.pipeline import AsyncPipeline
+    from dexpace.sdk.core.pipeline import AsyncPipeline, AsyncPolicy, PipelineContext
 
     class _Client(AsyncHttpClient):
         async def execute(self, request: Request) -> AsyncResponse:
@@ -110,14 +116,20 @@ def test_async_transport_runner_promotes_context() -> None:
             )
 
     instr = _instr("0" * 16 + "3")
+    seen: list[object] = []
+
+    class _Observer(AsyncPolicy):
+        async def send(self, request: Request, ctx: PipelineContext) -> AsyncResponse:
+            response = await self.next.send(request, ctx)
+            seen.append(ContextStore.get(instr.trace_id.value))
+            return response
 
     async def run() -> None:
-        async with AsyncPipeline(_Client()) as pipe:
+        async with AsyncPipeline(_Client(), policies=[_Observer()]) as pipe:
             await pipe.run(_get(), DispatchContext(instr))
 
     asyncio.run(run())
-    stored = ContextStore.get(instr.trace_id.value)
-    # The exchange context is the latest snapshot in the store.
-    from dexpace.sdk.core.http.context import ExchangeContext
-
-    assert isinstance(stored, ExchangeContext)
+    # The exchange context was the latest snapshot while the call was live.
+    assert isinstance(seen[0], ExchangeContext)
+    # Eviction-on-completion clears the entry afterwards.
+    assert ContextStore.get(instr.trace_id.value) is None

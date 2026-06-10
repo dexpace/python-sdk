@@ -9,7 +9,7 @@ import pytest
 
 from dexpace.sdk.core.client.async_http_client import AsyncHttpClient
 from dexpace.sdk.core.errors import PipelineAbortedError, ServiceRequestError
-from dexpace.sdk.core.http.common import Protocol, Url
+from dexpace.sdk.core.http.common import Headers, Protocol, Url
 from dexpace.sdk.core.http.context import CallContext, DispatchContext
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.request.request_body import RequestBody
@@ -62,7 +62,7 @@ class _StubAsyncClient(AsyncHttpClient):
 
 
 class _AsyncFakeClock:
-    """Deterministic ``AsyncClock`` mirror of :class:`FakeClock`.
+    """Deterministic ``AsyncClock`` mirror of `FakeClock`.
 
     Advances an internal counter on ``sleep`` (clamped at zero) without
     yielding to the event loop or accruing real wall time. Used by every
@@ -178,6 +178,36 @@ async def test_async_retry_on_503() -> None:
         response = await p.run(_request(), DispatchContext(_instr("0" * 16 + "7")))
     assert response.is_success
     assert client.attempts == 2
+
+
+async def test_async_http_date_retry_after_uses_injected_clock() -> None:
+    # Parity with the sync test_http_date_uses_injected_clock_not_wall_clock:
+    # an HTTP-date ``Retry-After`` must be measured against the injected async
+    # clock, not real wall time. The fake clock starts 30s before the header's
+    # instant, so the policy sleeps exactly 30s and the clock lands on it.
+    epoch_2000 = 946_684_800.0
+
+    class _DatedClient(AsyncHttpClient):
+        def __init__(self) -> None:
+            self._statuses = iter([Status.SERVICE_UNAVAILABLE, Status.OK])
+
+        async def execute(self, request: Request) -> AsyncResponse:
+            return AsyncResponse(
+                request=request,
+                protocol=Protocol.HTTP_1_1,
+                status=next(self._statuses),
+                headers=Headers([("Retry-After", "Sat, 01 Jan 2000 00:00:00 GMT")]),
+            )
+
+    clock = _AsyncFakeClock(start=epoch_2000 - 30.0)
+    retry = AsyncRetryPolicy(clock=clock)
+    async with AsyncPipeline(_DatedClient(), policies=[retry]) as p:
+        response = await p.run(_request(), DispatchContext(_instr("0" * 16 + "d1")))
+    assert response.is_success
+    # Absolute tolerance: without the injected clock the wall-clock-based delay
+    # would be ~0 and the clock would stay 30s short, which a relative approx
+    # (~946s band at this magnitude) would wrongly accept.
+    assert clock.monotonic() == pytest.approx(epoch_2000, abs=1.0)
 
 
 async def test_async_retry_with_single_use_body_auto_replays() -> None:

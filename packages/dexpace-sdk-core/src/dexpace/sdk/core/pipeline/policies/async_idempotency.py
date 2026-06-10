@@ -1,7 +1,7 @@
 # Copyright (c) 2026 dexpace and Omar Aljarrah.
 # Licensed under the MIT License. See LICENSE.md in the repository root for details.
 
-"""Async twin of :class:`IdempotencyPolicy`."""
+"""Async twin of `IdempotencyPolicy`."""
 
 from __future__ import annotations
 
@@ -25,16 +25,16 @@ _DEFAULT_METHODS = frozenset({Method.POST, Method.PUT, Method.PATCH})
 
 
 class AsyncIdempotencyPolicy(AsyncPolicy):
-    """Async variant of :class:`IdempotencyPolicy`.
+    """Async variant of `IdempotencyPolicy`.
 
     Behaviour mirrors the sync twin: a key is minted once at
-    :attr:`Stage.POST_REDIRECT` (outside the retry wrapper) and reused across
+    `Stage.POST_REDIRECT` (outside the retry wrapper) and reused across
     every retry of the same write request, and a caller-supplied header is left
-    untouched. Key generation is synchronous, so :meth:`send` differs from the
+    untouched. Key generation is synchronous, so `send` differs from the
     sync version only in the ``await`` on the downstream call.
 
     Attributes:
-        STAGE: Pinned to :attr:`Stage.POST_REDIRECT` at the type level so
+        STAGE: Pinned to `Stage.POST_REDIRECT` at the type level so
             mis-slotting is caught by ``mypy``.
     """
 
