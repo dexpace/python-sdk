@@ -29,7 +29,7 @@ def _clean_context_store() -> Iterator[None]:
 
 
 class FakeClock:
-    """Deterministic :class:`~dexpace.sdk.core.util.Clock` for unit tests.
+    """Deterministic `Clock` for unit tests.
 
     Wall-clock (``now``) and monotonic readings are tracked independently so
     tests can model the real divergence between them (system clock jumps vs
@@ -72,5 +72,5 @@ class FakeClock:
 
 @pytest.fixture
 def fake_clock() -> FakeClock:
-    """Provide a fresh :class:`FakeClock` starting at ``t=0``."""
+    """Provide a fresh `FakeClock` starting at ``t=0``."""
     return FakeClock()
