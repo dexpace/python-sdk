@@ -14,6 +14,11 @@ Exception mapping (``requests`` -> SDK):
 - ``requests.ReadTimeout`` -> `ServiceResponseTimeoutError`
 - ``requests.ConnectionError`` -> `ServiceRequestError`
 - ``requests.RequestException`` (catch-all) -> `ServiceRequestError`
+
+Failures that surface later, while the response body is being streamed, are
+classified as response-side errors (the request was already sent): a
+``requests.Timeout`` -> `ServiceResponseTimeoutError` and any other
+``requests.RequestException`` -> `ServiceResponseError`.
 """
 
 from __future__ import annotations
@@ -184,16 +189,15 @@ class _IterContentStream:
         if self._iter is None:
             self._iter = self._response.iter_content(chunk_size=_CHUNK_SIZE)
         if size < 0:
-            for chunk in self._iter:
+            while (chunk := self._next_chunk()) is not None:
                 if chunk:
                     self._buf.extend(chunk)
             out = bytes(self._buf)
             self._buf.clear()
             return out
         while len(self._buf) < size:
-            try:
-                chunk = next(self._iter)
-            except StopIteration:
+            chunk = self._next_chunk()
+            if chunk is None:
                 break
             if chunk:
                 self._buf.extend(chunk)
@@ -203,6 +207,24 @@ class _IterContentStream:
         out = bytes(self._buf[:take])
         del self._buf[:take]
         return out
+
+    def _next_chunk(self) -> bytes | None:
+        """Pull the next body chunk, mapping read-phase failures to SDK errors.
+
+        Returns the chunk, or ``None`` at end of stream. The request is already
+        on the wire, so a read-phase failure is a response-side error: a
+        ``requests`` read timeout becomes ``ServiceResponseTimeoutError`` and
+        any other transport failure mid-body becomes ``ServiceResponseError``.
+        """
+        assert self._iter is not None
+        try:
+            return next(self._iter)
+        except StopIteration:
+            return None
+        except requests.Timeout as err:
+            raise ServiceResponseTimeoutError("Response body read timed out", error=err) from err
+        except requests.RequestException as err:
+            raise ServiceResponseError(f"Response body read failed: {err}", error=err) from err
 
     def close(self) -> None:
         if self._closed:

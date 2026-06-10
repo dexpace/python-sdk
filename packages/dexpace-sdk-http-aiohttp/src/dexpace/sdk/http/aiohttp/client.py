@@ -53,8 +53,10 @@ class AiohttpHttpClient:
     components; the caller is then responsible for closing it.
 
     Attributes:
-        timeout: Total request timeout in seconds. Applied via
-            ``aiohttp.ClientTimeout(total=...)``. ``None`` disables the
+        timeout: Per-phase request timeout in seconds, applied to both the
+            connect and the socket-read phases via
+            ``aiohttp.ClientTimeout(sock_connect=..., sock_read=...)`` so the
+            two phases raise distinguishable exceptions. ``None`` disables the
             timeout entirely (not recommended).
     """
 
@@ -77,8 +79,15 @@ class AiohttpHttpClient:
         if self._closed:
             raise ServiceRequestError("AiohttpHttpClient is closed")
         session = await self._ensure_session()
+        # Per-phase budgets (not a single ``total=``) so aiohttp raises the
+        # distinguishable ``ConnectionTimeoutError`` for a connect-phase stall
+        # and ``SocketTimeoutError`` for a read-phase stall. This keeps the
+        # connect -> request-error / read -> response-error split consistent
+        # with the other transports, which all use per-operation timeouts.
         timeout_cfg = (
-            aiohttp.ClientTimeout(total=self.timeout) if self.timeout is not None else None
+            aiohttp.ClientTimeout(sock_connect=self.timeout, sock_read=self.timeout)
+            if self.timeout is not None
+            else None
         )
         data = _payload(request.body)
         try:

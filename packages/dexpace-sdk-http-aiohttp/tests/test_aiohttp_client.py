@@ -175,7 +175,7 @@ async def test_content_length_extracted_from_response(base_url: str) -> None:
             assert response.body.content_length() > 0
 
 
-# ----------------------------------------------------------- unknown status (M21)
+# ----------------------------------------------------------------- unknown status
 
 
 class _FakeAioResponse:
@@ -201,7 +201,7 @@ def test_unknown_status_releases_connection_and_raises() -> None:
     assert "520" in str(exc_info.value)
 
 
-# ----------------------------------------------------------- post-close (M22)
+# ----------------------------------------------------------------- post-close
 
 
 async def test_execute_after_aclose_raises() -> None:
@@ -221,18 +221,17 @@ async def test_aclose_is_idempotent() -> None:
         await client.execute(Request(method=Method.GET, url=Url.parse("http://example.test/")))
 
 
-# ----------------------------------------------------- connect timeout (L36)
+# ----------------------------------------------------------- connect timeout
 
 
 class _ConnectTimeoutSession:
     """Stub session whose ``request`` raises aiohttp's connect-phase timeout.
 
-    aiohttp only surfaces ``ConnectionTimeoutError`` for a connect-scoped
-    timeout (``connect=`` / ``sock_connect=``); a plain ``total=`` timeout that
-    happens to expire mid-connect raises a bare ``TimeoutError`` instead, which
-    is indistinguishable from a read-phase timeout. We therefore drive the
-    branch directly with the exception aiohttp actually raises for a connect
-    timeout, keeping the test hermetic.
+    aiohttp raises ``ConnectionTimeoutError`` for a connect-scoped timeout
+    (``connect=`` / ``sock_connect=``) and ``SocketTimeoutError`` for a read
+    timeout (``sock_read=``); the client configures both so the two phases stay
+    distinguishable. We drive the connect branch directly with the exception
+    aiohttp raises so the test stays hermetic (no real unreachable-host connect).
     """
 
     def request(self, **_kwargs: object) -> _ConnectTimeoutSession:
@@ -250,8 +249,43 @@ async def test_connect_timeout_maps_to_request_timeout() -> None:
         await client.execute(Request(method=Method.GET, url=Url.parse("http://example.test/")))
 
 
-async def test_total_timeout_maps_to_response_timeout(base_url: str) -> None:
-    """A bare total timeout (read phase) still maps to ServiceResponseTimeoutError."""
+class _CaptureTimeoutSession:
+    """Captures the ``ClientTimeout`` passed to ``request`` then fails the connect."""
+
+    def __init__(self) -> None:
+        self.captured: aiohttp.ClientTimeout | None = None
+
+    def request(
+        self, *, timeout: aiohttp.ClientTimeout, **_kwargs: object
+    ) -> _CaptureTimeoutSession:
+        self.captured = timeout
+        return self
+
+    def __await__(self) -> object:
+        raise aiohttp.ConnectionTimeoutError("connect timed out")
+        yield  # pragma: no cover - makes this an awaitable generator
+
+
+async def test_timeout_configured_per_phase_so_connect_is_distinguishable() -> None:
+    """The client asks aiohttp for per-phase sock_connect/sock_read, not a total budget.
+
+    A total-only budget makes a connect-phase timeout raise a bare
+    ``TimeoutError`` indistinguishable from a read timeout; per-phase config
+    makes connect raise ``ConnectionTimeoutError`` so it maps to a request error.
+    """
+    session = _CaptureTimeoutSession()
+    client = AiohttpHttpClient(timeout=5.0, session=session)  # type: ignore[arg-type]
+    with pytest.raises(ServiceRequestTimeoutError):
+        await client.execute(Request(method=Method.GET, url=Url.parse("http://example.test/")))
+    cfg = session.captured
+    assert cfg is not None
+    assert cfg.sock_connect == 5.0
+    assert cfg.sock_read == 5.0
+    assert cfg.total is None
+
+
+async def test_read_timeout_maps_to_response_timeout(base_url: str) -> None:
+    """A read-phase (sock_read) timeout maps to ServiceResponseTimeoutError."""
     async with AiohttpHttpClient(timeout=0.25) as client:
         with pytest.raises(ServiceResponseTimeoutError):
             await client.execute(Request(method=Method.GET, url=Url.parse(f"{base_url}/slow")))

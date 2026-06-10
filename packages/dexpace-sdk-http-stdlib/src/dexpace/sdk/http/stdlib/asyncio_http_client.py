@@ -114,7 +114,12 @@ class AsyncioHttpClient:
             raise
         except OSError as err:
             # A mid-exchange socket error after a successful connect is a
-            # response-side failure, not a connect failure.
+            # response-side failure, not a connect failure: the request may
+            # already be on the wire, so it is deliberately classified as a
+            # response error (not retry-safe) rather than the request error the
+            # httpx / aiohttp / requests adapters use for their generic
+            # transport bucket. The conservative choice avoids blind-retrying a
+            # potentially-received non-idempotent request.
             raise ServiceResponseError(
                 f"Exchange with {host}:{port} failed: {err}", error=err
             ) from err
