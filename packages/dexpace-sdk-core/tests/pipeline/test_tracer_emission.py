@@ -12,7 +12,11 @@ sequence the policies produced.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
+
+import pytest
+from _pytest.logging import LogCaptureFixture
 
 from dexpace.sdk.core.client.async_http_client import AsyncHttpClient
 from dexpace.sdk.core.client.http_client import HttpClient
@@ -40,6 +44,7 @@ from dexpace.sdk.core.pipeline.policies import (
     OperationTracingPolicy,
     RetryPolicy,
     TracingPolicy,
+    tracing_policy,
 )
 from dexpace.sdk.core.pipeline.policies.async_redirect import AsyncRedirectPolicy
 from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
@@ -693,6 +698,48 @@ class TestAsyncOperationEventsFireOncePerOperation:
             )
         op_events = [name for name in tracer.names() if name.startswith("operation_")]
         assert op_events == []
+
+
+class TestTracingPolicyMisconfigurationWarning:
+    """`TracingPolicy` warns once when a real tracer has no operation bracket.
+
+    The per-operation lifecycle moved to `OperationTracingPolicy`; a real tracer
+    behind a bare `TracingPolicy` would otherwise silently lose
+    operation_started / operation_succeeded / operation_failed.
+    """
+
+    def test_warns_once_when_real_tracer_has_no_operation_bracket(
+        self, caplog: LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(tracing_policy, "_bracket_warning_emitted", False)
+        instr = _instr(_RecordingHttpTracer())
+        caplog.set_level(logging.WARNING)
+        with Pipeline(_OkClient(), policies=[TracingPolicy()]) as p:
+            p.run(_request(), DispatchContext(instr))
+            p.run(_request(), DispatchContext(instr))
+        warns = [r for r in caplog.records if "OperationTracingPolicy" in r.getMessage()]
+        assert len(warns) == 1
+        assert "operation_started" in warns[0].getMessage()
+
+    def test_no_warning_when_operation_bracket_present(
+        self, caplog: LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(tracing_policy, "_bracket_warning_emitted", False)
+        instr = _instr(_RecordingHttpTracer())
+        caplog.set_level(logging.WARNING)
+        with Pipeline(_OkClient(), policies=[OperationTracingPolicy(), TracingPolicy()]) as p:
+            p.run(_request(), DispatchContext(instr))
+        assert not [r for r in caplog.records if "OperationTracingPolicy" in r.getMessage()]
+
+    def test_no_warning_for_noop_tracer(
+        self, caplog: LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No real tracer is installed, so the missing bracket is irrelevant.
+        monkeypatch.setattr(tracing_policy, "_bracket_warning_emitted", False)
+        caplog.set_level(logging.WARNING)
+        with Pipeline(_OkClient(), policies=[TracingPolicy()]) as p:
+            p.run(_request(), DispatchContext.noop())
+        assert not [r for r in caplog.records if "OperationTracingPolicy" in r.getMessage()]
 
 
 # ----- request_sent fires for unknown-length bodies -----------------

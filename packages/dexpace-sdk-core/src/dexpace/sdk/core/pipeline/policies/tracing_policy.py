@@ -38,9 +38,11 @@ machinery is sync-only and has no async counterpart.
 
 from __future__ import annotations
 
+import logging
+import threading
 from typing import TYPE_CHECKING
 
-from ...instrumentation import NOOP_TRACER, Tracer, bind_correlation
+from ...instrumentation import NOOP_HTTP_TRACER, NOOP_TRACER, Tracer, bind_correlation
 from ..policy import Policy
 from ..stage import Stage
 from .redirect import resolve_http_tracer
@@ -51,6 +53,43 @@ if TYPE_CHECKING:
     from ...http.response.response import Response
     from ...instrumentation import HttpTracer, Span
     from ..context import PipelineContext
+
+
+_LOGGER = logging.getLogger(__name__)
+
+#: ``ctx.data`` marker set by `OperationTracingPolicy` to record that the
+#: per-operation lifecycle is being bracketed. `TracingPolicy` reads it to
+#: detect a pipeline that wires the per-attempt policy without the operation
+#: one and warns (once) so the absent lifecycle is not silent.
+_OPERATION_BRACKET_KEY: str = "tracing_operation_bracketed"
+
+_BRACKET_WARNING_LOCK = threading.Lock()
+_bracket_warning_emitted = False
+
+
+def _warn_missing_operation_bracket_once() -> None:
+    """Log, at most once per process, that the operation lifecycle is absent.
+
+    `TracingPolicy` calls this when it runs with a real ``HttpTracer`` but no
+    `OperationTracingPolicy` bracketed the operation, so the per-operation
+    lifecycle never fires. The misconfiguration is static, so the warning fires
+    once; the lock keeps the guard correct under free-threaded CPython rather
+    than relying on the GIL.
+    """
+    global _bracket_warning_emitted
+    if _bracket_warning_emitted:
+        return
+    with _BRACKET_WARNING_LOCK:
+        if _bracket_warning_emitted:
+            return
+        _bracket_warning_emitted = True
+    _LOGGER.warning(
+        "TracingPolicy is running without an OperationTracingPolicy: per-attempt "
+        "spans and per-request events are emitted, but the per-operation HttpTracer "
+        "lifecycle (operation_started / operation_succeeded / operation_failed) is "
+        "not. Add OperationTracingPolicy at Stage.OPERATION; default_pipeline wires "
+        "both."
+    )
 
 
 class OperationTracingPolicy(Policy):
@@ -75,6 +114,7 @@ class OperationTracingPolicy(Policy):
     def send(self, request: Request, ctx: PipelineContext) -> Response:
         if not ctx.options.get("tracing_enabled", True):
             return self.next.send(request, ctx)
+        ctx.data[_OPERATION_BRACKET_KEY] = True
         http_tracer = resolve_http_tracer(ctx)
         http_tracer.operation_started()
         try:
@@ -112,6 +152,10 @@ class TracingPolicy(Policy):
     is emitted by `OperationTracingPolicy`, which brackets the whole call from
     outside the retry / redirect wrappers.
 
+    If a real ``HttpTracer`` is installed but no `OperationTracingPolicy`
+    brackets the operation, this policy logs a one-time warning so the absent
+    per-operation lifecycle is not silent.
+
     Disable per-call by setting ``ctx.options["tracing_enabled"] = False``.
     """
 
@@ -128,6 +172,11 @@ class TracingPolicy(Policy):
         # Share one per-operation tracer with the operation / redirect / retry
         # policies via ``ctx.data`` (whichever policy runs first mints it).
         http_tracer = resolve_http_tracer(ctx)
+        # Warn once if a real tracer is installed but no OperationTracingPolicy
+        # brackets the operation, so the absent per-operation lifecycle is not
+        # silent. A no-op tracer has no consumer, so there is nothing to warn.
+        if http_tracer is not NOOP_HTTP_TRACER and _OPERATION_BRACKET_KEY not in ctx.data:
+            _warn_missing_operation_bracket_once()
         span = self._tracer.start_span(f"HTTP {request.method}", parent=parent)
         _set_request_attributes(span, request)
         with bind_correlation(trace_id=_trace_id(span), span_id=_span_id(span)):

@@ -80,7 +80,9 @@ Changed).
   unaffected. A pipeline assembled by hand that wants the operation lifecycle
   must now add `OperationTracingPolicy` alongside `TracingPolicy` — a bare
   `TracingPolicy` no longer emits `operation_started` / `operation_succeeded` /
-  `operation_failed`.
+  `operation_failed`. So that change is not silent, a `TracingPolicy` that runs
+  with a real `HttpTracer` but no `OperationTracingPolicy` bracketing it logs a
+  one-time warning.
 - **Default pipelines** (`pipeline.defaults`). The standard sync/async stacks now
   assemble the new idempotency and client-identity policies alongside the
   existing retry, redirect, logging, and tracing policies.
