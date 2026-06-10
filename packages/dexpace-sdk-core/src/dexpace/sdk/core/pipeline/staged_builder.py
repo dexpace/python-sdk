@@ -7,8 +7,8 @@ Alternative to the dead-simple ``Pipeline(client, policies=[...])`` list
 constructor. Policies declare their ``STAGE``; the builder slots them into
 stage buckets and at ``build()`` time flattens to a list in stage order.
 
-Pillar stages (`REDIRECT`, `RETRY`, `AUTH`, `LOGGING`, `SERDE`) admit at
-most one policy. A second `append` of a pillar raises by default — use
+Pillar stages (`OPERATION`, `REDIRECT`, `RETRY`, `AUTH`, `LOGGING`, `SERDE`)
+admit at most one policy. A second `append` of a pillar raises by default — use
 ``replace(target, new)`` for explicit swaps or ``append(p, force=True)``
 for the rare legitimate use case (test fixtures, runtime composition).
 """

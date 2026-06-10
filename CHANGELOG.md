@@ -8,13 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 A round of platform improvements to `dexpace-sdk-core`: new optional building
-blocks (typed serialization, webhook verification, pagination, two pipeline
-policies), tightened retry and tracing behaviour, and a batch of correctness
-fixes across bodies, SSE parsing, Digest auth, and error reporting. Most of this
-lands in `core`; the transport adapters additionally get consistent connect- vs
-read-phase timeout classification and tighter resource release. The only removed
-public symbol is the unused `RetryConfig` (see Removed); existing code otherwise
-continues to work without modification.
+blocks (typed serialization, webhook verification, pagination, three pipeline
+policies), tightened retry behaviour, a corrected per-operation tracing
+lifecycle, and a batch of correctness fixes across bodies, SSE parsing, Digest
+auth, and error reporting. Most of this lands in `core`; the transport adapters
+additionally get consistent connect- vs read-phase timeout classification,
+tighter resource release, and a set of edge-case corrections (status-code
+reporting, chunked-framing detection, and content-length under content-encoding).
+The only removed public symbol is the unused `RetryConfig` (see Removed);
+existing code otherwise continues to work without modification — with one
+behavioural note for hand-assembled pipelines (see *Tracing lifecycle* under
+Changed).
 
 ### Added
 
@@ -37,6 +41,13 @@ continues to work without modification.
 - **Client-identity policy** (`pipeline.policies.client_identity`, plus its
   async twin). Sets a consistent `User-Agent` / client-identity header derived
   from the configured application id and SDK version.
+- **Per-operation tracing policy** (`OperationTracingPolicy` in
+  `pipeline.policies.tracing_policy`, with a new outermost `Stage.OPERATION`).
+  Emits the per-operation `HttpTracer` lifecycle (`operation_started`, then
+  exactly one `operation_succeeded` / `operation_failed`) from outside the retry
+  and redirect wrappers, so the reported outcome reflects the final result of
+  the whole call rather than a single attempt or hop. Sync-only, in line with
+  the rest of the tracing stack; the async pipeline carries no tracing.
 - **HTTP tracer** (`instrumentation.http_tracer`). An adapter-style tracer base
   whose per-event methods default to no-ops, so a subclass overrides only the
   events it cares about. Wired through the tracing policy for span emission.
@@ -58,6 +69,15 @@ continues to work without modification.
   cancellation cleanly between attempts.
 - **Tracing and redirect policies** now emit tracer events and carry correlation
   through redirects, with credentials stripped on cross-origin redirects.
+- **Tracing lifecycle** (`pipeline.policies.tracing_policy`). The per-operation
+  `HttpTracer` lifecycle moved out of `TracingPolicy` into the new
+  `OperationTracingPolicy`; `TracingPolicy` now emits only its per-attempt span
+  and the per-request events (`request_sent`, `response_headers_received`,
+  `response_received`). `default_pipeline` wires both, so callers who use it are
+  unaffected. A pipeline assembled by hand that wants the operation lifecycle
+  must now add `OperationTracingPolicy` alongside `TracingPolicy` — a bare
+  `TracingPolicy` no longer emits `operation_started` / `operation_succeeded` /
+  `operation_failed`.
 - **Default pipelines** (`pipeline.defaults`). The standard sync/async stacks now
   assemble the new idempotency and client-identity policies alongside the
   existing retry, redirect, logging, and tracing policies.
@@ -96,6 +116,26 @@ continues to work without modification.
   `async_response_body`). Cancelling an in-flight read now releases the
   underlying resources instead of leaking them, and re-raises `CancelledError`
   after cleanup.
+- **Per-operation tracing outcome** (`pipeline.policies.tracing_policy`). A call
+  retried after a failed first attempt no longer reports `operation_failed` for
+  the discarded attempt (it reports the single `operation_succeeded` it ends on),
+  and a redirect whose later hop fails no longer reports `operation_succeeded`
+  for the earlier 3xx hop. The lifecycle now fires exactly once and reflects the
+  final outcome. See *Tracing lifecycle* under Changed for the API shape.
+- **`Content-Length` under `Content-Encoding`** (`http.stdlib.urllib_http_client`).
+  `UrllibHttpClient` no longer drops a valid `Content-Length` when
+  `Content-Encoding` is present: `http.client` does not decode content codings,
+  so the body it serves is the wire payload whose length the header describes,
+  and the length is now surfaced as-is. (The decompressing requests/httpx/aiohttp
+  adapters still drop it, since they hand back a decoded stream.)
+- **Chunked-framing detection** (`http.stdlib.asyncio_http_client`). The
+  `Transfer-Encoding` check matches the `chunked` coding by token rather than
+  substring, so a coding whose name merely contains `chunked` (e.g. `x-chunked`)
+  is no longer mistaken for chunked framing.
+- **Out-of-range status reporting** (`http.stdlib.urllib_http_client`,
+  `asyncio_http_client`). Both now raise a `ServiceResponseError` worded
+  `Invalid status code: …` for a status outside 100–599, matching the other
+  adapters.
 
 ### Verified
 
@@ -113,6 +153,9 @@ The following were intentionally left out of this round and are **not** included
   errors themselves.
 - **`sendfile` fast-path** — file bodies are streamed via the existing
   `iter_bytes` path; no zero-copy `sendfile` transport optimisation was added.
+- **Async tracing / logging** — the tracing and logging policies (including the
+  new `OperationTracingPolicy`) ship sync-only; `default_async_pipeline` carries
+  no tracing, and async callers handle per-operation observability themselves.
 - **MCP support** — no Model Context Protocol integration is included.
 - **Java SDK items** — the Java counterpart lives in a separate repository and
   was out of scope here.

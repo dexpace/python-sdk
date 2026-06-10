@@ -120,7 +120,7 @@ def test_post_with_body(echo_server: str) -> None:
 class _RedirectHandler(socketserver.StreamRequestHandler):
     """Replies with a 302 pointing at another origin and a small body.
 
-    Pins H1: the transport must NOT follow the redirect itself. If it did,
+    Pins that the transport must NOT follow the redirect itself. If it did,
     the second hop would fail (the target host is unroutable) or the response
     would carry the followed target's status — either way not a 302.
     """
@@ -158,7 +158,7 @@ def redirect_server() -> Iterator[str]:
 
 
 def test_redirect_is_not_followed(redirect_server: str) -> None:
-    # H1: a 302 must surface to the pipeline as a 302 Response, not be
+    # A 302 must surface to the pipeline as a 302 Response, not be
     # transparently followed by the transport (which would also leak the
     # Authorization header cross-origin).
     client = UrllibHttpClient(timeout=2.0)
@@ -340,7 +340,7 @@ def test_content_length_surfaced_under_content_encoding() -> None:
 
 
 def test_read_failure_maps_to_service_response_error() -> None:
-    # M5: a read-phase failure on the raw HTTPResponse must surface as an
+    # A read-phase failure on the raw HTTPResponse must surface as an
     # SdkError, not a bare OSError / IncompleteRead.
     class _BoomResponse(_TrackingResponse):
         def read(self, size: int = -1) -> bytes:

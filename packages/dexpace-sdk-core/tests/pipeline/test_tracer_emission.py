@@ -517,7 +517,7 @@ class TestOperationEventsFireOncePerOperation:
         assert failed == [boom]
 
 
-# ----- request_sent fires for unknown-length bodies (L19) -----------------
+# ----- request_sent fires for unknown-length bodies -----------------
 
 
 class TestRequestSentUnknownLength:
