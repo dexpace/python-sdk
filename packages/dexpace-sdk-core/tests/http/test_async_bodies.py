@@ -143,7 +143,7 @@ async def test_async_request_aiter_bytes_rejects_invalid_chunk_size(
     size: int,
 ) -> None:
     # All three AsyncRequestBody backings must reject a non-positive chunk_size
-    # up front, matching the sync and response-body guard (M9).
+    # up front, matching the sync and response-body guard.
     body = factory()
     with pytest.raises(ValueError, match="chunk_size"):
         async for _ in body.aiter_bytes(size):

@@ -71,7 +71,7 @@ async def test_aiter_bytes_releases_stream_and_propagates_when_cancelled_mid_rea
 
 
 async def test_request_aiter_bytes_releases_stream_and_propagates_when_cancelled() -> None:
-    # M10: the request-side stream body must shield its close just like the
+    # The request-side stream body must shield its close just like the
     # response side, so a cancel mid-read still releases the upstream stream.
     stream = _SlowStream()
     body = AsyncRequestBody.from_async_stream(stream)
