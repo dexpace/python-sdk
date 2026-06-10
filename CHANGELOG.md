@@ -10,9 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 A round of platform improvements to `dexpace-sdk-core`: new optional building
 blocks (typed serialization, webhook verification, pagination, two pipeline
 policies), tightened retry and tracing behaviour, and a batch of correctness
-fixes across bodies, SSE parsing, Digest auth, and error reporting. Everything
-lands in `core`; the transport packages are unchanged. No public symbol was
-removed, so existing code continues to work without modification.
+fixes across bodies, SSE parsing, Digest auth, and error reporting. Most of this
+lands in `core`; the transport adapters additionally get consistent connect- vs
+read-phase timeout classification and tighter resource release. The only removed
+public symbol is the unused `RetryConfig` (see Removed); existing code otherwise
+continues to work without modification.
 
 ### Added
 
@@ -66,6 +68,20 @@ removed, so existing code continues to work without modification.
 - **Error reporting** (`errors.http`). HTTP errors now expose whether they are
   `retryable` and carry a bounded body snapshot for diagnostics, with the
   snapshot capped so an error never holds an unbounded payload.
+- **`HttpRange.suffix`** (`http.common.http_range`) now returns a public
+  `HttpRange` (carrying an `is_suffix` flag) instead of a private helper type,
+  so a `bytes=-N` suffix range composes with `HttpRange.format_many` alongside
+  ordinary ranges.
+- **`CallContext`** (`http.context`) is now an `abc.ABC`. It declares no
+  abstract methods, so existing subclasses are unaffected; the change only
+  prevents the base from being instantiated directly.
+
+### Removed
+
+- **`RetryConfig`** (`pipeline` / `pipeline.step.config`). It was exported but
+  never wired into the retry policy, so it configured nothing; `RetryPolicy`'s
+  constructor is the real configuration surface. Code that imported
+  `RetryConfig` should configure `RetryPolicy` directly.
 
 ### Fixed
 
