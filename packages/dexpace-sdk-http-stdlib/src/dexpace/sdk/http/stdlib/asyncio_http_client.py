@@ -335,7 +335,7 @@ def _parse_status(code: str) -> Status:
     try:
         return Status(int(code))
     except ValueError as err:
-        raise ServiceResponseError(f"Unknown status code: {code}", error=err) from err
+        raise ServiceResponseError(f"Invalid status code: {code}", error=err) from err
 
 
 def _drain_body(body: RequestBody) -> bytes:
@@ -360,8 +360,11 @@ def _is_chunked(headers: Headers) -> bool:
     Inspects every ``Transfer-Encoding`` line — the header may be split across
     multiple lines (e.g. ``gzip`` then ``chunked``), so reading only the first
     value would miss a chunked coding that is not listed first and then parse
-    chunk-framing bytes as the body. Per RFC 9112 §6.1 a response advertising
-    chunked framing cannot be read as a fixed-length body.
+    chunk-framing bytes as the body. Each line is a comma-separated coding
+    list; the coding name (the token before any ``;`` parameters) is matched
+    exactly, so a value that merely contains the substring ``chunked`` (e.g. an
+    ``x-chunked`` coding name) does not trip the check. Per RFC 9112 §6.1 a
+    response advertising chunked framing cannot be read as a fixed-length body.
 
     Args:
         headers: The parsed response headers.
@@ -369,7 +372,11 @@ def _is_chunked(headers: Headers) -> bool:
     Returns:
         ``True`` if any ``Transfer-Encoding`` value names ``chunked``.
     """
-    return any("chunked" in value.lower() for value in headers.values("Transfer-Encoding"))
+    return any(
+        coding.split(";")[0].strip().lower() == "chunked"
+        for value in headers.values("Transfer-Encoding")
+        for coding in value.split(",")
+    )
 
 
 def _content_length(headers: Headers) -> int | None:

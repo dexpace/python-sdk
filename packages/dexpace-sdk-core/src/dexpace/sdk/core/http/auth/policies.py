@@ -14,6 +14,7 @@ from ...pipeline.async_policy import AsyncPolicy
 from ...pipeline.policy import Policy
 from ...pipeline.stage import Stage
 from ...util.clock import ASYNC_SYSTEM_CLOCK, SYSTEM_CLOCK, AsyncClock, Clock
+from ..common.url import _origin
 from .access_token import AccessTokenInfo, TokenRequestOptions
 from .challenge import parse_challenges
 from .challenge_handler import ChallengeHandler
@@ -439,27 +440,7 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         return request.with_header("Authorization", f"{token.token_type} {token.token}")
 
 
-_DEFAULT_PORTS: dict[str, int] = {"https": 443, "http": 80}
 _AUTH_ORIGIN_KEY: str = "_auth_origin"
-
-
-def _origin(url: Url) -> tuple[str, str, int | None]:
-    """Return the ``(scheme, host, port)`` origin tuple for ``url``.
-
-    The scheme and host are lower-cased and the port is resolved to its
-    scheme default (443 for https, 80 for http) when not explicit, so two
-    URLs that differ only in an implied/explicit default port compare equal.
-
-    Args:
-        url: The URL to derive an origin from.
-
-    Returns:
-        A ``(scheme, host, effective_port)`` tuple suitable for equality
-        comparison.
-    """
-    scheme = url.scheme.lower()
-    port = url.port if url.port is not None else _DEFAULT_PORTS.get(scheme)
-    return scheme, url.host.lower(), port
 
 
 def _crosses_recorded_origin(request: Request, ctx: PipelineContext) -> bool:

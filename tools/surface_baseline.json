@@ -1225,6 +1225,14 @@
         }
       },
       "dexpace.sdk.core.pipeline.policies.tracing_policy": {
+        "OperationTracingPolicy": {
+          "bases": [
+            "Policy"
+          ],
+          "methods": {
+            "send": "send(self, request: Request, ctx: PipelineContext) -> Response"
+          }
+        },
         "TracingPolicy": {
           "bases": [
             "Policy"
@@ -1599,6 +1607,7 @@
         "ClientIdentityPolicy",
         "IdempotencyPolicy",
         "LoggingPolicy",
+        "OperationTracingPolicy",
         "RedirectPolicy",
         "RequestHistory",
         "RetryMode",

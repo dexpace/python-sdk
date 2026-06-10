@@ -34,7 +34,11 @@ from dexpace.sdk.core.instrumentation import (
 )
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import AsyncPipeline, Pipeline
-from dexpace.sdk.core.pipeline.policies import RetryPolicy, TracingPolicy
+from dexpace.sdk.core.pipeline.policies import (
+    OperationTracingPolicy,
+    RetryPolicy,
+    TracingPolicy,
+)
 from dexpace.sdk.core.pipeline.policies.async_redirect import AsyncRedirectPolicy
 from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
 
@@ -131,7 +135,10 @@ class TestTracingPolicyEmission:
         tracer = _RecordingHttpTracer()
         instr = _instr(tracer)
         body = ResponseBody.from_bytes(b"hello world")
-        with Pipeline(_OkClient(body=body), policies=[TracingPolicy()]) as p:
+        with Pipeline(
+            _OkClient(body=body),
+            policies=[OperationTracingPolicy(), TracingPolicy()],
+        ) as p:
             p.run(_request(), DispatchContext(instr))
         assert tracer.names() == [
             "operation_started",
@@ -184,7 +191,10 @@ class TestTracingPolicyEmission:
         instr = _instr(tracer)
         boom = ServiceRequestError("connect failed")
         raised: BaseException | None = None
-        with Pipeline(_OkClient(raise_exc=boom), policies=[TracingPolicy()]) as p:
+        with Pipeline(
+            _OkClient(raise_exc=boom),
+            policies=[OperationTracingPolicy(), TracingPolicy()],
+        ) as p:
             try:
                 p.run(_request(), DispatchContext(instr))
             except ServiceRequestError as err:
@@ -197,7 +207,10 @@ class TestTracingPolicyEmission:
     def test_no_events_when_tracing_disabled(self) -> None:
         tracer = _RecordingHttpTracer()
         instr = _instr(tracer)
-        with Pipeline(_OkClient(), policies=[TracingPolicy()]) as p:
+        with Pipeline(
+            _OkClient(),
+            policies=[OperationTracingPolicy(), TracingPolicy()],
+        ) as p:
             p.run(_request(), DispatchContext(instr), tracing_enabled=False)
         assert tracer.events == []
 
@@ -303,7 +316,7 @@ class TestSharedTracerAcrossPolicies:
         )
         with Pipeline(
             client,
-            policies=[RedirectPolicy(), TracingPolicy()],
+            policies=[OperationTracingPolicy(), RedirectPolicy(), TracingPolicy()],
         ) as p:
             p.run(_request("https://api.example.com/start"), DispatchContext(instr))
         names = tracer.names()
@@ -345,6 +358,41 @@ class _AlwaysRaisesClient(HttpClient):
         raise self._error
 
 
+class _RaiseThenOkClient(HttpClient):
+    """Raises a retryable error on the first ``fail_count`` calls, then OK."""
+
+    def __init__(self, *, error: BaseException, fail_count: int) -> None:
+        self._error = error
+        self._fail_count = fail_count
+        self.calls = 0
+
+    def execute(self, request: Request) -> Response:
+        self.calls += 1
+        if self.calls <= self._fail_count:
+            raise self._error
+        return Response(request=request, protocol=Protocol.HTTP_1_1, status=Status.OK)
+
+
+class _RedirectThenRaiseClient(HttpClient):
+    """Returns a redirect, then raises on the reissued (post-redirect) request."""
+
+    def __init__(self, *, location: str, error: BaseException) -> None:
+        self._location = location
+        self._error = error
+        self.calls = 0
+
+    def execute(self, request: Request) -> Response:
+        self.calls += 1
+        if self.calls == 1:
+            response = Response(
+                request=request,
+                protocol=Protocol.HTTP_1_1,
+                status=Status.MOVED_PERMANENTLY,
+            )
+            return response.with_header("Location", self._location)
+        raise self._error
+
+
 class TestOperationEventsFireOncePerOperation:
     def test_retry_emits_operation_lifecycle_once_across_attempts(self) -> None:
         # TracingPolicy sits *inside* RetryPolicy (retry is outer), so it is
@@ -354,7 +402,10 @@ class TestOperationEventsFireOncePerOperation:
         instr = _instr(tracer)
         client = _RetryThenOkClient(fail_status=Status.SERVICE_UNAVAILABLE, fail_count=2)
         retry = RetryPolicy(status_retries=3, clock=FakeClock())
-        with Pipeline(client, policies=[retry, TracingPolicy()]) as p:
+        with Pipeline(
+            client,
+            policies=[OperationTracingPolicy(), retry, TracingPolicy()],
+        ) as p:
             p.run(_request(), DispatchContext(instr))
         names = tracer.names()
         # Three attempts total (two 503s then a 200).
@@ -376,7 +427,10 @@ class TestOperationEventsFireOncePerOperation:
         client = _AlwaysRaisesClient(boom)
         retry = RetryPolicy(connect_retries=2, total_retries=2, clock=FakeClock())
         raised: BaseException | None = None
-        with Pipeline(client, policies=[retry, TracingPolicy()]) as p:
+        with Pipeline(
+            client,
+            policies=[OperationTracingPolicy(), retry, TracingPolicy()],
+        ) as p:
             try:
                 p.run(_request(), DispatchContext(instr))
             except ServiceRequestError as err:
@@ -400,7 +454,10 @@ class TestOperationEventsFireOncePerOperation:
                 _Hop(Status.OK),
             ],
         )
-        with Pipeline(client, policies=[RedirectPolicy(), TracingPolicy()]) as p:
+        with Pipeline(
+            client,
+            policies=[OperationTracingPolicy(), RedirectPolicy(), TracingPolicy()],
+        ) as p:
             p.run(_request("https://api.example.com/start"), DispatchContext(instr))
         names = tracer.names()
         # Two hops -> two attempts through the inner TracingPolicy.
@@ -412,6 +469,52 @@ class TestOperationEventsFireOncePerOperation:
         # runs, so among the operation_* events, started precedes succeeded.
         op_events = [name for name in names if name.startswith("operation_")]
         assert op_events == ["operation_started", "operation_succeeded"]
+
+    def test_retry_then_success_reports_operation_succeeded(self) -> None:
+        # A call that fails on its first attempt and succeeds on a retry must
+        # report a single operation_succeeded reflecting the final outcome —
+        # never operation_failed for the discarded first attempt.
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        client = _RaiseThenOkClient(error=ServiceRequestError("connect failed"), fail_count=1)
+        retry = RetryPolicy(connect_retries=3, total_retries=3, clock=FakeClock())
+        with Pipeline(
+            client,
+            policies=[OperationTracingPolicy(), retry, TracingPolicy()],
+        ) as p:
+            response = p.run(_request(), DispatchContext(instr))
+        assert int(response.status) == 200
+        assert client.calls == 2
+        names = tracer.names()
+        assert names.count("operation_started") == 1
+        assert names.count("operation_succeeded") == 1
+        assert names.count("operation_failed") == 0
+        # request_sent still fires per attempt (the failed one and the retry).
+        assert names.count("request_sent") == 2
+
+    def test_redirect_then_failure_reports_operation_failed(self) -> None:
+        # When a later redirect hop fails, the operation outcome is the failure
+        # that escapes — not the success of the earlier 3xx hop.
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        boom = ServiceRequestError("connect failed")
+        client = _RedirectThenRaiseClient(location="https://api.example.com/new", error=boom)
+        raised: BaseException | None = None
+        with Pipeline(
+            client,
+            policies=[OperationTracingPolicy(), RedirectPolicy(), TracingPolicy()],
+        ) as p:
+            try:
+                p.run(_request("https://api.example.com/start"), DispatchContext(instr))
+            except ServiceRequestError as err:
+                raised = err
+        assert raised is boom
+        names = tracer.names()
+        assert names.count("operation_started") == 1
+        assert names.count("operation_failed") == 1
+        assert names.count("operation_succeeded") == 0
+        failed = [payload for name, payload in tracer.events if name == "operation_failed"]
+        assert failed == [boom]
 
 
 # ----- request_sent fires for unknown-length bodies (L19) -----------------

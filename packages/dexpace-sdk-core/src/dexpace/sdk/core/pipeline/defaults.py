@@ -19,7 +19,7 @@ from .policies.logging_policy import LoggingPolicy
 from .policies.redirect import RedirectPolicy
 from .policies.retry import RetryPolicy
 from .policies.set_date import SetDatePolicy
-from .policies.tracing_policy import TracingPolicy
+from .policies.tracing_policy import OperationTracingPolicy, TracingPolicy
 from .staged_builder import StagedPipelineBuilder
 
 if TYPE_CHECKING:
@@ -44,14 +44,20 @@ def default_pipeline(
     """Pre-configured `StagedPipelineBuilder` with the canonical stack.
 
     Wires the policies that most consumers want by default in the order their
-    stages dictate: redirect → idempotency → retry → set-date →
-    client-identity → auth → logging → tracing. Each policy is opt-out (pass
-    ``None``) or opt-in-with-override (pass a pre-configured instance to
-    replace the default).
+    stages dictate: operation-tracing → redirect → idempotency → retry →
+    set-date → client-identity → auth → logging → tracing. Each policy is
+    opt-out (pass ``None``) or opt-in-with-override (pass a pre-configured
+    instance to replace the default).
 
     Idempotency sits before retry so a write request's ``Idempotency-Key`` is
     minted once and reused across every retry; ``set-date`` and
     ``client-identity`` sit just inside the retry wrapper.
+
+    Two tracing policies cooperate: `OperationTracingPolicy` brackets the whole
+    operation from outside the redirect / retry wrappers (so the per-operation
+    lifecycle fires once and reflects the final outcome), while `TracingPolicy`
+    opens a span and emits per-request events inside the wrappers, once per hop
+    / attempt.
 
     Args:
         client: Terminal HTTP transport.
@@ -73,6 +79,9 @@ def default_pipeline(
         immediate ``.build()``.
     """
     builder = StagedPipelineBuilder(client)
+    # Sorts to Stage.OPERATION (outermost), bracketing every hop / attempt so
+    # the per-operation lifecycle fires once on the final outcome.
+    builder.append(OperationTracingPolicy())
     builder.append(redirect or RedirectPolicy())
     builder.append(idempotency or IdempotencyPolicy())
     builder.append(retry or RetryPolicy())

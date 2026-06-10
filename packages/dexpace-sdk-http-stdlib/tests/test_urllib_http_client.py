@@ -322,19 +322,21 @@ def test_unknown_protocol_version_defaults_to_http_1_1() -> None:
     assert response.protocol is Protocol.HTTP_1_1
 
 
-def test_content_length_dropped_when_content_encoding_present() -> None:
-    # L2: the stream yields decompressed bytes, so the upstream
-    # Content-Length (compressed size) must not be propagated to the body.
+def test_content_length_surfaced_under_content_encoding() -> None:
+    # http.client does not decode Content-Encoding, so the body urllib serves
+    # is the wire payload whose length is the upstream Content-Length: the
+    # header is accurate and is surfaced as-is (unlike the decompressing
+    # requests / httpx / aiohttp adapters, which must drop it).
     opened = _TrackingResponse(
         200,
         headers=[("Content-Length", "9"), ("Content-Encoding", "gzip")],
-        payload=b"decoded",
+        payload=b"compressed",
     )
     request = Request(method=Method.GET, url=Url.parse("http://127.0.0.1/"))
     response = _urllib_mod._build_response(request, opened)
     body = response.body
     assert body is not None
-    assert body.content_length() == -1
+    assert body.content_length() == 9
 
 
 def test_read_failure_maps_to_service_response_error() -> None:

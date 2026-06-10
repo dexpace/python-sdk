@@ -29,7 +29,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, ClassVar, Literal, cast
 from urllib.parse import urljoin
 
-from ...http.common.url import Url
+from ...http.common.url import Url, _origin
 from ...http.request.method import Method
 from ..policy import Policy
 from ..stage import Stage
@@ -43,26 +43,6 @@ if TYPE_CHECKING:
 
 _REDIRECT_STATUSES: frozenset[int] = frozenset({301, 302, 303, 307, 308})
 _CONTENT_HEADER_PREFIX: str = "content-"
-_DEFAULT_PORTS: dict[str, int] = {"https": 443, "http": 80}
-
-
-def _origin(url: Url) -> tuple[str, str, int | None]:
-    """Return the ``(scheme, host, port)`` origin tuple for ``url``.
-
-    The scheme and host are lower-cased and the port is resolved to its
-    scheme default (443 for https, 80 for http) when not explicit, so two
-    URLs that differ only in an implied/explicit default port compare equal.
-
-    Args:
-        url: The URL to derive an origin from.
-
-    Returns:
-        A ``(scheme, host, effective_port)`` tuple suitable for equality
-        comparison.
-    """
-    scheme = url.scheme.lower()
-    port = url.port if url.port is not None else _DEFAULT_PORTS.get(scheme)
-    return scheme, url.host.lower(), port
 
 
 #: ``ctx.data`` key holding the per-operation ``HttpTracer``. The first policy

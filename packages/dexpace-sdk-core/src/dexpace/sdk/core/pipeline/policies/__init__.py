@@ -17,7 +17,7 @@ from .logging_policy import LoggingPolicy
 from .redirect import RedirectPolicy
 from .retry import RetryMode, RetryPolicy
 from .set_date import SetDatePolicy
-from .tracing_policy import TracingPolicy
+from .tracing_policy import OperationTracingPolicy, TracingPolicy
 
 __all__ = [
     "AsyncClientIdentityPolicy",
@@ -28,6 +28,7 @@ __all__ = [
     "ClientIdentityPolicy",
     "IdempotencyPolicy",
     "LoggingPolicy",
+    "OperationTracingPolicy",
     "RedirectPolicy",
     "RequestHistory",
     "RetryMode",

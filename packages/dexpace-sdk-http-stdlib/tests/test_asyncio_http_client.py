@@ -17,10 +17,12 @@ from dexpace.sdk.core.errors import (
     ServiceResponseTimeoutError,
 )
 from dexpace.sdk.core.http.common import Url
+from dexpace.sdk.core.http.common.headers import Headers
 from dexpace.sdk.core.http.common.protocol import Protocol
 from dexpace.sdk.core.http.request import Method, Request, RequestBody
 from dexpace.sdk.core.http.response import Status
 from dexpace.sdk.http.stdlib import AsyncioHttpClient
+from dexpace.sdk.http.stdlib import asyncio_http_client as _asyncio_mod
 
 _Handler = Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]]
 
@@ -357,6 +359,21 @@ async def test_multiline_transfer_encoding_with_chunked_not_first_raises() -> No
     finally:
         with pytest.raises(StopAsyncIteration):
             await anext(gen)
+
+
+def test_is_chunked_matches_coding_token_not_substring() -> None:
+    # The chunked check matches the coding token exactly: a real ``chunked``
+    # coding (alone, after other codings, or with parameters) trips it, but a
+    # coding name that merely contains the substring ``chunked`` (``x-chunked``)
+    # does not — so a benign coding is never mistaken for chunked framing.
+    assert _asyncio_mod._is_chunked(Headers([("Transfer-Encoding", "chunked")]))
+    assert _asyncio_mod._is_chunked(Headers([("Transfer-Encoding", "gzip, chunked")]))
+    assert _asyncio_mod._is_chunked(
+        Headers([("Transfer-Encoding", "gzip"), ("Transfer-Encoding", "chunked")])
+    )
+    assert _asyncio_mod._is_chunked(Headers([("Transfer-Encoding", "chunked ; foo=bar")]))
+    assert not _asyncio_mod._is_chunked(Headers([("Transfer-Encoding", "x-chunked")]))
+    assert not _asyncio_mod._is_chunked(Headers([("Transfer-Encoding", "gzip")]))
 
 
 async def test_connection_close_framed_body_read_to_eof() -> None:
