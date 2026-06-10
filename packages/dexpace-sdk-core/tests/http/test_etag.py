@@ -51,6 +51,13 @@ def test_parse_embedded_control_char_raises() -> None:
         ETag.parse('"a\x01b"')
 
 
+def test_parse_embedded_space_raises() -> None:
+    # RFC 7232 §2.3: etagc = %x21 / %x23-7E / obs-text, so SP (0x20) is not a
+    # valid entity-tag character.
+    with pytest.raises(ValueError):
+        ETag.parse('"a b"')
+
+
 def test_parse_empty_strong_etag_raises() -> None:
     with pytest.raises(ValueError, match="empty"):
         ETag.parse('""')

@@ -84,8 +84,8 @@ class ETag:
 
         Raises:
             ValueError: If ``raw`` is not a valid quoted entity-tag, if the
-                quoted body is empty, or if the body contains a double-quote
-                or control character (forbidden in the opaque tag by
+                quoted body is empty, or if the body contains a double-quote,
+                space, or control character (forbidden in the opaque tag by
                 RFC 7232 §2.3).
         """
         text = raw.strip()
@@ -100,8 +100,11 @@ class ETag:
             raise ValueError(f"Invalid ETag: empty quoted body in {raw!r}")
         if '"' in value:
             raise ValueError(f"Invalid ETag: embedded double-quote in {raw!r}")
-        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
-            raise ValueError(f"Invalid ETag: control character in {raw!r}")
+        # RFC 7232 §2.3: etagc = %x21 / %x23-7E / obs-text. Everything at or
+        # below SP (0x20) and DEL (0x7F) is outside the entity-tag character
+        # set; obs-text (0x80-0xFF) stays permitted.
+        if any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in value):
+            raise ValueError(f"Invalid ETag: illegal character in {raw!r}")
         return cls(value=value, weak=weak)
 
 
