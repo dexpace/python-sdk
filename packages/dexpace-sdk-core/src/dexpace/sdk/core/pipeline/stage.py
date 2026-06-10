@@ -8,7 +8,7 @@ orders policies by stage rather than by caller-specified order, removing a
 class of bugs where retry runs before redirect or auth runs after logging.
 
 Pillar stages admit at most one policy; non-pillar stages stack with
-deque semantics. The numeric values are sparse (100 apart) so future
+deque semantics. The numeric values are spaced out so future
 stages can slot between existing ones without renumbering.
 """
 

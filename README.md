@@ -132,12 +132,12 @@ the way back up. The terminal policy hands the request to an `HttpClient`
 transport.
 
 ```
-caller → Pipeline → REDIRECT → POST_REDIRECT → RETRY → POST_RETRY → [AUTH] → LOGGING → POST_LOGGING → HttpClient → wire
-                     (pillar)   idempotency    (pillar)  set-date    (pillar) (pillar)  tracing
-                                                          client-identity
+caller → Pipeline → OPERATION → REDIRECT → POST_REDIRECT → RETRY → POST_RETRY → [AUTH] → LOGGING → POST_LOGGING → HttpClient → wire
+                    (pillar)     (pillar)   idempotency    (pillar)  set-date    (pillar) (pillar)  tracing
+                                                                      client-identity
 ```
 
-Ordering is governed by `Stage`, an `IntEnum` whose values sit 100 apart so
+Ordering is governed by `Stage`, an `IntEnum` whose values are spaced out so
 new stages can land without renumbering. Pillar stages admit a single
 policy; non-pillar stages stack with deque semantics. Callers who prefer
 explicit ordering can still use the list form,
@@ -176,7 +176,7 @@ Bottom-up, the layers are:
 | `http.webhooks`     | `WebhookVerifier`, `InvalidWebhookSignatureError` — HMAC signature verification with timestamp tolerance  |
 | `pagination`        | `Page`, `Paginator` / `AsyncPaginator`, `PaginationStrategy` (`CursorStrategy`, `PageNumberStrategy`, `LinkHeaderStrategy`) |
 | `pipeline`          | `Pipeline`, `AsyncPipeline`, `Policy` ABC, `Stage` enum, `StagedPipelineBuilder`, `default_pipeline()`   |
-| `pipeline.policies` | `RedirectPolicy`, `IdempotencyPolicy`, `RetryPolicy`, `SetDatePolicy`, `ClientIdentityPolicy`, `LoggingPolicy`, `TracingPolicy` (async twins for all but logging/tracing) |
+| `pipeline.policies` | `RedirectPolicy`, `IdempotencyPolicy`, `RetryPolicy`, `SetDatePolicy`, `ClientIdentityPolicy`, `LoggingPolicy`, `OperationTracingPolicy`, `TracingPolicy` (async twins for all but logging/tracing) |
 | `client`            | `HttpClient` and `AsyncHttpClient` Protocols                                                             |
 | `serde`             | `Serde`, `Serializer`, `Deserializer` Protocols + `JsonSerde` reference impl                             |
 | `instrumentation`   | `ClientLogger`, `UrlRedactor`, `Tracer`, `Span`, `InstrumentationContext`, `contextvars` correlation helpers, noop singletons |
@@ -205,7 +205,8 @@ Bottom-up, the layers are:
   reissue, userinfo dropped from `Location` URLs, configurable allowed
   methods and 303 handling.
 - **Observability.** Structured logging via `LoggingPolicy`,
-  OpenTelemetry-compatible spans via `TracingPolicy`, URL redaction with
+  per-attempt OpenTelemetry spans via `TracingPolicy` with a once-per-call
+  tracer lifecycle via `OperationTracingPolicy`, URL redaction with
   allowlisted query parameters, and capped body capture for diagnostics.
 - **Server-Sent Events.** A WHATWG-compliant `SseParser` with a bounded
   line buffer, plus reconnecting `SseConnection` / `AsyncSseConnection`
