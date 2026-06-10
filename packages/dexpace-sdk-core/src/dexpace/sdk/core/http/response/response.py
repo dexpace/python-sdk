@@ -34,7 +34,7 @@ class Response:
 
     and the underlying body is closed deterministically on exit. The header /
     metadata surface is immutable and safe to share across threads; the body,
-    when present, carries single-use stream state — see :class:`ResponseBody`.
+    when present, carries single-use stream state — see `ResponseBody`.
     """
 
     request: Request

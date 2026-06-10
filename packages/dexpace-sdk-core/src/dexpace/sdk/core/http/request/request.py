@@ -24,11 +24,11 @@ class Request:
     """Immutable HTTP request handed to a transport.
 
     Construct directly via the dataclass constructor or derive a new instance
-    non-destructively via :func:`dataclasses.replace` or the ``with_*`` helpers.
+    non-destructively via `dataclasses.replace` or the ``with_*`` helpers.
 
     Header / metadata surface is immutable and safe to share across threads;
     the ``body``, when present, carries single-use stream state — clone before
-    sharing if you retain a stream-backed body. See :class:`RequestBody`.
+    sharing if you retain a stream-backed body. See `RequestBody`.
     """
 
     method: Method

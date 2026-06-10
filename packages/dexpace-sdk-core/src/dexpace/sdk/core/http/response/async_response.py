@@ -9,10 +9,10 @@ from dataclasses import dataclass, field, replace
 from types import TracebackType
 from typing import TYPE_CHECKING, Self
 
+from .._shielded import _shielded_cleanup
 from ..common.headers import Headers
 from ..common.http_header_name import HttpHeaderName
 from ..common.protocol import Protocol
-from .async_response_body import _shielded_cleanup
 from .status import Status
 
 if TYPE_CHECKING:

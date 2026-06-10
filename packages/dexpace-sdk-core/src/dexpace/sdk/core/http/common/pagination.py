@@ -18,7 +18,6 @@ from collections.abc import (
     Iterable,
     Iterator,
 )
-from typing import Any
 
 from ...errors import SdkError
 
@@ -65,21 +64,42 @@ class Pager[T, R](Iterator[Iterator[T]]):
         return iter(items)
 
 
-class ItemPaged[T](Iterator[T]):
+class ItemPaged[T, R](Iterator[T]):
     """Flat iterator over the items of a paged response.
 
-    Wraps a :class:`Pager` and yields individual items rather than pages.
-    Use :meth:`by_page` when page-level iteration is required.
+    Wraps a ``Pager`` and yields individual items rather than pages. Use
+    ``by_page`` when page-level iteration is required.
+
+    The second type parameter ``R`` is the page type produced by ``get_next``
+    and consumed by ``extract_data``.
     """
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self._args = args
-        self._kwargs = kwargs
+    __slots__ = ("_extract_data", "_flat", "_get_next")
+
+    def __init__(
+        self,
+        get_next: Callable[[str | None], R],
+        extract_data: Callable[[R], tuple[str | None, Iterable[T]]],
+    ) -> None:
+        self._get_next = get_next
+        self._extract_data = extract_data
         self._flat: Iterator[T] | None = None
 
     def by_page(self, continuation_token: str | None = None) -> Iterator[Iterator[T]]:
-        kwargs = {**self._kwargs, "continuation_token": continuation_token}
-        return Pager(*self._args, **kwargs)
+        """Return a page-level iterator, optionally resuming from a token.
+
+        Args:
+            continuation_token: When set, resume paging from that page rather
+                than the first.
+
+        Returns:
+            An iterator yielding one ``Iterator[T]`` per page.
+        """
+        return Pager(
+            self._get_next,
+            self._extract_data,
+            continuation_token=continuation_token,
+        )
 
     def __iter__(self) -> Iterator[T]:
         return self
@@ -126,12 +146,22 @@ class AsyncPager[T, R](AsyncIterator[AsyncIterator[T]]):
         return _SyncToAsync(iter(items))
 
 
-class AsyncItemPaged[T](AsyncIterator[T]):
-    """Flat async iterator over items of a paged response."""
+class AsyncItemPaged[T, R](AsyncIterator[T]):
+    """Flat async iterator over items of a paged response.
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self._args = args
-        self._kwargs = kwargs
+    The second type parameter ``R`` is the page type produced by ``get_next``
+    and consumed by ``extract_data``.
+    """
+
+    __slots__ = ("_current", "_extract_data", "_get_next", "_pages")
+
+    def __init__(
+        self,
+        get_next: Callable[[str | None], Awaitable[R]],
+        extract_data: Callable[[R], Awaitable[tuple[str | None, Iterable[T]]]],
+    ) -> None:
+        self._get_next = get_next
+        self._extract_data = extract_data
         self._pages: AsyncIterator[AsyncIterator[T]] | None = None
         self._current: AsyncIterator[T] | None = None
 
@@ -139,8 +169,20 @@ class AsyncItemPaged[T](AsyncIterator[T]):
         self,
         continuation_token: str | None = None,
     ) -> AsyncIterator[AsyncIterator[T]]:
-        kwargs = {**self._kwargs, "continuation_token": continuation_token}
-        return AsyncPager(*self._args, **kwargs)
+        """Return a page-level async iterator, optionally resuming from a token.
+
+        Args:
+            continuation_token: When set, resume paging from that page rather
+                than the first.
+
+        Returns:
+            An async iterator yielding one ``AsyncIterator[T]`` per page.
+        """
+        return AsyncPager(
+            self._get_next,
+            self._extract_data,
+            continuation_token=continuation_token,
+        )
 
     def __aiter__(self) -> AsyncIterator[T]:
         return self

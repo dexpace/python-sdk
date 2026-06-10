@@ -31,6 +31,15 @@ class HttpHeaderName:
     value: str
     canonical_name: str
 
+    def __post_init__(self) -> None:
+        # Normalise ``value`` to lower case so a hand-built instance (e.g.
+        # ``HttpHeaderName('Content-Type', 'Content-Type')``) still matches the
+        # lower-cased keys ``Headers`` stores, and so equality/hashing key on a
+        # canonical form regardless of the casing passed in.
+        lowered = self.value.lower()
+        if lowered != self.value:
+            object.__setattr__(self, "value", lowered)
+
     @classmethod
     def of(cls, canonical_name: str) -> Self:
         """Build from a canonical name, deriving the lower-case form.

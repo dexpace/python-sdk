@@ -11,7 +11,7 @@ from enum import IntEnum
 class Status(IntEnum):
     """HTTP status codes recognized by the SDK.
 
-    Inheriting from :class:`int` so callers can compare against integers and
+    Inheriting from `int` so callers can compare against integers and
     range-check directly: ``response.status == 200`` or ``200 <= status < 300``.
     """
 

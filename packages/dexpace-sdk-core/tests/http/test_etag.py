@@ -39,6 +39,18 @@ def test_parse_unquoted_raises() -> None:
         ETag.parse("no-quotes")
 
 
+def test_parse_embedded_quote_raises() -> None:
+    # RFC 7232 forbids a DQUOTE inside the opaque tag; accepting it would
+    # re-emit a malformed wire form via __str__.
+    with pytest.raises(ValueError):
+        ETag.parse('"a"b"')
+
+
+def test_parse_embedded_control_char_raises() -> None:
+    with pytest.raises(ValueError):
+        ETag.parse('"a\x01b"')
+
+
 def test_parse_empty_strong_etag_raises() -> None:
     with pytest.raises(ValueError, match="empty"):
         ETag.parse('""')

@@ -80,16 +80,19 @@ class FileRequestBody(RequestBody):
         return self._media_type
 
     def content_length(self) -> int:
-        if self._count != -1:
-            return self._count
         # Stat lazily — the file may grow between body construction and send;
         # whatever stat returns at call time is the best estimate we have.
         try:
             size = self._path.stat().st_size
         except OSError:
-            return -1
-        remaining = size - self._offset
-        return max(0, remaining)
+            # No stat available: fall back to the requested count, or unknown.
+            return self._count if self._count != -1 else -1
+        available = max(0, size - self._offset)
+        if self._count == -1:
+            return available
+        # ``iter_bytes`` stops at EOF, so a count past EOF would over-report;
+        # advertise only what can actually be read.
+        return min(self._count, available)
 
     def is_replayable(self) -> bool:
         return True

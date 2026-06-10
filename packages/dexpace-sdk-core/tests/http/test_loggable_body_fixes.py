@@ -122,6 +122,36 @@ class TestResponseErrorPath:
         assert body.snapshot(max_bytes=3) == b"abc"
 
 
+class _CustomBaseError(BaseException):
+    """A non-``Exception`` ``BaseException`` raised mid-drain."""
+
+
+class TestResponseBaseExceptionPath:
+    def test_iter_bytes_reraises_base_exception_on_every_call(self) -> None:
+        # A bare ``BaseException`` (not an ``Exception``) must still be stored
+        # so a truncated read is never replayed as a complete success.
+        boom = _CustomBaseError("aborted")
+        inner = _FailingResponseBody([b"abc", b"def"], boom)
+        body = LoggableResponseBody(inner)
+
+        with pytest.raises(_CustomBaseError) as first:
+            list(body.iter_bytes())
+        assert first.value is boom
+
+        # Second read must re-raise, not silently return the partial bytes.
+        with pytest.raises(_CustomBaseError) as second:
+            list(body.iter_bytes())
+        assert second.value is boom
+
+    def test_keyboard_interrupt_propagates_immediately(self) -> None:
+        # KeyboardInterrupt / SystemExit must escape the drain at once rather
+        # than being buffered and replayed by iter_bytes.
+        inner = _FailingResponseBody([b"abc"], KeyboardInterrupt())
+        body = LoggableResponseBody(inner)
+        with pytest.raises(KeyboardInterrupt):
+            list(body.iter_bytes())
+
+
 class TestResponseThreadSafety:
     def test_concurrent_first_read_drains_exactly_once(self) -> None:
         threads_count = 8

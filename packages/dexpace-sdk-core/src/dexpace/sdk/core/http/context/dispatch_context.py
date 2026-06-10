@@ -20,19 +20,19 @@ if TYPE_CHECKING:
 class DispatchContext(CallContext):
     """First link in the context promotion chain.
 
-    Carries only the :class:`InstrumentationContext`. Once a :class:`Request`
-    has been built, :meth:`to_request_context` promotes this into a
-    :class:`RequestContext`. The promotion produces a new immutable instance
-    and re-registers it with :data:`ContextStore` under the same trace id so
+    Carries only the `InstrumentationContext`. Once a `Request`
+    has been built, `to_request_context` promotes this into a
+    `RequestContext`. The promotion produces a new immutable instance
+    and re-registers it with `ContextStore` under the same trace id so
     downstream observers see the latest snapshot.
     """
 
     instrumentation_context: InstrumentationContext
 
     def to_request_context(self, request: Request) -> RequestContext:
-        """Promote into a :class:`RequestContext` bound to ``request``.
+        """Promote into a `RequestContext` bound to ``request``.
 
-        Stores the new context in :data:`ContextStore` keyed by trace id.
+        Stores the new context in `ContextStore` keyed by trace id.
         """
         from .context_store import ContextStore
         from .request_context import RequestContext

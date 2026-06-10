@@ -5,14 +5,14 @@
 
 A call moves through three immutable context shapes as it executes:
 
-1. :class:`DispatchContext` — carries only the :class:`InstrumentationContext`;
+1. `DispatchContext` — carries only the `InstrumentationContext`;
    created before a request payload exists.
-2. :class:`RequestContext` — adds the outgoing :class:`Request`; produced by
-   :meth:`DispatchContext.to_request_context` once a request has been built.
-3. :class:`ExchangeContext` — adds the :class:`Response`; produced by
-   :meth:`RequestContext.to_exchange_context` once a response has arrived.
+2. `RequestContext` — adds the outgoing `Request`; produced by
+   `DispatchContext.to_request_context` once a request has been built.
+3. `ExchangeContext` — adds the `Response`; produced by
+   `RequestContext.to_exchange_context` once a response has arrived.
 
-Each promotion is registered with :data:`ContextStore` under the call's trace
+Each promotion is registered with `ContextStore` under the call's trace
 id so downstream observers see the latest snapshot for a call by trace id.
 """
 

@@ -27,6 +27,19 @@ def test_suffix_range() -> None:
     assert s.to_header_value() == "bytes=-20"
 
 
+def test_suffix_range_is_public_httprange() -> None:
+    s = HttpRange.suffix(20)
+    assert isinstance(s, HttpRange)
+    assert s.is_suffix is True
+    assert s.format() == "-20"
+
+
+def test_format_many_with_suffix_range() -> None:
+    # A suffix range is a single public HttpRange, so format_many accepts it.
+    ranges: list[HttpRange] = [HttpRange(0, 100), HttpRange.suffix(50)]
+    assert HttpRange.format_many(ranges) == "bytes=0-99,-50"
+
+
 def test_negative_start_raises() -> None:
     with pytest.raises(ValueError):
         HttpRange(-1, 100)

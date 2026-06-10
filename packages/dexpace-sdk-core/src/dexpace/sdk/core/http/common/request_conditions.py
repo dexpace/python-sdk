@@ -83,13 +83,14 @@ def _format_etags(tags: Sequence[ETag]) -> str:
 
 
 def _format_http_date(value: datetime) -> str:
-    # email.utils.format_datetime produces the IMF-fixdate form (RFC 7231
-    # §7.1.1.1) when given a timezone-aware datetime. Force UTC if naive —
-    # callers passing local-time naive datetimes is a common bug source and
-    # silently misinterpreting them produces wrong cache behaviour.
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC)
-    return format_datetime(value, usegmt=True)
+    # email.utils.format_datetime(usegmt=True) produces the IMF-fixdate form
+    # (RFC 7231 §7.1.1.1) but requires tzinfo to be exactly timezone.utc; any
+    # other offset raises ValueError. Treat a naive datetime as UTC — passing
+    # local-time naive datetimes is a common bug source and silently
+    # misinterpreting them produces wrong cache behaviour — and convert an
+    # aware datetime with any other offset to UTC before formatting.
+    normalized = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return format_datetime(normalized, usegmt=True)
 
 
 __all__ = ["RequestConditions"]

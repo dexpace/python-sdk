@@ -42,6 +42,16 @@ class TestFactories:
         assert "a=1" in text and "b=two%20words" in text
         assert body.media_type() == common_media_types.APPLICATION_FORM_URLENCODED
 
+    def test_from_form_encoding_changes_percent_encoding(self) -> None:
+        # A non-ASCII field must percent-encode through the requested charset,
+        # so latin-1 and utf-8 produce different bytes (one byte vs two for é).
+        fields = {"name": "é"}
+        latin1 = _drain(RequestBody.from_form(fields, encoding="latin-1"))
+        utf8 = _drain(RequestBody.from_form(fields, encoding="utf-8"))
+        assert latin1 == b"name=%E9"
+        assert utf8 == b"name=%C3%A9"
+        assert latin1 != utf8
+
     def test_from_stream_single_use(self) -> None:
         body = RequestBody.from_stream(BytesIO(b"once"), content_length=4)
         assert not body.is_replayable()
@@ -117,6 +127,22 @@ class TestFileRequestBody:
         body = FileRequestBody(path, offset=2, count=5)
         assert body.content_length() == 5
         assert _drain(body) == b"23456"
+
+    def test_content_length_clamps_count_past_eof(self, tmp_path: Path) -> None:
+        # Requesting more bytes than the file holds must not over-report:
+        # iter_bytes stops at EOF, so content_length must match the drained size.
+        path = tmp_path / "short.bin"
+        path.write_bytes(b"0123456789")  # 10 bytes
+        body = FileRequestBody(path, offset=4, count=1000)
+        drained = _drain(body)
+        assert drained == b"456789"  # only 6 bytes available past the offset
+        assert body.content_length() == len(drained) == 6
+
+    def test_content_length_falls_back_to_count_when_stat_fails(self, tmp_path: Path) -> None:
+        # When stat raises (e.g. the file does not exist yet), fall back to the
+        # requested count rather than guessing zero.
+        body = FileRequestBody(tmp_path / "missing.bin", count=7)
+        assert body.content_length() == 7
 
     def test_from_file_factory(self, tmp_path: Path) -> None:
         path = tmp_path / "x.bin"

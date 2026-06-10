@@ -22,9 +22,9 @@ if TYPE_CHECKING:
 class RequestContext(CallContext):
     """Second link in the context promotion chain.
 
-    Adds the outgoing :class:`Request` to the call's
-    :class:`InstrumentationContext`. Once a :class:`Response` arrives,
-    :meth:`to_exchange_context` promotes this into an :class:`ExchangeContext`.
+    Adds the outgoing `Request` to the call's
+    `InstrumentationContext`. Once a `Response` arrives,
+    `to_exchange_context` promotes this into an `ExchangeContext`.
     """
 
     instrumentation_context: InstrumentationContext
@@ -34,9 +34,9 @@ class RequestContext(CallContext):
         self,
         response: Response | AsyncResponse,
     ) -> ExchangeContext:
-        """Promote into an :class:`ExchangeContext` bound to ``response``.
+        """Promote into an `ExchangeContext` bound to ``response``.
 
-        Stores the new context in :data:`ContextStore` keyed by trace id.
+        Stores the new context in `ContextStore` keyed by trace id.
         """
         from .context_store import ContextStore
         from .exchange_context import ExchangeContext

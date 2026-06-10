@@ -61,16 +61,27 @@ class TestItemPaged:
             None: _Page(items=[1, 2], next_token="x"),
             "x": _Page(items=[3, 4], next_token=None),
         }
-        items: ItemPaged[int] = ItemPaged(_build_get_next(pages), _extract)
+        items: ItemPaged[int, _Page] = ItemPaged(_build_get_next(pages), _extract)
         assert list(items) == [1, 2, 3, 4]
 
     def test_by_page(self) -> None:
         pages: dict[str | None, _Page] = {
             None: _Page(items=[1], next_token=None),
         }
-        items: ItemPaged[int] = ItemPaged(_build_get_next(pages), _extract)
+        items: ItemPaged[int, _Page] = ItemPaged(_build_get_next(pages), _extract)
         result = [list(page) for page in items.by_page()]
         assert result == [[1]]
+
+    def test_by_page_with_continuation_token(self) -> None:
+        # Forwarding a continuation token to by_page must resume from that page
+        # without colliding with positional get_next/extract_data arguments.
+        pages: dict[str | None, _Page] = {
+            None: _Page(items=[1], next_token="page2"),
+            "page2": _Page(items=[2, 3], next_token=None),
+        }
+        items: ItemPaged[int, _Page] = ItemPaged(_build_get_next(pages), _extract)
+        result = [list(page) for page in items.by_page(continuation_token="page2")]
+        assert result == [[2, 3]]
 
 
 class TestAsyncPager:
@@ -106,8 +117,26 @@ class TestAsyncItemPaged:
         async def extract(page: _Page) -> tuple[str | None, Iterable[int]]:
             return page.next_token, page.items
 
-        items: AsyncItemPaged[int] = AsyncItemPaged(get_next, extract)
+        items: AsyncItemPaged[int, _Page] = AsyncItemPaged(get_next, extract)
         collected: list[int] = []
         async for item in items:
             collected.append(item)
         assert collected == [1, 2, 3]
+
+    async def test_by_page_with_continuation_token(self) -> None:
+        pages: dict[str | None, _Page] = {
+            None: _Page(items=[1], next_token="next"),
+            "next": _Page(items=[2, 3], next_token=None),
+        }
+
+        async def get_next(token: str | None) -> _Page:
+            return pages[token]
+
+        async def extract(page: _Page) -> tuple[str | None, Iterable[int]]:
+            return page.next_token, page.items
+
+        items: AsyncItemPaged[int, _Page] = AsyncItemPaged(get_next, extract)
+        collected: list[list[int]] = []
+        async for page in items.by_page(continuation_token="next"):
+            collected.append([item async for item in page])
+        assert collected == [[2, 3]]
