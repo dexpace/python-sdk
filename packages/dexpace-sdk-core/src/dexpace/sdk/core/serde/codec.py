@@ -275,11 +275,11 @@ def _decode_value(
     """Decode ``data`` into ``target``, dispatching on the type's shape."""
     if target is object or target is typing.Any:
         return data
+    if _is_tristate(target):
+        return _decode_tristate(data, target, path, tolerate_unknown)
     origin = get_origin(target)
     if origin is None:
         return _decode_atomic(data, target, path, tolerate_unknown)
-    if _is_tristate(target):
-        return _decode_tristate(data, target, path, tolerate_unknown)
     if origin in (Union, types.UnionType):
         return _decode_union(data, target, path, tolerate_unknown)
     return _decode_container(data, target, origin, path, tolerate_unknown)
@@ -638,7 +638,7 @@ def _encode_value(value: object) -> object:
         except UnicodeDecodeError as err:
             raise SerializationError("cannot encode non-UTF-8 bytes value") from err
     if isinstance(value, cabc.Mapping):
-        return {k: _encode_value(v) for k, v in value.items()}
+        return {_encode_key(k): _encode_value(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_encode_value(v) for v in value]
     raise SerializationError(f"cannot encode value of type {type(value).__name__}")
@@ -659,6 +659,35 @@ def _encode_dataclass(value: object) -> dict[str, object]:
             continue
         out[wire] = _encode_value(attr)
     return out
+
+
+def _encode_key(key: object) -> str | int | float | bool | None:
+    """Collapse a mapping key into a document-legal scalar key.
+
+    Runs the key through ``_encode_value`` (which folds an enum to its value and
+    a datetime/date/time to its ISO string) then ensures the result is a JSON
+    object key type. A leftover ``str`` / ``int`` / ``float`` / ``bool`` /
+    ``None`` passes through; anything else is coerced to ``str(...)`` so the
+    encoded document round-trips against ``_decode_mapping``.
+
+    Args:
+        key: The original mapping key.
+
+    Returns:
+        A ``str`` / ``int`` / ``float`` / ``bool`` / ``None`` document key.
+
+    Raises:
+        SerializationError: If the collapsed key is a container or other type
+            that has no meaningful scalar key form.
+    """
+    encoded = _encode_value(key)
+    if encoded is None or isinstance(encoded, (str, int, float, bool)):
+        return encoded
+    if isinstance(encoded, (cabc.Mapping, list, tuple, set, frozenset)):
+        raise SerializationError(
+            f"cannot encode mapping key of type {type(key).__name__}",
+        )
+    return str(encoded)
 
 
 # --------------------------------------------------------------------------- #
@@ -689,8 +718,11 @@ def _is_tristate(target: object) -> bool:
     ``get_type_hints`` resolves a ``type`` alias such as ``Tristate[str]`` to a
     ``GenericAlias`` whose origin is the ``Tristate`` alias object itself, not a
     ``Union``. Older / expanded forms surface as a ``Present``-bearing union, so
-    both shapes are recognised.
+    both shapes are recognised. A bare, non-parametrised ``Tristate`` field is
+    treated as ``Tristate[object]`` (inner type ``object``).
     """
+    if target is Tristate:
+        return True
     if get_origin(target) is Tristate:
         return True
     if get_origin(target) in (Union, types.UnionType):

@@ -1,7 +1,7 @@
 # Copyright (c) 2026 dexpace and Omar Aljarrah.
 # Licensed under the MIT License. See LICENSE.md in the repository root for details.
 
-""":class:`Serde`, :class:`Serializer`, :class:`Deserializer` Protocols."""
+"""`Serde`, `Serializer`, `Deserializer` Protocols."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ class Serde(Protocol):
     """Bundle of serialization / deserialization strategies for a single wire format.
 
     Acts as a single injection point: components that need to round-trip values
-    pull a :class:`Serde` rather than separate serializer and deserializer
+    pull a `Serde` rather than separate serializer and deserializer
     references, which keeps the dependency surface flat and makes it easy to
     swap formats at the edge of the SDK.
     """
