@@ -25,7 +25,7 @@ key.
 
 Verification is constant-time (``hmac.compare_digest``) and rejects timestamps
 that are too old or too far in the future relative to an injected
-:class:`~dexpace.sdk.core.util.Clock`, defaulting to the process clock.
+`Clock`, defaulting to the process clock.
 
 Example:
     >>> verifier = WebhookVerifier("whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw")
@@ -107,13 +107,17 @@ def _decode_secret(secret: str) -> bytes:
         The raw key bytes.
 
     Raises:
-        InvalidWebhookSignatureError: If the base64 body is malformed.
+        InvalidWebhookSignatureError: If the base64 body is malformed or decodes
+            to an empty key (e.g. ``""`` or a bare ``whsec_`` prefix).
     """
     body = secret[len(_SECRET_PREFIX) :] if secret.startswith(_SECRET_PREFIX) else secret
     try:
-        return base64.b64decode(body, validate=True)
+        key = base64.b64decode(body, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise InvalidWebhookSignatureError("malformed webhook secret") from exc
+    if not key:
+        raise InvalidWebhookSignatureError("empty webhook secret")
+    return key
 
 
 def _as_bytes(body: str | bytes) -> bytes:
@@ -132,7 +136,7 @@ class WebhookVerifier:
             prefix is optional).
         tolerance_seconds: Maximum absolute difference, in seconds, allowed
             between the signed timestamp and the current time. Defaults to
-            :data:`DEFAULT_TOLERANCE_SECONDS` (5 minutes).
+            `DEFAULT_TOLERANCE_SECONDS` (5 minutes).
         clock: Time source used to evaluate the tolerance window. Defaults to
             the process clock; inject a fake to test the replay window.
 
@@ -189,7 +193,7 @@ class WebhookVerifier:
     def unwrap(self, headers: Mapping[str, str], body: str | bytes) -> object:
         """Verify a webhook and return its parsed JSON payload.
 
-        A convenience over :meth:`verify` for the common case of a JSON body:
+        A convenience over `verify` for the common case of a JSON body:
         the signature is checked against the *raw* bytes first, then the same
         bytes are parsed. Verifying before parsing guarantees only authentic
         payloads are ever deserialized.
@@ -217,9 +221,14 @@ class WebhookVerifier:
         """Reject a timestamp that is malformed or outside the tolerance window.
 
         Raises:
-            InvalidWebhookSignatureError: If ``timestamp`` is not an integer or
-                differs from now by more than the configured tolerance.
+            InvalidWebhookSignatureError: If ``timestamp`` is not a canonical
+                non-negative ASCII integer (``int()`` would otherwise accept a
+                leading sign, surrounding whitespace, PEP 515 underscores, and
+                non-ASCII digits), or differs from now by more than the
+                configured tolerance.
         """
+        if not (timestamp.isascii() and timestamp.isdigit()):
+            raise InvalidWebhookSignatureError("malformed webhook-timestamp")
         try:
             signed_at = int(timestamp)
         except ValueError as exc:
@@ -241,8 +250,10 @@ class WebhookVerifier:
 
         Tokens are space-separated. Unknown-version and malformed tokens are
         skipped rather than raising, so a forward-compatible producer that adds
-        a future scheme version alongside ``v1`` still verifies. Comparison is
-        constant-time to avoid leaking the expected signature via timing.
+        a future scheme version alongside ``v1`` still verifies. A token whose
+        candidate is not ASCII cannot match a base64 signature, so it is skipped
+        too rather than letting the encode raise out of verification. Comparison
+        is constant-time to avoid leaking the expected signature via timing.
         """
         expected_bytes = expected.encode("ascii")
         matched = False
@@ -250,6 +261,10 @@ class WebhookVerifier:
             version, _, candidate = token.partition(",")
             if version != _SIGNATURE_VERSION or not candidate:
                 continue
-            if hmac.compare_digest(candidate.encode("ascii"), expected_bytes):
+            try:
+                candidate_bytes = candidate.encode("ascii")
+            except UnicodeEncodeError:
+                continue
+            if hmac.compare_digest(candidate_bytes, expected_bytes):
                 matched = True
         return matched
