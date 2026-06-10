@@ -900,8 +900,14 @@ def _resolve_info(target: type) -> _ModelInfo:
     info = _MODEL_CACHE.get(target)
     if info is not None:
         return info
+    # A PEP 695 generic dataclass (``class Box[T]``) annotates fields with its
+    # type parameters (``item: T``). Python 3.13+ resolves those automatically,
+    # but 3.12's ``get_type_hints`` does not see them and raises ``NameError``;
+    # supply them via ``localns`` so resolution works on every supported version.
+    type_params = getattr(target, "__type_params__", ())
+    localns = {tp.__name__: tp for tp in type_params} or None
     try:
-        hints = get_type_hints(target, include_extras=True)
+        hints = get_type_hints(target, include_extras=True, localns=localns)
     except NameError as err:
         # An unresolvable forward reference (a string annotation whose name is
         # not in scope) surfaces as a bare ``NameError`` from ``get_type_hints``;
