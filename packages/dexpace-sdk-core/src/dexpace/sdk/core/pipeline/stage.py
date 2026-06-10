@@ -8,7 +8,7 @@ orders policies by stage rather than by caller-specified order, removing a
 class of bugs where retry runs before redirect or auth runs after logging.
 
 Pillar stages admit at most one policy; non-pillar stages stack with
-deque semantics. The numeric values are sparse (100 apart) so future
+deque semantics. The numeric values are spaced out so future
 stages can slot between existing ones without renumbering.
 """
 
@@ -21,8 +21,13 @@ from typing import Final
 class Stage(IntEnum):
     """Pipeline stage ordering. Lower value runs first (closer to caller entry).
 
-    Stages divide into three groups:
+    Stages divide into four groups:
 
+    - **Operation** (`OPERATION`): runs *outside* the redirect / retry
+      wrappers, so a single entry brackets the whole operation regardless of
+      how many hops or attempts happen inside. This is where per-operation
+      lifecycle observation (e.g. `OperationTracingPolicy`) belongs — events
+      that must fire exactly once and reflect the final outcome.
     - **Wrapping** (`REDIRECT`, `RETRY`): re-invoke the downstream chain per
       hop / attempt. Their pillar slot is reserved for the single redirect /
       retry policy. `POST_*` siblings run *inside* the wrapper's loop.
@@ -36,6 +41,8 @@ class Stage(IntEnum):
       `SEND`): body-to-bytes (`SERDE` reserved, currently unused) and the
       terminal transport call (`SEND` — never a user-step slot).
     """
+
+    OPERATION = 50
 
     REDIRECT = 100
     POST_REDIRECT = 150
@@ -63,7 +70,15 @@ class Stage(IntEnum):
 
 
 _PILLARS: Final[frozenset[Stage]] = frozenset(
-    {Stage.REDIRECT, Stage.RETRY, Stage.AUTH, Stage.LOGGING, Stage.SERDE, Stage.SEND}
+    {
+        Stage.OPERATION,
+        Stage.REDIRECT,
+        Stage.RETRY,
+        Stage.AUTH,
+        Stage.LOGGING,
+        Stage.SERDE,
+        Stage.SEND,
+    }
 )
 
 

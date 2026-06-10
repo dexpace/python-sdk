@@ -32,7 +32,11 @@ from dexpace.sdk.core.instrumentation import (
 from dexpace.sdk.core.instrumentation.http_tracer import HttpTracer, HttpTracerFactory
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import Pipeline
-from dexpace.sdk.core.pipeline.policies import RetryPolicy, TracingPolicy
+from dexpace.sdk.core.pipeline.policies import (
+    OperationTracingPolicy,
+    RetryPolicy,
+    TracingPolicy,
+)
 from dexpace.sdk.core.pipeline.policies.retry import (
     _parse_rate_limit_reset,
     _StatusRetryError,
@@ -341,15 +345,20 @@ class _CountingFactory:
 class TestSharedTracerAcrossPolicies:
     def test_retry_and_tracing_share_one_per_operation_tracer(self) -> None:
         # With a factory that mints a fresh tracer per ``create`` (the
-        # documented contract), the retry and tracing policies must still land
-        # on a single per-operation instance via the ``ctx.data`` cache —
-        # otherwise attempt events and lifecycle events split across objects.
+        # documented contract), the operation-tracing, tracing, and retry
+        # policies must still land on a single per-operation instance via the
+        # ``ctx.data`` cache — otherwise attempt events and lifecycle events
+        # split across objects.
         factory = _CountingFactory()
         clock = FakeClock()
         client = _ScriptedClient([Status.SERVICE_UNAVAILABLE, Status.OK])
         with Pipeline(
             client,
-            policies=[TracingPolicy(), RetryPolicy(clock=clock, rand=_FixedRandom(0.5))],
+            policies=[
+                OperationTracingPolicy(),
+                TracingPolicy(),
+                RetryPolicy(clock=clock, rand=_FixedRandom(0.5)),
+            ],
         ) as p:
             p.run(_get(), DispatchContext(_instr("c" * 16, factory)))
         assert len(factory.created) == 1

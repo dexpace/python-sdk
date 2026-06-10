@@ -54,9 +54,11 @@ def test_default_pipeline_returns_builder() -> None:
 def test_default_pipeline_wires_canonical_stack() -> None:
     pipeline = default_pipeline(_StubTransport()).build()
     stages = _stages_of(pipeline)
-    # Canonical order: REDIRECT, POST_REDIRECT (idempotency), RETRY,
-    # POST_RETRY (set-date then client-identity), LOGGING, POST_LOGGING (tracing).
+    # Canonical order: OPERATION (operation-tracing, outside the wrappers),
+    # REDIRECT, POST_REDIRECT (idempotency), RETRY, POST_RETRY (set-date then
+    # client-identity), LOGGING, POST_LOGGING (tracing).
     assert stages == [
+        Stage.OPERATION,
         Stage.REDIRECT,
         Stage.POST_REDIRECT,
         Stage.RETRY,
@@ -124,3 +126,14 @@ def test_default_async_pipeline_returns_builder() -> None:
 def test_default_async_pipeline_builds_async_pipeline() -> None:
     pipeline = default_async_pipeline(_AsyncStubTransport()).build()
     assert isinstance(pipeline, AsyncPipeline)
+
+
+def test_default_async_pipeline_wires_operation_tracing() -> None:
+    from dexpace.sdk.core.pipeline.policies import AsyncOperationTracingPolicy
+
+    builder = default_async_pipeline(_AsyncStubTransport())
+    # Mirrors the sync default: the per-operation lifecycle policy occupies the
+    # outermost OPERATION pillar, so async callers get the same
+    # operation_started / operation_succeeded / operation_failed bracket around
+    # the attempt-level events the retry/redirect policies already emit.
+    assert isinstance(builder._pillars[Stage.OPERATION], AsyncOperationTracingPolicy)

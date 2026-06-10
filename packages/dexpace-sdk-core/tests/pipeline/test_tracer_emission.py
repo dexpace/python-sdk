@@ -12,7 +12,11 @@ sequence the policies produced.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
+
+import pytest
+from _pytest.logging import LogCaptureFixture
 
 from dexpace.sdk.core.client.async_http_client import AsyncHttpClient
 from dexpace.sdk.core.client.http_client import HttpClient
@@ -34,7 +38,14 @@ from dexpace.sdk.core.instrumentation import (
 )
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import AsyncPipeline, Pipeline
-from dexpace.sdk.core.pipeline.policies import RetryPolicy, TracingPolicy
+from dexpace.sdk.core.pipeline.policies import (
+    AsyncOperationTracingPolicy,
+    AsyncRetryPolicy,
+    OperationTracingPolicy,
+    RetryPolicy,
+    TracingPolicy,
+    tracing_policy,
+)
 from dexpace.sdk.core.pipeline.policies.async_redirect import AsyncRedirectPolicy
 from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
 
@@ -131,7 +142,10 @@ class TestTracingPolicyEmission:
         tracer = _RecordingHttpTracer()
         instr = _instr(tracer)
         body = ResponseBody.from_bytes(b"hello world")
-        with Pipeline(_OkClient(body=body), policies=[TracingPolicy()]) as p:
+        with Pipeline(
+            _OkClient(body=body),
+            policies=[OperationTracingPolicy(), TracingPolicy()],
+        ) as p:
             p.run(_request(), DispatchContext(instr))
         assert tracer.names() == [
             "operation_started",
@@ -184,7 +198,10 @@ class TestTracingPolicyEmission:
         instr = _instr(tracer)
         boom = ServiceRequestError("connect failed")
         raised: BaseException | None = None
-        with Pipeline(_OkClient(raise_exc=boom), policies=[TracingPolicy()]) as p:
+        with Pipeline(
+            _OkClient(raise_exc=boom),
+            policies=[OperationTracingPolicy(), TracingPolicy()],
+        ) as p:
             try:
                 p.run(_request(), DispatchContext(instr))
             except ServiceRequestError as err:
@@ -197,7 +214,10 @@ class TestTracingPolicyEmission:
     def test_no_events_when_tracing_disabled(self) -> None:
         tracer = _RecordingHttpTracer()
         instr = _instr(tracer)
-        with Pipeline(_OkClient(), policies=[TracingPolicy()]) as p:
+        with Pipeline(
+            _OkClient(),
+            policies=[OperationTracingPolicy(), TracingPolicy()],
+        ) as p:
             p.run(_request(), DispatchContext(instr), tracing_enabled=False)
         assert tracer.events == []
 
@@ -303,7 +323,7 @@ class TestSharedTracerAcrossPolicies:
         )
         with Pipeline(
             client,
-            policies=[RedirectPolicy(), TracingPolicy()],
+            policies=[OperationTracingPolicy(), RedirectPolicy(), TracingPolicy()],
         ) as p:
             p.run(_request("https://api.example.com/start"), DispatchContext(instr))
         names = tracer.names()
@@ -345,6 +365,41 @@ class _AlwaysRaisesClient(HttpClient):
         raise self._error
 
 
+class _RaiseThenOkClient(HttpClient):
+    """Raises a retryable error on the first ``fail_count`` calls, then OK."""
+
+    def __init__(self, *, error: BaseException, fail_count: int) -> None:
+        self._error = error
+        self._fail_count = fail_count
+        self.calls = 0
+
+    def execute(self, request: Request) -> Response:
+        self.calls += 1
+        if self.calls <= self._fail_count:
+            raise self._error
+        return Response(request=request, protocol=Protocol.HTTP_1_1, status=Status.OK)
+
+
+class _RedirectThenRaiseClient(HttpClient):
+    """Returns a redirect, then raises on the reissued (post-redirect) request."""
+
+    def __init__(self, *, location: str, error: BaseException) -> None:
+        self._location = location
+        self._error = error
+        self.calls = 0
+
+    def execute(self, request: Request) -> Response:
+        self.calls += 1
+        if self.calls == 1:
+            response = Response(
+                request=request,
+                protocol=Protocol.HTTP_1_1,
+                status=Status.MOVED_PERMANENTLY,
+            )
+            return response.with_header("Location", self._location)
+        raise self._error
+
+
 class TestOperationEventsFireOncePerOperation:
     def test_retry_emits_operation_lifecycle_once_across_attempts(self) -> None:
         # TracingPolicy sits *inside* RetryPolicy (retry is outer), so it is
@@ -354,7 +409,10 @@ class TestOperationEventsFireOncePerOperation:
         instr = _instr(tracer)
         client = _RetryThenOkClient(fail_status=Status.SERVICE_UNAVAILABLE, fail_count=2)
         retry = RetryPolicy(status_retries=3, clock=FakeClock())
-        with Pipeline(client, policies=[retry, TracingPolicy()]) as p:
+        with Pipeline(
+            client,
+            policies=[OperationTracingPolicy(), retry, TracingPolicy()],
+        ) as p:
             p.run(_request(), DispatchContext(instr))
         names = tracer.names()
         # Three attempts total (two 503s then a 200).
@@ -376,7 +434,10 @@ class TestOperationEventsFireOncePerOperation:
         client = _AlwaysRaisesClient(boom)
         retry = RetryPolicy(connect_retries=2, total_retries=2, clock=FakeClock())
         raised: BaseException | None = None
-        with Pipeline(client, policies=[retry, TracingPolicy()]) as p:
+        with Pipeline(
+            client,
+            policies=[OperationTracingPolicy(), retry, TracingPolicy()],
+        ) as p:
             try:
                 p.run(_request(), DispatchContext(instr))
             except ServiceRequestError as err:
@@ -400,7 +461,10 @@ class TestOperationEventsFireOncePerOperation:
                 _Hop(Status.OK),
             ],
         )
-        with Pipeline(client, policies=[RedirectPolicy(), TracingPolicy()]) as p:
+        with Pipeline(
+            client,
+            policies=[OperationTracingPolicy(), RedirectPolicy(), TracingPolicy()],
+        ) as p:
             p.run(_request("https://api.example.com/start"), DispatchContext(instr))
         names = tracer.names()
         # Two hops -> two attempts through the inner TracingPolicy.
@@ -413,8 +477,272 @@ class TestOperationEventsFireOncePerOperation:
         op_events = [name for name in names if name.startswith("operation_")]
         assert op_events == ["operation_started", "operation_succeeded"]
 
+    def test_retry_then_success_reports_operation_succeeded(self) -> None:
+        # A call that fails on its first attempt and succeeds on a retry must
+        # report a single operation_succeeded reflecting the final outcome —
+        # never operation_failed for the discarded first attempt.
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        client = _RaiseThenOkClient(error=ServiceRequestError("connect failed"), fail_count=1)
+        retry = RetryPolicy(connect_retries=3, total_retries=3, clock=FakeClock())
+        with Pipeline(
+            client,
+            policies=[OperationTracingPolicy(), retry, TracingPolicy()],
+        ) as p:
+            response = p.run(_request(), DispatchContext(instr))
+        assert int(response.status) == 200
+        assert client.calls == 2
+        names = tracer.names()
+        assert names.count("operation_started") == 1
+        assert names.count("operation_succeeded") == 1
+        assert names.count("operation_failed") == 0
+        # request_sent still fires per attempt (the failed one and the retry).
+        assert names.count("request_sent") == 2
 
-# ----- request_sent fires for unknown-length bodies (L19) -----------------
+    def test_redirect_then_failure_reports_operation_failed(self) -> None:
+        # When a later redirect hop fails, the operation outcome is the failure
+        # that escapes — not the success of the earlier 3xx hop.
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        boom = ServiceRequestError("connect failed")
+        client = _RedirectThenRaiseClient(location="https://api.example.com/new", error=boom)
+        raised: BaseException | None = None
+        with Pipeline(
+            client,
+            policies=[OperationTracingPolicy(), RedirectPolicy(), TracingPolicy()],
+        ) as p:
+            try:
+                p.run(_request("https://api.example.com/start"), DispatchContext(instr))
+            except ServiceRequestError as err:
+                raised = err
+        assert raised is boom
+        names = tracer.names()
+        assert names.count("operation_started") == 1
+        assert names.count("operation_failed") == 1
+        assert names.count("operation_succeeded") == 0
+        failed = [payload for name, payload in tracer.events if name == "operation_failed"]
+        assert failed == [boom]
+
+
+class _RaiseThenOkAsyncClient(AsyncHttpClient):
+    """Raises a retryable error on the first ``fail_count`` calls, then OK."""
+
+    def __init__(self, *, error: BaseException, fail_count: int) -> None:
+        self._error = error
+        self._fail_count = fail_count
+        self.calls = 0
+
+    async def execute(self, request: Request) -> AsyncResponse:
+        self.calls += 1
+        if self.calls <= self._fail_count:
+            raise self._error
+        return AsyncResponse(request=request, protocol=Protocol.HTTP_1_1, status=Status.OK)
+
+
+class _AlwaysRaisesAsyncClient(AsyncHttpClient):
+    """Raises a retryable error on every call to exhaust the retry budget."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+        self.calls = 0
+
+    async def execute(self, request: Request) -> AsyncResponse:
+        self.calls += 1
+        raise self._error
+
+
+class _RedirectThenRaiseAsyncClient(AsyncHttpClient):
+    """Returns a redirect, then raises on the reissued (post-redirect) request."""
+
+    def __init__(self, *, location: str, error: BaseException) -> None:
+        self._location = location
+        self._error = error
+        self.calls = 0
+
+    async def execute(self, request: Request) -> AsyncResponse:
+        self.calls += 1
+        if self.calls == 1:
+            response = AsyncResponse(
+                request=request,
+                protocol=Protocol.HTTP_1_1,
+                status=Status.MOVED_PERMANENTLY,
+            )
+            return response.with_header("Location", self._location)
+        raise self._error
+
+
+class _AsyncFakeClock:
+    """Deterministic ``AsyncClock`` for tests; advances time on sleep."""
+
+    __slots__ = ("_t",)
+
+    def __init__(self, start: float = 0.0) -> None:
+        self._t = start
+
+    def now(self) -> float:
+        return self._t
+
+    def monotonic(self) -> float:
+        return self._t
+
+    async def sleep(self, duration: float) -> None:
+        self._t += max(0.0, duration)
+
+
+class TestAsyncOperationEventsFireOncePerOperation:
+    """`AsyncOperationTracingPolicy` mirrors the sync per-operation guarantees.
+
+    The async retry / redirect policies already emit attempt-level events
+    through the shared per-operation tracer; these tests pin that the operation
+    lifecycle now brackets them exactly once and reflects the final outcome.
+    """
+
+    async def test_async_retry_then_success_reports_operation_succeeded(self) -> None:
+        # A connect failure retried to success must report a single
+        # operation_succeeded, never operation_failed for the discarded attempt.
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        client = _RaiseThenOkAsyncClient(error=ServiceRequestError("connect failed"), fail_count=1)
+        retry = AsyncRetryPolicy(connect_retries=3, total_retries=3, clock=_AsyncFakeClock())
+        async with AsyncPipeline(
+            client,
+            policies=[AsyncOperationTracingPolicy(), retry],
+        ) as p:
+            response = await p.run(_request(), DispatchContext(instr))
+        assert int(response.status) == 200
+        assert client.calls == 2
+        names = tracer.names()
+        assert names.count("operation_started") == 1
+        assert names.count("operation_succeeded") == 1
+        assert names.count("operation_failed") == 0
+        # client.calls == 2 confirms the first attempt was retried; the single
+        # lifecycle bracket still opens before anything the chain emits.
+        assert names[0] == "operation_started"
+
+    async def test_async_retry_exhaustion_emits_operation_failed_once(self) -> None:
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        boom = ServiceRequestError("connect failed")
+        client = _AlwaysRaisesAsyncClient(boom)
+        retry = AsyncRetryPolicy(connect_retries=2, total_retries=2, clock=_AsyncFakeClock())
+        raised: BaseException | None = None
+        async with AsyncPipeline(
+            client,
+            policies=[AsyncOperationTracingPolicy(), retry],
+        ) as p:
+            try:
+                await p.run(_request(), DispatchContext(instr))
+            except ServiceRequestError as err:
+                raised = err
+        assert raised is boom
+        names = tracer.names()
+        assert names.count("operation_started") == 1
+        assert names.count("operation_failed") == 1
+        assert names.count("operation_succeeded") == 0
+        failed = [payload for name, payload in tracer.events if name == "operation_failed"]
+        assert failed == [boom]
+
+    async def test_async_redirect_emits_operation_lifecycle_once_across_hops(self) -> None:
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        client = _ScriptedAsyncClient(
+            [
+                _Hop(Status.MOVED_PERMANENTLY, "https://api.example.com/new"),
+                _Hop(Status.OK),
+            ],
+        )
+        async with AsyncPipeline(
+            client,
+            policies=[AsyncOperationTracingPolicy(), AsyncRedirectPolicy()],
+        ) as p:
+            await p.run(_request("https://api.example.com/start"), DispatchContext(instr))
+        op_events = [name for name in tracer.names() if name.startswith("operation_")]
+        assert op_events == ["operation_started", "operation_succeeded"]
+        # Two hops still resolve two URLs inside the single operation bracket.
+        assert tracer.names().count("request_url_resolved") == 2
+
+    async def test_async_redirect_then_failure_reports_operation_failed(self) -> None:
+        # When a later redirect hop fails, the operation outcome is the failure
+        # that escapes — not the success of the earlier 3xx hop.
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        boom = ServiceRequestError("connect failed")
+        client = _RedirectThenRaiseAsyncClient(location="https://api.example.com/new", error=boom)
+        raised: BaseException | None = None
+        async with AsyncPipeline(
+            client,
+            policies=[AsyncOperationTracingPolicy(), AsyncRedirectPolicy()],
+        ) as p:
+            try:
+                await p.run(_request("https://api.example.com/start"), DispatchContext(instr))
+            except ServiceRequestError as err:
+                raised = err
+        assert raised is boom
+        names = tracer.names()
+        assert names.count("operation_started") == 1
+        assert names.count("operation_failed") == 1
+        assert names.count("operation_succeeded") == 0
+
+    async def test_async_no_operation_events_when_tracing_disabled(self) -> None:
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        client = _ScriptedAsyncClient([_Hop(Status.OK)])
+        async with AsyncPipeline(
+            client,
+            policies=[AsyncOperationTracingPolicy(), AsyncRedirectPolicy()],
+        ) as p:
+            await p.run(
+                _request("https://api.example.com/start"),
+                DispatchContext(instr),
+                tracing_enabled=False,
+            )
+        op_events = [name for name in tracer.names() if name.startswith("operation_")]
+        assert op_events == []
+
+
+class TestTracingPolicyMisconfigurationWarning:
+    """`TracingPolicy` warns once when a real tracer has no operation bracket.
+
+    The per-operation lifecycle moved to `OperationTracingPolicy`; a real tracer
+    behind a bare `TracingPolicy` would otherwise silently lose
+    operation_started / operation_succeeded / operation_failed.
+    """
+
+    def test_warns_once_when_real_tracer_has_no_operation_bracket(
+        self, caplog: LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(tracing_policy, "_bracket_warning_emitted", False)
+        instr = _instr(_RecordingHttpTracer())
+        caplog.set_level(logging.WARNING)
+        with Pipeline(_OkClient(), policies=[TracingPolicy()]) as p:
+            p.run(_request(), DispatchContext(instr))
+            p.run(_request(), DispatchContext(instr))
+        warns = [r for r in caplog.records if "OperationTracingPolicy" in r.getMessage()]
+        assert len(warns) == 1
+        assert "operation_started" in warns[0].getMessage()
+
+    def test_no_warning_when_operation_bracket_present(
+        self, caplog: LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(tracing_policy, "_bracket_warning_emitted", False)
+        instr = _instr(_RecordingHttpTracer())
+        caplog.set_level(logging.WARNING)
+        with Pipeline(_OkClient(), policies=[OperationTracingPolicy(), TracingPolicy()]) as p:
+            p.run(_request(), DispatchContext(instr))
+        assert not [r for r in caplog.records if "OperationTracingPolicy" in r.getMessage()]
+
+    def test_no_warning_for_noop_tracer(
+        self, caplog: LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No real tracer is installed, so the missing bracket is irrelevant.
+        monkeypatch.setattr(tracing_policy, "_bracket_warning_emitted", False)
+        caplog.set_level(logging.WARNING)
+        with Pipeline(_OkClient(), policies=[TracingPolicy()]) as p:
+            p.run(_request(), DispatchContext.noop())
+        assert not [r for r in caplog.records if "OperationTracingPolicy" in r.getMessage()]
+
+
+# ----- request_sent fires for unknown-length bodies -----------------
 
 
 class TestRequestSentUnknownLength:

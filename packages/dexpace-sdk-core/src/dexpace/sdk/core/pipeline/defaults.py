@@ -13,13 +13,14 @@ from .policies.async_idempotency import AsyncIdempotencyPolicy
 from .policies.async_redirect import AsyncRedirectPolicy
 from .policies.async_retry import AsyncRetryPolicy
 from .policies.async_set_date import AsyncSetDatePolicy
+from .policies.async_tracing_policy import AsyncOperationTracingPolicy
 from .policies.client_identity import ClientIdentityPolicy
 from .policies.idempotency import IdempotencyPolicy
 from .policies.logging_policy import LoggingPolicy
 from .policies.redirect import RedirectPolicy
 from .policies.retry import RetryPolicy
 from .policies.set_date import SetDatePolicy
-from .policies.tracing_policy import TracingPolicy
+from .policies.tracing_policy import OperationTracingPolicy, TracingPolicy
 from .staged_builder import StagedPipelineBuilder
 
 if TYPE_CHECKING:
@@ -44,14 +45,20 @@ def default_pipeline(
     """Pre-configured `StagedPipelineBuilder` with the canonical stack.
 
     Wires the policies that most consumers want by default in the order their
-    stages dictate: redirect → idempotency → retry → set-date →
-    client-identity → auth → logging → tracing. Each policy is opt-out (pass
-    ``None``) or opt-in-with-override (pass a pre-configured instance to
-    replace the default).
+    stages dictate: operation-tracing → redirect → idempotency → retry →
+    set-date → client-identity → auth → logging → tracing. Each policy is
+    opt-out (pass ``None``) or opt-in-with-override (pass a pre-configured
+    instance to replace the default).
 
     Idempotency sits before retry so a write request's ``Idempotency-Key`` is
     minted once and reused across every retry; ``set-date`` and
     ``client-identity`` sit just inside the retry wrapper.
+
+    Two tracing policies cooperate: `OperationTracingPolicy` brackets the whole
+    operation from outside the redirect / retry wrappers (so the per-operation
+    lifecycle fires once and reflects the final outcome), while `TracingPolicy`
+    opens a span and emits per-request events inside the wrappers, once per hop
+    / attempt.
 
     Args:
         client: Terminal HTTP transport.
@@ -73,6 +80,9 @@ def default_pipeline(
         immediate ``.build()``.
     """
     builder = StagedPipelineBuilder(client)
+    # Sorts to Stage.OPERATION (outermost), bracketing every hop / attempt so
+    # the per-operation lifecycle fires once on the final outcome.
+    builder.append(OperationTracingPolicy())
     builder.append(redirect or RedirectPolicy())
     builder.append(idempotency or IdempotencyPolicy())
     builder.append(retry or RetryPolicy())
@@ -97,11 +107,19 @@ def default_async_pipeline(
 ) -> AsyncStagedPipelineBuilder:
     """Async twin of `default_pipeline`.
 
-    Mirrors the sync version's stack minus logging/tracing, which currently
-    only ship as sync policies. Async-side observability lives on the caller's
-    side until async versions land.
+    Mirrors the sync version's stack. `AsyncOperationTracingPolicy` brackets
+    the whole operation from the outermost stage so the per-operation
+    ``HttpTracer`` lifecycle (``operation_started`` / ``operation_succeeded`` /
+    ``operation_failed``) fires once and reflects the final outcome — completing
+    the attempt-level events the async retry and redirect policies already emit
+    through the same per-operation tracer. The per-attempt OpenTelemetry span
+    policy (`TracingPolicy`) and `LoggingPolicy` ship sync-only, so the async
+    stack omits those two.
     """
     builder = AsyncStagedPipelineBuilder(client)
+    # Sorts to Stage.OPERATION (outermost), bracketing every hop / attempt so
+    # the per-operation lifecycle fires once on the final outcome.
+    builder.append(AsyncOperationTracingPolicy())
     builder.append(redirect or AsyncRedirectPolicy())
     builder.append(idempotency or AsyncIdempotencyPolicy())
     builder.append(retry or AsyncRetryPolicy())

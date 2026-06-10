@@ -217,7 +217,7 @@ def _build_response(request: Request, opened: object) -> Response:
         # ``Status`` synthesizes a member for any in-range code. Release the
         # underlying response first so the connection is not leaked.
         _close_quietly(opened)
-        raise ServiceResponseError(f"Unknown status code: {status_code}", error=err) from err
+        raise ServiceResponseError(f"Invalid status code: {status_code}", error=err) from err
     raw_headers = getattr(opened, "headers", None)
     headers = _convert_headers(raw_headers)
     content_length = _body_content_length(headers)
@@ -254,18 +254,20 @@ def _protocol_of(opened: object) -> Protocol:
 def _body_content_length(headers: Headers) -> int:
     """Resolve the body length to advertise on the ``ResponseBody``.
 
-    Returns ``-1`` (unknown) when ``Content-Encoding`` is present, because
-    the stream yields decompressed bytes and the upstream ``Content-Length``
-    counts the compressed payload — propagating it would lie about the body.
+    ``http.client`` does not decode ``Content-Encoding`` (gzip/deflate): the
+    stream yields the bytes exactly as framed on the wire, so a present
+    ``Content-Length`` matches the body this transport exposes and is reported
+    as-is — even under ``Content-Encoding``. (Transports that decompress
+    transparently, e.g. requests/httpx/aiohttp, must instead drop the header
+    there, since it would then describe the compressed payload rather than the
+    decoded stream they hand back.)
 
     Args:
         headers: The response headers.
 
     Returns:
-        The body length in bytes, or ``-1`` when unknown or unreliable.
+        The body length in bytes, or ``-1`` when absent or unparseable.
     """
-    if "content-encoding" in headers:
-        return -1
     raw = headers.get("Content-Length")
     if raw is None:
         return -1

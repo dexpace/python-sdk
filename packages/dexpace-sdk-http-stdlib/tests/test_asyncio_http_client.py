@@ -17,10 +17,12 @@ from dexpace.sdk.core.errors import (
     ServiceResponseTimeoutError,
 )
 from dexpace.sdk.core.http.common import Url
+from dexpace.sdk.core.http.common.headers import Headers
 from dexpace.sdk.core.http.common.protocol import Protocol
 from dexpace.sdk.core.http.request import Method, Request, RequestBody
 from dexpace.sdk.core.http.response import Status
 from dexpace.sdk.http.stdlib import AsyncioHttpClient
+from dexpace.sdk.http.stdlib import asyncio_http_client as _asyncio_mod
 
 _Handler = Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]]
 
@@ -224,7 +226,7 @@ def _header_value(head: list[str], name: str) -> str | None:
 
 
 async def test_host_header_includes_non_default_port() -> None:
-    # M1: a non-default port must appear in the Host header (RFC 9112 §3.2).
+    # A non-default port must appear in the Host header (RFC 9112 §3.2).
     sink: dict[str, list[str]] = {}
     gen = _serve(await _collect_head(sink))
     base = await anext(gen)
@@ -239,7 +241,7 @@ async def test_host_header_includes_non_default_port() -> None:
 
 
 async def test_empty_post_body_sends_content_length_zero() -> None:
-    # L17: a body-bearing method with no payload must advertise
+    # A body-bearing method with no payload must advertise
     # Content-Length: 0 (RFC 9110 §8.6).
     sink: dict[str, list[str]] = {}
     gen = _serve(await _collect_head(sink))
@@ -287,7 +289,7 @@ async def test_post_with_body_sets_content_length() -> None:
 
 
 async def test_plain_http_ignores_supplied_ssl_context() -> None:
-    # M2: a caller-supplied ssl_context must not trigger a TLS handshake on
+    # A caller-supplied ssl_context must not trigger a TLS handshake on
     # a plain http:// URL — the request must still succeed over plaintext.
     async def ok(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         await _read_request_head(reader)
@@ -308,7 +310,7 @@ async def test_plain_http_ignores_supplied_ssl_context() -> None:
 
 
 async def test_chunked_response_raises_service_response_error() -> None:
-    # M3: a chunked response cannot be dechunked by this reference client, so
+    # A chunked response cannot be dechunked by this reference client, so
     # it must fail loudly rather than silently return an empty body.
     async def chunked(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         await _read_request_head(reader)
@@ -331,7 +333,7 @@ async def test_chunked_response_raises_service_response_error() -> None:
 
 
 async def test_multiline_transfer_encoding_with_chunked_not_first_raises() -> None:
-    # M3: Transfer-Encoding may be split across lines with ``chunked`` NOT
+    # Transfer-Encoding may be split across lines with ``chunked`` NOT
     # first (alongside a misleading Content-Length). The client must still
     # detect chunked framing and refuse to read the bytes as a fixed-length
     # body, rather than parsing chunk framing as the payload — the exact
@@ -359,8 +361,23 @@ async def test_multiline_transfer_encoding_with_chunked_not_first_raises() -> No
             await anext(gen)
 
 
+def test_is_chunked_matches_coding_token_not_substring() -> None:
+    # The chunked check matches the coding token exactly: a real ``chunked``
+    # coding (alone, after other codings, or with parameters) trips it, but a
+    # coding name that merely contains the substring ``chunked`` (``x-chunked``)
+    # does not — so a benign coding is never mistaken for chunked framing.
+    assert _asyncio_mod._is_chunked(Headers([("Transfer-Encoding", "chunked")]))
+    assert _asyncio_mod._is_chunked(Headers([("Transfer-Encoding", "gzip, chunked")]))
+    assert _asyncio_mod._is_chunked(
+        Headers([("Transfer-Encoding", "gzip"), ("Transfer-Encoding", "chunked")])
+    )
+    assert _asyncio_mod._is_chunked(Headers([("Transfer-Encoding", "chunked ; foo=bar")]))
+    assert not _asyncio_mod._is_chunked(Headers([("Transfer-Encoding", "x-chunked")]))
+    assert not _asyncio_mod._is_chunked(Headers([("Transfer-Encoding", "gzip")]))
+
+
 async def test_connection_close_framed_body_read_to_eof() -> None:
-    # M3: a response without Content-Length is connection-close framed; the
+    # A response without Content-Length is connection-close framed; the
     # body must be read to EOF, not fabricated as empty.
     async def close_framed(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         await _read_request_head(reader)

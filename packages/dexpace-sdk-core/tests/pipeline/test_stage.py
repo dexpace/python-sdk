@@ -15,7 +15,15 @@ from dexpace.sdk.core.pipeline.stage import Stage
 class TestStage:
     @pytest.mark.parametrize(
         "stage",
-        [Stage.REDIRECT, Stage.RETRY, Stage.AUTH, Stage.LOGGING, Stage.SERDE, Stage.SEND],
+        [
+            Stage.OPERATION,
+            Stage.REDIRECT,
+            Stage.RETRY,
+            Stage.AUTH,
+            Stage.LOGGING,
+            Stage.SERDE,
+            Stage.SEND,
+        ],
     )
     def test_pillar_stages(self, stage: Stage) -> None:
         assert stage.is_pillar
@@ -38,7 +46,8 @@ class TestStage:
         assert not stage.is_pillar
 
     def test_stage_order(self) -> None:
-        assert Stage.REDIRECT < Stage.RETRY < Stage.AUTH < Stage.LOGGING < Stage.SEND
+        assert Stage.OPERATION < Stage.REDIRECT < Stage.RETRY < Stage.AUTH
+        assert Stage.AUTH < Stage.LOGGING < Stage.SEND
 
 
 class TestSyncPolicyEnforcement:
@@ -122,6 +131,11 @@ class TestExistingPoliciesDeclareSTAGE:
         from dexpace.sdk.core.pipeline.policies.tracing_policy import TracingPolicy
 
         assert TracingPolicy.STAGE is Stage.POST_LOGGING
+
+    def test_operation_tracing_policy(self) -> None:
+        from dexpace.sdk.core.pipeline.policies.tracing_policy import OperationTracingPolicy
+
+        assert OperationTracingPolicy.STAGE is Stage.OPERATION
 
     def test_bearer_token_policy(self) -> None:
         from dexpace.sdk.core.http.auth.policies import BearerTokenPolicy

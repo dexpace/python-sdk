@@ -1155,6 +1155,16 @@
           }
         }
       },
+      "dexpace.sdk.core.pipeline.policies.async_tracing_policy": {
+        "AsyncOperationTracingPolicy": {
+          "bases": [
+            "AsyncPolicy"
+          ],
+          "methods": {
+            "send": "async send(self, request: Request, ctx: PipelineContext) -> AsyncResponse"
+          }
+        }
+      },
       "dexpace.sdk.core.pipeline.policies.client_identity": {
         "ClientIdentityPolicy": {
           "bases": [
@@ -1225,6 +1235,14 @@
         }
       },
       "dexpace.sdk.core.pipeline.policies.tracing_policy": {
+        "OperationTracingPolicy": {
+          "bases": [
+            "Policy"
+          ],
+          "methods": {
+            "send": "send(self, request: Request, ctx: PipelineContext) -> Response"
+          }
+        },
         "TracingPolicy": {
           "bases": [
             "Policy"
@@ -1593,12 +1611,14 @@
       "dexpace.sdk.core.pipeline.policies": [
         "AsyncClientIdentityPolicy",
         "AsyncIdempotencyPolicy",
+        "AsyncOperationTracingPolicy",
         "AsyncRedirectPolicy",
         "AsyncRetryPolicy",
         "AsyncSetDatePolicy",
         "ClientIdentityPolicy",
         "IdempotencyPolicy",
         "LoggingPolicy",
+        "OperationTracingPolicy",
         "RedirectPolicy",
         "RequestHistory",
         "RetryMode",
