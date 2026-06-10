@@ -147,6 +147,9 @@ class BearerTokenPolicy(Policy):
         handler_header = self._apply_challenge_handler(request, response, status)
         if handler_header is not None:
             request = request.with_header(*handler_header)
+            # The rejected challenge response is not handed back; close it to
+            # release the pooled connection before the authenticated retry.
+            response.close()
             response = self.next.send(request, ctx)
             if int(response.status) not in (401, 407):
                 return response
@@ -157,6 +160,8 @@ class BearerTokenPolicy(Policy):
             return response
         if "WWW-Authenticate" in response.headers and self.on_challenge(request, response):
             request = self._authorize(request, ctx, force_refresh=True)
+            # Release the rejected 401 before retrying with the refreshed token.
+            response.close()
             response = self.next.send(request, ctx)
             if int(response.status) != 401:
                 return response
@@ -301,6 +306,9 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         handler_header = self._apply_challenge_handler(request, response, status)
         if handler_header is not None:
             request = request.with_header(*handler_header)
+            # The rejected challenge response is not handed back; close it to
+            # release the pooled connection before the authenticated retry.
+            await response.close()
             response = await self.next.send(request, ctx)
             if int(response.status) not in (401, 407):
                 return response
@@ -311,6 +319,8 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
             return response
         if "WWW-Authenticate" in response.headers and await self.on_challenge(request, response):
             request = await self._authorize(request, ctx, force_refresh=True)
+            # Release the rejected 401 before retrying with the refreshed token.
+            await response.close()
             response = await self.next.send(request, ctx)
             if int(response.status) != 401:
                 return response

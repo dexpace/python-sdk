@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 
@@ -30,6 +31,8 @@ from dexpace.sdk.core.http.common import Protocol, Url
 from dexpace.sdk.core.http.context import DispatchContext
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.response import AsyncResponse, Response, Status
+from dexpace.sdk.core.http.response.async_response_body import AsyncResponseBody
+from dexpace.sdk.core.http.response.response_body import ResponseBody
 from dexpace.sdk.core.instrumentation import (
     InstrumentationContext,
     SpanId,
@@ -633,3 +636,166 @@ async def test_async_challenge_handler_can_handle_false_falls_through() -> None:
     assert handler.can_handle_calls == 1
     assert handler.handle_calls == 0
     assert on_challenge_calls == 1
+
+
+# --------------------------------------------------------------------------- #
+# A discarded 401/407 response is closed before the request is re-issued       #
+# --------------------------------------------------------------------------- #
+
+_DIGEST_CHALLENGE = (
+    'Digest realm="testrealm@host.com", '
+    'qop="auth", '
+    'nonce="dcd98b7102dd2f0e8b11d0f600bfb0c093", '
+    'opaque="5ccc069c403ebaf9f0171e9517f40e41", '
+    "algorithm=MD5"
+)
+
+
+class _RecordingResponseBody(ResponseBody):
+    """Sync response body that records whether ``close`` was called."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def media_type(self) -> None:
+        return None
+
+    def content_length(self) -> int:
+        return 0
+
+    def iter_bytes(self, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
+        yield b""
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _AsyncRecordingResponseBody(AsyncResponseBody):
+    """Async response body that records whether ``close`` was awaited."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def media_type(self) -> None:
+        return None
+
+    def content_length(self) -> int:
+        return 0
+
+    async def aiter_bytes(self, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
+        yield b""
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _BodyScriptedClient(HttpClient):
+    """Scripted client whose responses each carry an inspectable recording body."""
+
+    def __init__(self, script: list[tuple[Status, str | None]]) -> None:
+        self._script = script
+        self._index = 0
+        self.bodies: list[_RecordingResponseBody] = []
+
+    def execute(self, request: Request) -> Response:
+        from dexpace.sdk.core.http.common import Headers
+
+        idx = min(self._index, len(self._script) - 1)
+        self._index += 1
+        status, www_auth = self._script[idx]
+        pairs = [("WWW-Authenticate", www_auth)] if www_auth is not None else []
+        body = _RecordingResponseBody()
+        self.bodies.append(body)
+        return Response(
+            request=request,
+            protocol=Protocol.HTTP_1_1,
+            status=status,
+            headers=Headers(pairs),
+            body=body,
+        )
+
+
+class _AsyncBodyScriptedClient(AsyncHttpClient):
+    """Async twin of ``_BodyScriptedClient``."""
+
+    def __init__(self, script: list[tuple[Status, str | None]]) -> None:
+        self._script = script
+        self._index = 0
+        self.bodies: list[_AsyncRecordingResponseBody] = []
+
+    async def execute(self, request: Request) -> AsyncResponse:
+        from dexpace.sdk.core.http.common import Headers
+
+        idx = min(self._index, len(self._script) - 1)
+        self._index += 1
+        status, www_auth = self._script[idx]
+        pairs = [("WWW-Authenticate", www_auth)] if www_auth is not None else []
+        body = _AsyncRecordingResponseBody()
+        self.bodies.append(body)
+        return AsyncResponse(
+            request=request,
+            protocol=Protocol.HTTP_1_1,
+            status=status,
+            headers=Headers(pairs),
+            body=body,
+        )
+
+
+def test_challenge_handler_closes_discarded_401_response() -> None:
+    """The 401 whose body the handler retries past is released before re-issue."""
+    client = _BodyScriptedClient([(Status.UNAUTHORIZED, _DIGEST_CHALLENGE), (Status.OK, None)])
+    handler = DigestChallengeHandler("Mufasa", "Circle Of Life", cnonce_factory=lambda: "0a4f113b")
+    policy = BearerTokenPolicy(_StaticCredential(), "scope-a", challenge_handler=handler)
+    with Pipeline(client, policies=[policy]) as p:
+        p.run(_request(), DispatchContext(_instr("0" * 15 + "2a")))
+
+    assert client.bodies[0].closed, "discarded 401 response leaked: body was not closed"
+    assert not client.bodies[1].closed, "final response handed to caller must stay open"
+
+
+def test_on_challenge_closes_discarded_401_response() -> None:
+    """The on_challenge retry path also releases the rejected 401."""
+    client = _BodyScriptedClient([(Status.UNAUTHORIZED, 'Bearer realm="x"'), (Status.OK, None)])
+
+    class _Retrying(BearerTokenPolicy):
+        def on_challenge(self, request: Request, response: Response) -> bool:
+            del request, response
+            return True
+
+    policy = _Retrying(_StaticCredential(), "scope-a")
+    with Pipeline(client, policies=[policy]) as p:
+        p.run(_request(), DispatchContext(_instr("0" * 15 + "2b")))
+
+    assert client.bodies[0].closed, "discarded 401 response leaked: body was not closed"
+    assert not client.bodies[1].closed, "final response handed to caller must stay open"
+
+
+async def test_async_challenge_handler_closes_discarded_401_response() -> None:
+    """Async handler retry releases the rejected 401 before re-issue."""
+    client = _AsyncBodyScriptedClient([(Status.UNAUTHORIZED, _DIGEST_CHALLENGE), (Status.OK, None)])
+    handler = DigestChallengeHandler("Mufasa", "Circle Of Life", cnonce_factory=lambda: "0a4f113b")
+    policy = AsyncBearerTokenPolicy(_StaticAsyncCredential(), "scope-a", challenge_handler=handler)
+    async with AsyncPipeline(client, policies=[policy]) as p:
+        await p.run(_request(), DispatchContext(_instr("0" * 15 + "2c")))
+
+    assert client.bodies[0].closed, "discarded 401 response leaked: body was not closed"
+    assert not client.bodies[1].closed, "final response handed to caller must stay open"
+
+
+async def test_async_on_challenge_closes_discarded_401_response() -> None:
+    """Async on_challenge retry releases the rejected 401."""
+    client = _AsyncBodyScriptedClient(
+        [(Status.UNAUTHORIZED, 'Bearer realm="x"'), (Status.OK, None)]
+    )
+
+    class _Retrying(AsyncBearerTokenPolicy):
+        async def on_challenge(self, request: Request, response: AsyncResponse) -> bool:
+            del request, response
+            return True
+
+    policy = _Retrying(_StaticAsyncCredential(), "scope-a")
+    async with AsyncPipeline(client, policies=[policy]) as p:
+        await p.run(_request(), DispatchContext(_instr("0" * 15 + "2d")))
+
+    assert client.bodies[0].closed, "discarded 401 response leaked: body was not closed"
+    assert not client.bodies[1].closed, "final response handed to caller must stay open"
