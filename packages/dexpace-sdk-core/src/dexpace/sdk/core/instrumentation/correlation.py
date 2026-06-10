@@ -11,7 +11,7 @@ through every call. The tracing policy sets them when it opens a span;
 record.
 
 Code that hops to a worker thread (``loop.run_in_executor``) does not inherit
-the caller's context automatically; use :func:`bind_correlation` there to
+the caller's context automatically; use `bind_correlation` there to
 re-establish the ids inside the worker.
 """
 
@@ -47,7 +47,7 @@ def set_trace_id(value: str | None) -> Token[str | None]:
 
     Returns:
         A reset token; pass it to ``ContextVar.reset`` to restore the prior
-        value. Prefer :func:`bind_correlation` for scoped use.
+        value. Prefer `bind_correlation` for scoped use.
     """
     return _trace_id.set(value)
 
@@ -60,7 +60,7 @@ def set_span_id(value: str | None) -> Token[str | None]:
 
     Returns:
         A reset token; pass it to ``ContextVar.reset`` to restore the prior
-        value. Prefer :func:`bind_correlation` for scoped use.
+        value. Prefer `bind_correlation` for scoped use.
     """
     return _span_id.set(value)
 
@@ -73,12 +73,16 @@ def bind_correlation(
 ) -> Iterator[None]:
     """Bind trace/span ids for the duration of the ``with`` block.
 
-    Restores the previous ids on exit, even if the body raises. Only the
-    arguments that are passed are bound; omitted ids are left untouched.
+    Restores the previous ids on exit, even if the body raises. Both ids are
+    always (re)bound for the block: an omitted (or explicitly ``None``)
+    argument clears that id rather than leaving the inherited value in place.
+    Pass the current value through if you only mean to override the other id.
 
     Args:
-        trace_id: Trace id to bind for the block, or ``None`` to clear it.
-        span_id: Span id to bind for the block, or ``None`` to clear it.
+        trace_id: Trace id to bind for the block. Defaults to ``None``, which
+            clears any inherited trace id for the block.
+        span_id: Span id to bind for the block. Defaults to ``None``, which
+            clears any inherited span id for the block.
 
     Yields:
         Nothing; use as a plain scope guard.

@@ -155,6 +155,14 @@ def test_get_duration_negative_returns_default() -> None:
     assert cfg.get_duration("T", 9.0) == 9.0
 
 
+@pytest.mark.parametrize("value", ["inf", "-inf", "Infinity", "nan", "NaN"])
+def test_get_duration_non_finite_returns_default(value: str) -> None:
+    # ``float('inf')`` / ``float('nan')`` parse successfully but a non-finite
+    # duration disables deadline enforcement; reject them in favour of the default.
+    cfg = Configuration(env=_env({"T": value}))
+    assert cfg.get_duration("T", 9.0) == 9.0
+
+
 # ---------------------------------------------------------------------------
 # Builder
 

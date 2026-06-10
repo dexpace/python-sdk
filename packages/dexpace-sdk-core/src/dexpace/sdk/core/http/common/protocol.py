@@ -1,7 +1,7 @@
 # Copyright (c) 2026 dexpace and Omar Aljarrah.
 # Licensed under the MIT License. See LICENSE.md in the repository root for details.
 
-"""HTTP protocol versions describable on a :class:`Response`."""
+"""HTTP protocol versions describable on a `Response`."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Self
 class Protocol(StrEnum):
     """Wire-protocol identifier negotiated for an HTTP exchange.
 
-    The wire form (returned by ``__str__`` and consumed by :meth:`parse`) is
+    The wire form (returned by ``__str__`` and consumed by `parse`) is
     lower-case with a slash separator, matching ALPN identifiers.
     """
 

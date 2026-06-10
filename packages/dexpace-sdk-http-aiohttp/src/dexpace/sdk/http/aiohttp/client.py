@@ -1,16 +1,16 @@
 # Copyright (c) 2026 dexpace and Omar Aljarrah.
 # Licensed under the MIT License. See LICENSE.md in the repository root for details.
 
-"""``AsyncHttpClient`` implementation backed by :mod:`aiohttp`.
+"""``AsyncHttpClient`` implementation backed by `aiohttp`.
 
 ``aiohttp`` exposes only an async API; this package therefore ships an
 async transport without a sync twin. The adapter is a thin pass-through:
 
 - Request bodies are forwarded to ``aiohttp`` via an async-iterable shim
-  over :meth:`RequestBody.iter_bytes`, so uploads stream without buffering
+  over `RequestBody.iter_bytes`, so uploads stream without buffering
   the full payload into memory.
 - Response content streams through ``aiohttp.StreamReader``; we wrap it as
-  an :class:`AsyncResponseBody` so the SDK's body lifecycle (deferred
+  an `AsyncResponseBody` so the SDK's body lifecycle (deferred
   read, deterministic close) is preserved.
 - Transport exceptions are mapped to the SDK's typed error hierarchy.
 
@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Final, Self
 import aiohttp
 from dexpace.sdk.core.errors import (
     ServiceRequestError,
+    ServiceRequestTimeoutError,
     ServiceResponseError,
     ServiceResponseTimeoutError,
 )
@@ -45,19 +46,21 @@ _UPLOAD_CHUNK: Final[int] = 8192
 
 
 class AiohttpHttpClient:
-    """Async ``HttpClient`` over an :class:`aiohttp.ClientSession`.
+    """Async ``HttpClient`` over an `aiohttp.ClientSession`.
 
     The client owns the session by default and releases it on ``aclose``.
     Pass an existing ``session`` to share connection pooling with other
     components; the caller is then responsible for closing it.
 
     Attributes:
-        timeout: Total request timeout in seconds. Applied via
-            ``aiohttp.ClientTimeout(total=...)``. ``None`` disables the
+        timeout: Per-phase request timeout in seconds, applied to both the
+            connect and the socket-read phases via
+            ``aiohttp.ClientTimeout(sock_connect=..., sock_read=...)`` so the
+            two phases raise distinguishable exceptions. ``None`` disables the
             timeout entirely (not recommended).
     """
 
-    __slots__ = ("_owns_session", "_session", "_session_factory", "timeout")
+    __slots__ = ("_closed", "_owns_session", "_session", "timeout")
 
     def __init__(
         self,
@@ -70,12 +73,21 @@ class AiohttpHttpClient:
         self.timeout = timeout
         self._session = session
         self._owns_session = session is None
-        self._session_factory = aiohttp.ClientSession
+        self._closed = False
 
     async def execute(self, request: Request) -> AsyncResponse:
+        if self._closed:
+            raise ServiceRequestError("AiohttpHttpClient is closed")
         session = await self._ensure_session()
+        # Per-phase budgets (not a single ``total=``) so aiohttp raises the
+        # distinguishable ``ConnectionTimeoutError`` for a connect-phase stall
+        # and ``SocketTimeoutError`` for a read-phase stall. This keeps the
+        # connect -> request-error / read -> response-error split consistent
+        # with the other transports, which all use per-operation timeouts.
         timeout_cfg = (
-            aiohttp.ClientTimeout(total=self.timeout) if self.timeout is not None else None
+            aiohttp.ClientTimeout(sock_connect=self.timeout, sock_read=self.timeout)
+            if self.timeout is not None
+            else None
         )
         data = _payload(request.body)
         try:
@@ -90,6 +102,10 @@ class AiohttpHttpClient:
             aio_response = await ctx
         except aiohttp.ClientConnectorError as err:
             raise ServiceRequestError(f"Connect failed: {err}", error=err) from err
+        except aiohttp.ConnectionTimeoutError as err:
+            raise ServiceRequestTimeoutError(
+                f"Connection to {request.url} timed out", error=err
+            ) from err
         except TimeoutError as err:
             raise ServiceResponseTimeoutError(
                 f"Request to {request.url} timed out", error=err
@@ -101,6 +117,9 @@ class AiohttpHttpClient:
         return _wrap_response(request, aio_response)
 
     async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         if self._session is not None and self._owns_session:
             await self._session.close()
             self._session = None
@@ -119,7 +138,8 @@ class AiohttpHttpClient:
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None:
-            self._session = self._session_factory()
+            # Construct lazily so the session binds the running event loop.
+            self._session = aiohttp.ClientSession()
             self._owns_session = True
         return self._session
 
@@ -159,6 +179,9 @@ def _wrap_response(request: Request, aio_response: aiohttp.ClientResponse) -> As
     try:
         status = Status(aio_response.status)
     except ValueError as err:
+        # Release the handle before bailing so the connection returns to the
+        # pool instead of leaking (aiohttp's release() is synchronous).
+        aio_response.release()
         raise ServiceResponseError(
             f"Unknown status code: {aio_response.status}", error=err
         ) from err
@@ -179,7 +202,7 @@ def _wrap_response(request: Request, aio_response: aiohttp.ClientResponse) -> As
 
 
 class _StreamReaderAdapter:
-    """``SupportsAsyncRead`` adapter over an :class:`aiohttp.ClientResponse`.
+    """``SupportsAsyncRead`` adapter over an `aiohttp.ClientResponse`.
 
     Owns the response handle; closing the adapter releases the connection
     back to the pool.

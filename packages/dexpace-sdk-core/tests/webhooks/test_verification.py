@@ -185,6 +185,49 @@ def test_verify_rejects_a_non_integer_timestamp() -> None:
         _verifier().verify(headers, _BODY)
 
 
+def test_verify_rejects_an_underscore_timestamp() -> None:
+    # PEP 515 underscore digit grouping is accepted by int() but is not a valid
+    # Standard Webhooks timestamp and must be rejected.
+    signature = _sign(_RAW_KEY, _WEBHOOK_ID, _TIMESTAMP, _BODY)
+    headers = _headers(signature, timestamp="1_690_000_000")
+    with pytest.raises(InvalidWebhookSignatureError, match="malformed webhook-timestamp"):
+        _verifier().verify(headers, _BODY)
+
+
+def test_verify_skips_a_non_ascii_signature_token() -> None:
+    # A v1 token carrying a non-ASCII character must be skipped, not raised out
+    # of verify() as a UnicodeEncodeError (a one-header denial-of-service).
+    good = _sign(_RAW_KEY, _WEBHOOK_ID, _TIMESTAMP, _BODY)
+    tampered = good.replace(good[0], "é", 1) if good[0] != "é" else "é" + good[1:]
+    headers = {
+        "webhook-id": _WEBHOOK_ID,
+        "webhook-timestamp": _TIMESTAMP,
+        "webhook-signature": f"v1,{tampered}",
+    }
+    with pytest.raises(InvalidWebhookSignatureError, match="no matching signature"):
+        _verifier().verify(headers, _BODY)
+
+
+def test_verify_skips_non_ascii_token_but_still_matches_a_valid_one() -> None:
+    good = _sign(_RAW_KEY, _WEBHOOK_ID, _TIMESTAMP, _BODY)
+    headers = {
+        "webhook-id": _WEBHOOK_ID,
+        "webhook-timestamp": _TIMESTAMP,
+        "webhook-signature": f"v1,nonéascii v1,{good}",
+    }
+    _verifier().verify(headers, _BODY)
+
+
+def test_empty_secret_is_rejected_at_construction() -> None:
+    with pytest.raises(InvalidWebhookSignatureError, match="empty webhook secret"):
+        WebhookVerifier("")
+
+
+def test_bare_whsec_prefix_secret_is_rejected_at_construction() -> None:
+    with pytest.raises(InvalidWebhookSignatureError, match="empty webhook secret"):
+        WebhookVerifier("whsec_")
+
+
 def test_whsec_prefix_is_stripped_and_base64_decoded() -> None:
     # A verifier built from the whsec_-prefixed secret produces the same result
     # as signing with the raw decoded key — i.e. the prefix was stripped and

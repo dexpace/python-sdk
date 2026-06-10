@@ -60,8 +60,8 @@ class MediaType:
 
     Immutable and hashable. ``parameters`` is stored as a tuple of sorted
     ``(key, value)`` pairs so two equivalent media types compare equal and hash
-    equally regardless of construction order. Construct via :meth:`of` or
-    :meth:`parse` rather than the dataclass constructor directly so the type,
+    equally regardless of construction order. Construct via `of` or
+    `parse` rather than the dataclass constructor directly so the type,
     subtype, and parameter keys are normalised to lower case.
     """
 

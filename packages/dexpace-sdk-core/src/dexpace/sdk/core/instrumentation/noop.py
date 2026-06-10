@@ -16,7 +16,7 @@ from .tracing_scope import TracingScope
 
 
 class _NoopScope(TracingScope):
-    """Reused across every :meth:`Span.make_current` call so the no-op path
+    """Reused across every `Span.make_current` call so the no-op path
     allocates nothing."""
 
     def close(self) -> None:
@@ -27,16 +27,16 @@ _NOOP_SCOPE = _NoopScope()
 
 
 class _NoopHttpTracer(HttpTracer):
-    """No-op :class:`HttpTracer` — every event callback inherits the do-nothing
-    default. Use the shared :data:`NOOP_HTTP_TRACER` singleton."""
+    """No-op `HttpTracer` — every event callback inherits the do-nothing
+    default. Use the shared `NOOP_HTTP_TRACER` singleton."""
 
 
-#: Shared no-op :class:`HttpTracer` singleton. Use when tracing is disabled.
+#: Shared no-op `HttpTracer` singleton. Use when tracing is disabled.
 NOOP_HTTP_TRACER: Final[HttpTracer] = _NoopHttpTracer()
 
 
 class _NoopHttpTracerFactory:
-    """No-op tracer factory — every :meth:`create` returns :data:`NOOP_HTTP_TRACER`."""
+    """No-op tracer factory — every `create` returns `NOOP_HTTP_TRACER`."""
 
     def create(self) -> HttpTracer:
         return NOOP_HTTP_TRACER
@@ -47,9 +47,9 @@ NOOP_HTTP_TRACER_FACTORY: Final[HttpTracerFactory] = _NoopHttpTracerFactory()
 
 
 class _NoopSpan(Span):
-    """No-op :class:`Span` — records nothing, returns ``self`` from every mutator.
+    """No-op `Span` — records nothing, returns ``self`` from every mutator.
 
-    Use the shared :data:`NOOP_SPAN` singleton; this class is not part of the
+    Use the shared `NOOP_SPAN` singleton; this class is not part of the
     public API.
     """
 
@@ -74,11 +74,11 @@ class _NoopSpan(Span):
         return None
 
 
-#: Shared no-op :class:`Span` singleton. Use when tracing is disabled.
+#: Shared no-op `Span` singleton. Use when tracing is disabled.
 NOOP_SPAN: Final[Span] = _NoopSpan()
 
 
-#: Shared no-op :class:`InstrumentationContext` singleton.
+#: Shared no-op `InstrumentationContext` singleton.
 NOOP_INSTRUMENTATION_CONTEXT: Final[InstrumentationContext] = InstrumentationContext(
     trace_id_type=TraceIdType.NOOP,
     trace_id=TraceId.NOOP,
@@ -92,7 +92,7 @@ NOOP_INSTRUMENTATION_CONTEXT: Final[InstrumentationContext] = InstrumentationCon
 
 
 class _NoopTracer(Tracer):
-    """No-op :class:`Tracer` — every :meth:`start_span` returns :data:`NOOP_SPAN`."""
+    """No-op `Tracer` — every `start_span` returns `NOOP_SPAN`."""
 
     def start_span(
         self,
@@ -102,7 +102,7 @@ class _NoopTracer(Tracer):
         return NOOP_SPAN
 
 
-#: Shared no-op :class:`Tracer` singleton.
+#: Shared no-op `Tracer` singleton.
 NOOP_TRACER: Final[Tracer] = _NoopTracer()
 
 

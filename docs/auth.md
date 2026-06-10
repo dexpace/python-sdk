@@ -33,9 +33,10 @@ All concrete credentials redact secrets in their `__repr__`.
 - Calls `AccessTokenInfo.needs_refresh()` before each request; refreshes
   proactively when `refresh_on` has passed or `expires_on - leeway`
   (default 300 s) has been reached.
-- On a 401 response with a `WWW-Authenticate` header, invalidates the
-  cached token and calls `on_challenge(request, response)`. Override
-  `on_challenge` in a subclass to handle CAE / claims-challenge flows.
+- On any 401 response, invalidates the cached token. If the response
+  also carries a `WWW-Authenticate` header, then calls
+  `on_challenge(request, response)`. Override `on_challenge` in a
+  subclass to handle CAE / claims-challenge flows.
 
 ## Token cache
 

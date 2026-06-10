@@ -14,7 +14,7 @@ Iteration is item-by-item by default::
     for item in Paginator(pipeline, strategy, first_request):
         ...
 
-Use :meth:`Paginator.by_page` when the raw response or page boundaries matter::
+Use `Paginator.by_page` when the raw response or page boundaries matter::
 
     for page in Paginator(pipeline, strategy, first_request).by_page():
         with page:
@@ -60,8 +60,8 @@ class Paginator[T]:
     Args:
         source: Either a ``Pipeline`` (run once per page with a fresh
             dispatch context) or a send-callable ``Request -> Response``.
-        strategy: The :class:`PaginationStrategy` that parses each response
-            into a :class:`Page`.
+        strategy: The `PaginationStrategy` that parses each response
+            into a `Page`.
         initial_request: The request that fetches the first page.
         max_pages: Optional cap on the number of pages fetched. ``None``
             means unbounded (drive it with care against open-ended APIs).
@@ -97,7 +97,7 @@ class Paginator[T]:
         return source
 
     def by_page(self) -> Iterator[Page[T]]:
-        """Yield each :class:`Page` in turn, honouring ``max_pages``.
+        """Yield each `Page` in turn, honouring ``max_pages``.
 
         Yields:
             Pages from first to last. Each page owns its response; iterate
@@ -126,7 +126,7 @@ class Paginator[T]:
 
 
 class AsyncPaginator[T]:
-    """Asynchronous twin of :class:`Paginator`.
+    """Asynchronous twin of `Paginator`.
 
     Mirrors the sync paginator exactly with ``async`` iteration semantics.
     ``source`` is an ``AsyncPipeline`` or an async send-callable.
@@ -160,7 +160,7 @@ class AsyncPaginator[T]:
         return source
 
     async def by_page(self) -> AsyncIterator[Page[T]]:
-        """Async-yield each :class:`Page` in turn, honouring ``max_pages``."""
+        """Async-yield each `Page` in turn, honouring ``max_pages``."""
         request: Request | None = self._initial
         count = 0
         while request is not None:

@@ -52,7 +52,7 @@ class SdkError(Exception):
         exc_info = sys.exc_info()
         self.exc_type = exc_info[0] or (type(error) if error is not None else None)
         self.exc_value = exc_info[1] or error
-        self.exc_traceback = exc_info[2]
+        self.exc_traceback = exc_info[2] or (error.__traceback__ if error is not None else None)
         self.message = str(message)
         self.continuation_token = continuation_token
         super().__init__(self.message)

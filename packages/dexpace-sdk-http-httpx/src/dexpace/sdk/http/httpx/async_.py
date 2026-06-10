@@ -1,15 +1,15 @@
 # Copyright (c) 2026 dexpace and Omar Aljarrah.
 # Licensed under the MIT License. See LICENSE.md in the repository root for details.
 
-"""Async ``HttpClient`` implementation built on :class:`httpx.AsyncClient`.
+"""Async ``HttpClient`` implementation built on `httpx.AsyncClient`.
 
 Supports streaming uploads and downloads, per-phase timeouts (connect /
-read / write / pool), HTTP/2 (opt-in via :mod:`httpx`), and proxies.
+read / write / pool), HTTP/2 (opt-in via `httpx`), and proxies.
 Production-grade alternative to the asyncio reference client shipped in
 ``dexpace-sdk-http-stdlib``.
 
-The transport delegates to :class:`httpx.AsyncClient`, streaming the
-request body via :meth:`AsyncRequestBody.aiter_bytes` (when provided) or
+The transport delegates to `httpx.AsyncClient`, streaming the
+request body via `AsyncRequestBody.aiter_bytes` (when provided) or
 the sync ``RequestBody.iter_bytes`` (drained eagerly into bytes; httpx
 accepts both). The response exposes ``AsyncResponseBody.from_async_stream``
 wrapping httpx's ``aiter_bytes`` iterator.
@@ -40,11 +40,11 @@ _DEFAULT_CHUNK_SIZE: Final[int] = 8192
 
 
 class AsyncHttpxHttpClient:
-    """Async transport over :class:`httpx.AsyncClient`.
+    """Async transport over `httpx.AsyncClient`.
 
     Per-phase timeouts (``connect_timeout``, ``read_timeout``,
     ``write_timeout``, ``pool_timeout``) are forwarded to
-    :class:`httpx.Timeout`. ``None`` disables the phase's timeout.
+    `httpx.Timeout`. ``None`` disables the phase's timeout.
 
     Args:
         connect_timeout: Seconds allowed for connection establishment.
@@ -54,9 +54,9 @@ class AsyncHttpxHttpClient:
             request body.
         pool_timeout: Seconds allowed to acquire a connection from the
             pool.
-        transport: Optional :class:`httpx.AsyncBaseTransport`; the primary
+        transport: Optional `httpx.AsyncBaseTransport`; the primary
             extension hook for tests (``httpx.MockTransport``).
-        client: Optional pre-built :class:`httpx.AsyncClient` — overrides
+        client: Optional pre-built `httpx.AsyncClient` — overrides
             the timeout / transport kwargs entirely. Ownership transfers
             to this transport.
     """

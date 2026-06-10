@@ -80,8 +80,9 @@ class UrlRedactor:
                 drops a URL because it's malformed).
 
         Returns:
-            A wire-form URL with userinfo stripped and non-allowlisted
-            query values replaced by ``REDACTED``.
+            A wire-form URL with userinfo stripped and each non-allowlisted
+            parameter collapsed to ``REDACTED=REDACTED`` (both key and value),
+            so neither the secret nor the parameter name leaks.
         """
         parsed = url if isinstance(url, Url) else _safe_parse(url)
         if parsed is None:
@@ -91,7 +92,7 @@ class UrlRedactor:
     def _redact_parsed(self, parsed: Url) -> Url:
         redacted_query = QueryParams(
             [
-                (key, value if key in self.allowed_query_keys else _REDACTED)
+                (key, value) if key in self.allowed_query_keys else (_REDACTED, _REDACTED)
                 for key, values in parsed.query.items()
                 for value in values
             ]

@@ -43,13 +43,18 @@ bodies are modelled as typed Pythonic abstractions instead.
   `from_form` / `from_stream` / `from_iter` / `from_file`. `ResponseBody`
   exposes `iter_bytes` / `bytes` / `string`. Single-use bodies (stream /
   iter) raise `RuntimeError` on second consumption — call `to_replayable()`
-  before the first send if retries are needed.
+  before the first send if retries are needed. `AsyncRequestBody` /
+  `AsyncResponseBody` are the async twins (`aiter_bytes`), and
+  `MultipartField` / `MultipartRequestBody` build `multipart/form-data`
+  payloads.
 - **Body capture for logging uses `BytesIO`.** `LoggableRequestBody` mirrors
   writes into a `BytesIO` tap; `LoggableResponseBody` caches drained bytes
   for repeatable reads. Both honour a configurable byte cap.
 - **Thread-safety where stated.** `ContextStore` is safe under concurrent
-  use; individual bodies and streams are not. Per-context lookups rely on
-  CPython's GIL for atomic dict ops and use a lock only for check-and-set.
+  use; individual bodies and streams are not. Every store operation
+  (`get` / `put` / `set` / `remove`) acquires a `threading.Lock`, so the
+  guarantee survives free-threaded CPython (PEP 703) and runtimes without
+  atomic dict ops rather than relying on the GIL.
 - **Public API is narrow.** Helpers and concrete adapter classes are
   module-private (leading underscore). The public surface for each subpackage
   is what its `__init__.py` re-exports.
@@ -103,14 +108,20 @@ python-sdk/
     │   │   │   ├── common/                 # Headers, HttpHeaderName, MediaType,
     │   │   │   │                           # Protocol, Url, QueryParams, ETag,
     │   │   │   │                           # HttpRange, RequestConditions,
-    │   │   │   │                           # common_media_types
-    │   │   │   ├── request/                # Request, RequestBody, FileRequestBody,
-    │   │   │   │                           # LoggableRequestBody, Method
-    │   │   │   ├── response/               # Response, ResponseBody,
-    │   │   │   │                           # LoggableResponseBody, Status
+    │   │   │   │                           # common_media_types; pagination.py
+    │   │   │   │                           # (ItemPaged/Pager + async twins),
+    │   │   │   │                           # streaming.py (jsonl/chunked-frame iters)
+    │   │   │   ├── request/                # Request, RequestBody, AsyncRequestBody,
+    │   │   │   │                           # FileRequestBody, LoggableRequestBody,
+    │   │   │   │                           # MultipartField/MultipartRequestBody, Method
+    │   │   │   ├── response/               # Response, AsyncResponse, ResponseBody,
+    │   │   │   │                           # AsyncResponseBody, LoggableResponseBody,
+    │   │   │   │                           # Status
     │   │   │   ├── context/                # CallContext, DispatchContext,
     │   │   │   │                           # RequestContext, ExchangeContext,
     │   │   │   │                           # ContextStore
+    │   │   │   ├── sse/                     # Server-Sent Events parser + connection
+    │   │   │   ├── webhooks/                # webhook signature verification
     │   │   │   └── auth/                   # TokenCredential, BearerTokenPolicy,
     │   │   │                               # BasicAuthPolicy, KeyCredentialPolicy,
     │   │   │                               # ChallengeHandler (Basic/Digest/Composite),
@@ -119,19 +130,24 @@ python-sdk/
     │   │   │   │                           # Stage, StagedPipelineBuilder, defaults,
     │   │   │   │                           # sans-io + transport runners under the hood
     │   │   │   │
-    │   │   │   ├── policies/               # retry, redirect, logging, tracing,
-    │   │   │   │                           # set_date (+ async twins)
-    │   │   │   └── step/                   # PipelineStep, StepMetadata, RetryConfig
+    │   │   │   ├── policies/               # redirect, idempotency, retry, set_date,
+    │   │   │   │                           # client_identity, logging, tracing
+    │   │   │   │                           # (async twins only for the first five)
+    │   │   │   └── step/                   # PipelineStep, StepMetadata
     │   │   ├── client/                     # HttpClient + AsyncHttpClient Protocols
     │   │   ├── config/                     # Configuration
     │   │   ├── serde/                      # Serde, Serializer, Deserializer Protocols
     │   │   ├── errors/                     # SDK-level exception hierarchy
     │   │   ├── instrumentation/            # InstrumentationContext, Span, Tracer,
-    │   │   │                               # TracingScope, noops
+    │   │   │                               # TracingScope, noops, metrics,
+    │   │   │                               # correlation, client_logger, http_tracer,
+    │   │   │                               # identifiers, log_level, url_redactor
+    │   │   ├── pagination/                  # Page, Paginator, link-header + strategy
     │   │   └── util/                       # clock, proxy helpers
     │   └── tests/                          # pytest suite — auth/, config/, context/,
     │                                       # errors/, http/, instrumentation/,
-    │                                       # pipeline/, serde/, sse/, util/
+    │                                       # pagination/, pipeline/, serde/, sse/,
+    │                                       # util/, webhooks/
     ├── dexpace-sdk-http-stdlib/            # reference stdlib transports:
     │   │                                   # UrllibHttpClient, AsyncioHttpClient
     │   └── src/dexpace/sdk/http/stdlib/
@@ -142,6 +158,10 @@ python-sdk/
     └── dexpace-sdk-http-requests/          # requests transport (sync)
         └── src/dexpace/sdk/http/requests/
 ```
+
+Community-health and tooling files (`CHANGELOG.md`, `CONTRIBUTING.md`,
+`SECURITY.md`, `CODE_OF_CONDUCT.md`, `conftest.py`, `tools/`) are elided from
+the tree above.
 
 Every transport package depends on `dexpace-sdk-core` and adapts its HTTP
 library to the `HttpClient` / `AsyncHttpClient` Protocols. Namespace
@@ -185,12 +205,16 @@ Layered, bottom-up:
    evict on `CallContext.close()`.
 4. **`pipeline`** — `Policy` (and `AsyncPolicy`) wrap the downstream chain;
    `Pipeline` / `AsyncPipeline` run an ordered set of policies grouped into
-   `Stage`s via `StagedPipelineBuilder`. Shipped policies: retry, redirect,
-   logging, tracing, set-date (each with an async twin under
-   `pipeline/policies/`). `default_pipeline()` / `default_async_pipeline()`
-   assemble the standard stack. The lower-level `pipeline/step/PipelineStep`
-   Protocol (`(input, context) -> output`) plus `StepMetadata` / `RetryConfig`
-   remain for custom composition.
+   `Stage`s via `StagedPipelineBuilder`. Shipped policies: redirect,
+   idempotency, retry, set-date, client-identity, logging, tracing. Async
+   twins under `pipeline/policies/` exist only for redirect, idempotency,
+   retry, set-date, and client-identity; logging and tracing are sync-only.
+   `default_pipeline()` / `default_async_pipeline()` assemble the standard
+   stack in the order redirect → idempotency → retry → set-date →
+   client-identity → [auth] → logging → tracing (the async pipeline omits
+   logging and tracing). The lower-level `pipeline/step/PipelineStep` Protocol
+   (`(input, context) -> output`) plus `StepMetadata` remain for custom
+   composition.
 5. **`client/HttpClient`** — single-method Protocol
    (`execute(request) -> Response`). Transport is **not** provided by `core`;
    the `dexpace-sdk-http-*` packages (stdlib, httpx, aiohttp, requests) each

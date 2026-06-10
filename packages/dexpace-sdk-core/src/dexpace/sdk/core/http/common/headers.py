@@ -26,7 +26,7 @@ type _Name = str | HttpHeaderName
 type _HeaderValue = str | Iterable[str]
 # ``Mapping[str, …]`` rather than ``Mapping[_Name, …]`` because ``dict[str, T]``
 # is not a subtype of ``Mapping[str | X, T]`` (key invariance). Callers
-# wanting :class:`HttpHeaderName` keys can pass the iterable-of-pairs form.
+# wanting `HttpHeaderName` keys can pass the iterable-of-pairs form.
 type _Entries = Mapping[str, _HeaderValue] | Iterable[tuple[_Name, _HeaderValue]]
 
 
@@ -37,8 +37,8 @@ class Headers:
     membership, and equality are all case-insensitive. Insertion order of
     distinct names is preserved.
 
-    Multi-value semantics: :meth:`with_added` appends to the values list for
-    a name; :meth:`with_set` replaces the entire list. This matches the HTTP
+    Multi-value semantics: `with_added` appends to the values list for
+    a name; `with_set` replaces the entire list. This matches the HTTP
     requirement that some headers (``Set-Cookie``, ``WWW-Authenticate``,
     ``Via``) may legitimately repeat.
 
@@ -61,10 +61,7 @@ class Headers:
                 existing = data.get(key, ())
                 new_values: tuple[str, ...] = (value,) if isinstance(value, str) else tuple(value)
                 for v in new_values:
-                    if "\r" in v or "\n" in v or "\0" in v:
-                        raise ValueError(
-                            f"invalid header value for {key!r}: contains control characters"
-                        )
+                    _check_value(key, v)
                 data[key] = (*existing, *new_values)
         object.__setattr__(self, "_data", tuple(data.items()))
         object.__setattr__(self, "_hash", None)
@@ -124,6 +121,7 @@ class Headers:
     def with_added(self, name: _Name, value: str) -> Self:
         """Return a new ``Headers`` with ``value`` appended to ``name``'s list."""
         target = _normalize(name)
+        _check_value(target, value)
         entries: list[tuple[str, tuple[str, ...]]] = []
         appended = False
         for key, values in self._data:
@@ -144,6 +142,8 @@ class Headers:
         if not values:
             return self.without(name)
         target = _normalize(name)
+        for value in values:
+            _check_value(target, value)
         entries: list[tuple[str, tuple[str, ...]]] = []
         replaced = False
         for key, existing in self._data:
@@ -170,6 +170,8 @@ class Headers:
         """Append every entry from ``other`` to this headers."""
         merged: dict[str, tuple[str, ...]] = dict(self._data)
         for key, values in other._data:
+            for value in values:
+                _check_value(key, value)
             merged[key] = merged.get(key, ()) + values
         return _construct(type(self), tuple(merged.items()))
 
@@ -177,10 +179,10 @@ class Headers:
         """Return ``self.with_merged(other)`` — enables ``a | b`` syntax.
 
         Args:
-            other: Another :class:`Headers` whose entries are appended.
+            other: Another `Headers` whose entries are appended.
 
         Returns:
-            A new :class:`Headers` combining both sides; ``self``'s values for
+            A new `Headers` combining both sides; ``self``'s values for
             each name appear before ``other``'s.
         """
         if not isinstance(other, Headers):
@@ -211,7 +213,7 @@ class Headers:
 
     @classmethod
     def empty(cls) -> Headers:
-        """Return the shared empty :class:`Headers` instance."""
+        """Return the shared empty `Headers` instance."""
         return _EMPTY
 
 
@@ -225,6 +227,13 @@ def _normalize(name: _Name) -> str:
     if not _TOKEN.match(lowered):
         raise ValueError(f"invalid header name: {name!r}")
     return lowered
+
+
+def _check_value(key: str, value: str) -> None:
+    # Reject CR, LF, and NUL to prevent header injection / response splitting.
+    # ``key`` is the already-normalised name, used only for the error message.
+    if "\r" in value or "\n" in value or "\0" in value:
+        raise ValueError(f"invalid header value for {key!r}: contains control characters")
 
 
 def _construct[H: Headers](

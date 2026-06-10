@@ -40,6 +40,17 @@ async def test_from_form() -> None:
     assert body.media_type() == common_media_types.APPLICATION_FORM_URLENCODED
 
 
+async def test_from_form_encoding_changes_percent_encoding() -> None:
+    # Async twin of the sync charset test: a non-ASCII field must percent-encode
+    # through the requested charset, so latin-1 and utf-8 differ byte-for-byte.
+    fields = {"name": "é"}
+    latin1 = await _adrain(AsyncRequestBody.from_form(fields, encoding="latin-1"))
+    utf8 = await _adrain(AsyncRequestBody.from_form(fields, encoding="utf-8"))
+    assert latin1 == b"name=%E9"
+    assert utf8 == b"name=%C3%A9"
+    assert latin1 != utf8
+
+
 async def test_from_async_iter_single_use() -> None:
     async def chunks() -> AsyncIterator[bytes]:
         yield b"ab"
@@ -107,6 +118,32 @@ async def test_aiter_bytes_rejects_invalid_chunk_size(
     factory: Callable[[], AsyncResponseBody],
     size: int,
 ) -> None:
+    body = factory()
+    with pytest.raises(ValueError, match="chunk_size"):
+        async for _ in body.aiter_bytes(size):
+            pass
+
+
+async def _one_chunk() -> AsyncIterator[bytes]:
+    yield b"hi"
+
+
+def _make_async_request_bodies() -> list[Callable[[], AsyncRequestBody]]:
+    return [
+        lambda: AsyncRequestBody.from_bytes(b"hi"),
+        lambda: AsyncRequestBody.from_async_iter(_one_chunk()),
+        lambda: AsyncRequestBody.from_async_stream(_StubAsyncStream()),
+    ]
+
+
+@pytest.mark.parametrize("factory", _make_async_request_bodies())
+@pytest.mark.parametrize("size", [0, -1])
+async def test_async_request_aiter_bytes_rejects_invalid_chunk_size(
+    factory: Callable[[], AsyncRequestBody],
+    size: int,
+) -> None:
+    # All three AsyncRequestBody backings must reject a non-positive chunk_size
+    # up front, matching the sync and response-body guard.
     body = factory()
     with pytest.raises(ValueError, match="chunk_size"):
         async for _ in body.aiter_bytes(size):

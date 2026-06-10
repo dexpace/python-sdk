@@ -95,7 +95,14 @@ class AsyncPipeline:
     ) -> AsyncResponse:
         request_ctx = dispatch.to_request_context(request)
         ctx = PipelineContext(call=request_ctx, options=dict(options))
-        return await self._chain.send(request, ctx)
+        try:
+            return await self._chain.send(request, ctx)
+        finally:
+            # Evict the call's ``ContextStore`` entry once the chain has fully
+            # unwound — in-chain observers have already read the latest tier.
+            # The exchange context shares this trace id, so a single close
+            # clears both tiers and prevents unbounded growth across calls.
+            request_ctx.close()
 
 
 def _wrap_step(step: Any) -> AsyncPolicy:

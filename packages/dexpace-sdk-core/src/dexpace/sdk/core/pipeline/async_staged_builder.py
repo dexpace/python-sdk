@@ -1,7 +1,7 @@
 # Copyright (c) 2026 dexpace and Omar Aljarrah.
 # Licensed under the MIT License. See LICENSE.md in the repository root for details.
 
-"""Async twin of :class:`StagedPipelineBuilder`.
+"""Async twin of `StagedPipelineBuilder`.
 
 Behaviour mirrors the sync builder exactly: pillar enforcement, surgical
 edits, ``from_pipeline`` round-trip. The only differences are the policy
@@ -22,9 +22,9 @@ if TYPE_CHECKING:
 
 
 class AsyncStagedPipelineBuilder:
-    """Build an :class:`AsyncPipeline` by stage rather than user-specified order.
+    """Build an `AsyncPipeline` by stage rather than user-specified order.
 
-    See :class:`StagedPipelineBuilder` for the full behaviour; this is the
+    See `StagedPipelineBuilder` for the full behaviour; this is the
     async counterpart.
     """
 
@@ -89,18 +89,32 @@ class AsyncStagedPipelineBuilder:
         return self
 
     def build(self) -> AsyncPipeline:
-        """Flatten the builder's contents into an :class:`AsyncPipeline`."""
+        """Flatten the builder's contents into an `AsyncPipeline`."""
         return AsyncPipeline(self._client, policies=self._flatten())
 
     @classmethod
     def from_pipeline(cls, pipeline: AsyncPipeline) -> Self:
-        """Seed a builder from an existing :class:`AsyncPipeline`."""
+        """Seed a builder from an existing `AsyncPipeline`.
+
+        Raises:
+            ValueError: If the input pipeline's policies do not satisfy
+                stage ordering, or if the chain contains a list-constructor
+                SansIO step (a bare callable), which carries no ``STAGE``
+                and so cannot be rehydrated.
+        """
         from ._async_transport_runner import _AsyncTransportRunner
 
         builder = cls(pipeline.transport)
         chain: list[AsyncPolicy] = []
         node: AsyncPolicy | None = pipeline._chain
         while node is not None and not isinstance(node, _AsyncTransportRunner):
+            if getattr(node, "STAGE", None) is None:
+                raise ValueError(
+                    f"Pipeline node {type(node).__name__} carries no STAGE; "
+                    f"it is a list-constructor SansIO step (a bare callable) "
+                    f"that cannot be rehydrated into a staged builder. Rebuild "
+                    f"the pipeline via the list constructor instead."
+                )
             chain.append(node)
             node = getattr(node, "next", None)
         last_stage: Stage | None = None

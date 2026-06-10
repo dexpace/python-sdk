@@ -14,12 +14,12 @@ if TYPE_CHECKING:
 
 class _ContextStore:
     """Process-wide registry mapping a call's trace id to its current
-    :class:`CallContext`.
+    `CallContext`.
 
-    Each promotion (:meth:`DispatchContext.to_request_context`,
-    :meth:`RequestContext.to_exchange_context`) overwrites the entry so the
+    Each promotion (`DispatchContext.to_request_context`,
+    `RequestContext.to_exchange_context`) overwrites the entry so the
     latest snapshot is visible to downstream observers keyed by trace id.
-    Entries are removed when callers honour :meth:`CallContext.close`.
+    Entries are removed when callers honour `CallContext.close`.
 
     Thread-safe — every operation acquires the lock so the guarantee
     survives free-threaded CPython (PEP 703) and non-CPython runtimes that
@@ -65,7 +65,7 @@ class _ContextStore:
             self._contexts.pop(trace_id, None)
 
 
-#: Process-wide :class:`_ContextStore` singleton.
+#: Process-wide `_ContextStore` singleton.
 ContextStore = _ContextStore()
 
 __all__ = ["ContextStore"]

@@ -129,8 +129,14 @@ class LoggableResponseBody(ResponseBody):
                         take = min(self._max - captured, len(chunk))
                         chunks.append(chunk[:take])
                         captured += take
-            except Exception as exc:
+            except BaseException as exc:
+                # Record any failure (including bare ``BaseException``) so
+                # ``iter_bytes`` re-raises it and never replays a truncated
+                # read as success. ``KeyboardInterrupt`` / ``SystemExit`` must
+                # not be swallowed: propagate them immediately.
                 self._error = exc
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
             finally:
                 self._cached = b"".join(chunks)
                 self._drained = True

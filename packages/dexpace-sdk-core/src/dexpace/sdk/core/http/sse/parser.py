@@ -111,9 +111,9 @@ class SseEvent:
 class SseParser:
     """Stateful WHATWG SSE parser.
 
-    Feed bytes via :meth:`feed`; finished events arrive on the internal
-    queue and are yielded by :meth:`drain`. Callers typically use the
-    free functions :func:`parse_events` / :func:`parse_async_events` rather
+    Feed bytes via `feed`; finished events arrive on the internal
+    queue and are yielded by `drain`. Callers typically use the
+    free functions `parse_events` / `parse_async_events` rather
     than holding a parser directly.
     """
 
@@ -150,7 +150,7 @@ class SseParser:
         if not self._strip_leading_bom():
             return  # Buffer too short to decide on the BOM yet.
         while True:
-            line, consumed = _read_line(self._buffer)
+            line, consumed = _read_line(self._buffer, at_eos=False)
             if line is None:
                 if len(self._buffer) > self.max_line_bytes:
                     raise StreamingError(f"SSE line exceeded {self.max_line_bytes} bytes")
@@ -173,11 +173,12 @@ class SseParser:
         self._strip_leading_bom(at_end=True)
         if self._buffer:
             try:
-                line = self._buffer.decode("utf-8")
+                line, _ = _read_line(self._buffer, at_eos=True)
             except UnicodeDecodeError as err:
                 raise StreamingError("Stream ended mid-codepoint") from err
             self._buffer.clear()
-            self._process_line(line)
+            if line is not None:
+                self._process_line(line)
         if self._data_lines:
             self._dispatch()
         yield from self.drain()
@@ -252,22 +253,48 @@ class SseParser:
         self._event = "message"
 
 
-def _read_line(buffer: bytearray) -> tuple[str | None, int]:
+def _read_line(buffer: bytearray, *, at_eos: bool) -> tuple[str | None, int]:
     """Find the next complete line in ``buffer``.
 
-    Returns ``(line, consumed)`` where ``line`` is the decoded text without
-    its terminator and ``consumed`` is the number of bytes (including the
+    Returns ``(line, consumed)`` where ``line`` is the decoded text without its
+    terminator and ``consumed`` is the number of bytes (including the
     terminator) to drop from the buffer. ``(None, 0)`` indicates the buffer
-    does not yet contain a complete line.
+    does not yet contain a complete line and the caller should wait for more
+    input.
+
+    A bare ``CR`` may be the first byte of a ``CRLF`` pair whose ``LF`` has not
+    arrived yet. When a ``CR`` is the final buffered byte and the stream is
+    still open (``at_eos`` is false), the line is withheld — ``(None, 0)`` is
+    returned so the ``CR`` is held until the next byte disambiguates a lone
+    ``CR`` terminator from a split ``CRLF``. At end-of-stream a trailing ``CR``
+    is a complete terminator and the line is returned.
+
+    Args:
+        buffer: The accumulated, not-yet-consumed bytes.
+        at_eos: ``True`` when no further input will arrive, so a trailing
+            ``CR`` and any unterminated residue both resolve to a final line.
+
+    Returns:
+        ``(line, consumed)`` for a complete line, or ``(None, 0)`` when more
+        input is needed to decide. At end-of-stream an unterminated residue is
+        returned as the final line consuming the whole buffer.
     """
     for index, byte in enumerate(buffer):
         if byte == _LF:
             return buffer[:index].decode("utf-8"), index + 1
         if byte == _CR:
-            # CR or CRLF — peek at the next byte if present.
-            if index + 1 < len(buffer) and buffer[index + 1] == _LF:
-                return buffer[:index].decode("utf-8"), index + 2
+            if index + 1 < len(buffer):
+                # CRLF when the next byte is LF, otherwise a lone-CR terminator.
+                consumed = index + 2 if buffer[index + 1] == _LF else index + 1
+                return buffer[:index].decode("utf-8"), consumed
+            # CR is the final byte: hold it open until the next byte arrives so
+            # a split CRLF is not mistaken for two terminators. At EOS it is a
+            # complete terminator.
+            if not at_eos:
+                return None, 0
             return buffer[:index].decode("utf-8"), index + 1
+    if at_eos and buffer:
+        return buffer.decode("utf-8"), len(buffer)
     return None, 0
 
 
@@ -290,13 +317,13 @@ def parse_events(chunks: Iterable[bytes]) -> Iterator[SseEvent]:
 class AsyncSseStream:
     """Async iterator that drives an ``SseParser`` from an async byte stream.
 
-    Construct via :func:`parse_async_events` or directly. Use as
+    Construct via `parse_async_events` or directly. Use as
     ``async for event in stream``, ideally inside ``async with`` so the
     upstream byte stream is released deterministically.
 
     Note:
         Cancellation contract. If the consuming task is cancelled
-        mid-stream, :meth:`aclose` (run from ``__aexit__`` or directly)
+        mid-stream, `aclose` (run from ``__aexit__`` or directly)
         releases the upstream byte iterator. The upstream ``aclose`` is
         routed through ``_shielded_aclose`` so it runs to completion even
         while a ``CancelledError`` is in flight; the cancellation is then
@@ -334,7 +361,7 @@ class AsyncSseStream:
     @property
     def retry(self) -> int | None:
         """The most recent ``retry:`` value seen by the underlying parser, in
-        milliseconds, or ``None``. Mirrors :attr:`SseParser.retry` so a
+        milliseconds, or ``None``. Mirrors `SseParser.retry` so a
         reconnecting client can read the server's sticky hint after iteration.
         """
         return self._parser.retry

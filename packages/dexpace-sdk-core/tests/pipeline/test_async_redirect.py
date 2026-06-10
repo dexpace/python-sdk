@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 
 import pytest
 
@@ -14,7 +14,7 @@ from dexpace.sdk.core.http.common import Protocol, Url
 from dexpace.sdk.core.http.context import DispatchContext
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.request.request_body import RequestBody
-from dexpace.sdk.core.http.response import AsyncResponse, Status
+from dexpace.sdk.core.http.response import AsyncResponse, AsyncResponseBody, Status
 from dexpace.sdk.core.instrumentation import (
     InstrumentationContext,
     SpanId,
@@ -52,18 +52,43 @@ def _request(
     return req
 
 
+class _TrackingAsyncBody(AsyncResponseBody):
+    """Async response body that records whether ``close`` was called."""
+
+    __slots__ = ("closed",)
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def media_type(self) -> None:
+        return None
+
+    def content_length(self) -> int:
+        return 0
+
+    async def aiter_bytes(self, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
+        await self.close()
+        return
+        yield b""  # pragma: no cover - makes this an async generator
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 class _Hop:
-    __slots__ = ("extra_headers", "location", "status")
+    __slots__ = ("body", "extra_headers", "location", "status")
 
     def __init__(
         self,
         status: Status,
         location: str | None = None,
         extra_headers: tuple[tuple[str, str], ...] = (),
+        body: AsyncResponseBody | None = None,
     ) -> None:
         self.status = status
         self.location = location
         self.extra_headers = extra_headers
+        self.body = body
 
 
 class _ScriptedAsyncClient(AsyncHttpClient):
@@ -77,7 +102,12 @@ class _ScriptedAsyncClient(AsyncHttpClient):
         idx = len(self.requests)
         self.requests.append(request)
         hop = self._hops[idx]
-        response = AsyncResponse(request=request, protocol=Protocol.HTTP_1_1, status=hop.status)
+        response = AsyncResponse(
+            request=request,
+            protocol=Protocol.HTTP_1_1,
+            status=hop.status,
+            body=hop.body,
+        )
         if hop.location is not None:
             response = response.with_header("Location", hop.location)
         for name, value in hop.extra_headers:
@@ -174,6 +204,28 @@ class TestStatusCodeMatrix:
         )
         with pytest.raises(RuntimeError):
             await _run(client, policy, request)
+
+    async def test_307_non_replayable_body_closes_intermediate_response(self) -> None:
+        # When the body-preserving rebuild raises on a single-use body, the
+        # in-hand 307 response must be closed before the RuntimeError escapes.
+        tracking_body = _TrackingAsyncBody()
+        body = RequestBody.from_iter(iter([b"chunk"]))
+        request = _request(method=Method.POST, body=body)
+        client = _ScriptedAsyncClient(
+            [
+                _Hop(
+                    Status.TEMPORARY_REDIRECT,
+                    "https://example.com/new",
+                    body=tracking_body,
+                ),
+            ],
+        )
+        policy = AsyncRedirectPolicy(
+            allowed_methods=frozenset({Method.GET, Method.HEAD, Method.POST}),
+        )
+        with pytest.raises(RuntimeError):
+            await _run(client, policy, request)
+        assert tracking_body.closed
 
     async def test_308_follows_with_original_method_and_body(self) -> None:
         body = RequestBody.from_bytes(b"payload")

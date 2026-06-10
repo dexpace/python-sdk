@@ -43,13 +43,13 @@ class IdempotencyPolicy(Policy):
     methods (``POST``/``PUT``/``PATCH`` by default) are stamped; idempotency
     keys on ``GET``/``DELETE`` are meaningless to most servers.
 
-    The policy is placed at :attr:`Stage.POST_REDIRECT`, which runs *outside*
-    the retry wrapper (:attr:`Stage.RETRY`). The key is therefore minted on the
+    The policy is placed at `Stage.POST_REDIRECT`, which runs *outside*
+    the retry wrapper (`Stage.RETRY`). The key is therefore minted on the
     first pass and reused on every retry re-send, rather than re-rolled per
-    attempt the way :class:`SetDatePolicy` re-stamps the ``Date`` header.
+    attempt the way `SetDatePolicy` re-stamps the ``Date`` header.
 
     Attributes:
-        STAGE: Pinned to :attr:`Stage.POST_REDIRECT` at the type level so
+        STAGE: Pinned to `Stage.POST_REDIRECT` at the type level so
             mis-slotting is caught by ``mypy``.
 
     Example:

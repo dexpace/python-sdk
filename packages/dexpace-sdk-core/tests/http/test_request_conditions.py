@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 from dexpace.sdk.core.http.common import ETag, RequestConditions, Url
 from dexpace.sdk.core.http.request import Method, Request
@@ -50,6 +50,18 @@ def test_naive_datetime_treated_as_utc() -> None:
     result = cond.apply_to(_request())
     value = result.headers.get("if-unmodified-since")
     assert value is not None and "GMT" in value
+
+
+def test_non_utc_offset_normalized_to_gmt() -> None:
+    # An aware datetime with a non-UTC offset must be normalized to UTC before
+    # formatting; format_datetime(usegmt=True) rejects any other offset outright.
+    plus_five = timezone(timedelta(hours=5))
+    when = datetime(2024, 1, 1, 17, 0, 0, tzinfo=plus_five)
+    cond = RequestConditions(if_modified_since=when)
+    result = cond.apply_to(_request())
+    value = result.headers.get("if-modified-since")
+    # 17:00 at +05:00 is 12:00 UTC.
+    assert value == "Mon, 01 Jan 2024 12:00:00 GMT"
 
 
 def test_apply_to_returns_new_instance() -> None:

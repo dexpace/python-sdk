@@ -22,7 +22,7 @@ _LEVEL_MAP: Final[dict[LogLevel, int]] = {
 class CorrelationFilter(logging.Filter):
     """Stamps the active trace/span ids onto every record it sees.
 
-    Reads the context-local ids from :mod:`correlation` and attaches them as
+    Reads the context-local ids from `correlation` and attaches them as
     ``trace.id`` / ``span.id`` record attributes (plus the dotted-name-safe
     ``trace_id`` / ``span_id`` aliases for ``%``-style format strings). When no
     trace is bound the attributes are set to ``None`` so formatters referencing
@@ -97,7 +97,7 @@ class ClientLogger:
 
 
 def _install_correlation_filter(logger: logging.Logger) -> None:
-    """Attach a :class:`CorrelationFilter` to ``logger`` exactly once."""
+    """Attach a `CorrelationFilter` to ``logger`` exactly once."""
     if any(isinstance(existing, CorrelationFilter) for existing in logger.filters):
         return
     logger.addFilter(CorrelationFilter())

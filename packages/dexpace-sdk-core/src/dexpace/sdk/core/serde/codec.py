@@ -13,8 +13,8 @@ plain-document layer and frozen dataclass models::
 The codec never touches JSON (or any other) syntax, so it is format-agnostic
 and reusable with any ``Serde``. It is deliberately validation-free: it
 reconstructs declared types, handles aliases, ``Tristate`` fields, datetimes,
-enums, containers and discriminated unions, but performs no schema checks or
-scalar coercion. The model's own ``__post_init__`` invariants still run because
+``UUID``s, enums, containers and discriminated unions, but performs no schema
+checks or scalar coercion. The model's own ``__post_init__`` invariants still run because
 construction goes through the normal constructor.
 """
 
@@ -26,6 +26,7 @@ import datetime as _dt
 import enum
 import types
 import typing
+import uuid
 from typing import Final, Union, cast, get_args, get_origin, get_type_hints
 
 from ..errors import DeserializationError, SerializationError
@@ -233,7 +234,8 @@ class Codec:
             data: A plain document (``dict`` / ``list`` / scalar) as produced by
                 ``Serde.deserializer``.
             target: The type to reconstruct — a dataclass, a discriminated base,
-                ``list[X]`` / ``dict[str, X]``, a datetime/enum, or a scalar.
+                ``list[X]`` / ``dict[str, X]``, a datetime/UUID/enum, or a
+                scalar.
 
         Returns:
             A fully constructed instance of ``target``.
@@ -248,8 +250,8 @@ class Codec:
         """Encode a typed value into a plain document.
 
         Args:
-            value: A dataclass, container, datetime, enum, ``Tristate`` field
-                value, or scalar.
+            value: A dataclass, container, datetime, ``UUID``, enum,
+                ``Tristate`` field value, or scalar.
 
         Returns:
             A plain document (``dict`` / ``list`` / scalar) ready for
@@ -275,11 +277,11 @@ def _decode_value(
     """Decode ``data`` into ``target``, dispatching on the type's shape."""
     if target is object or target is typing.Any:
         return data
+    if _is_tristate(target):
+        return _decode_tristate(data, target, path, tolerate_unknown)
     origin = get_origin(target)
     if origin is None:
         return _decode_atomic(data, target, path, tolerate_unknown)
-    if _is_tristate(target):
-        return _decode_tristate(data, target, path, tolerate_unknown)
     if origin in (Union, types.UnionType):
         return _decode_union(data, target, path, tolerate_unknown)
     return _decode_container(data, target, origin, path, tolerate_unknown)
@@ -301,6 +303,8 @@ def _decode_atomic(
             return _decode_enum(data, target, path)
         if issubclass(target, (_dt.datetime, _dt.date, _dt.time)):
             return _decode_temporal(data, target, path)
+        if issubclass(target, uuid.UUID):
+            return _decode_uuid(data, target, path)
     return data
 
 
@@ -475,9 +479,12 @@ def _decode_mapping(
 ) -> object:
     """Decode a mapping, recovering each key and value through its declared type.
 
-    Wire object keys are always strings, so a declared key type such as ``int``,
-    an enum, or ``UUID`` is recovered by recursing on the key the same way the
-    codec recurses on values; ``str`` and ``object`` key types pass through.
+    Wire object keys are always strings. A declared key type that has a
+    dedicated reconstruction branch — an enum, a datetime/date/time, or a
+    ``UUID`` — is recovered by recursing on the key the same way the codec
+    recurses on values. ``str`` and ``object`` keys pass through, and a bare
+    scalar key type (``int`` / ``float`` / ``bool``) follows the codec's
+    no-coercion rule, so its wire string is returned unchanged.
     """
     if not isinstance(data, cabc.Mapping):
         raise CodecError(f"expected an object, got {type(data).__name__}", path=path)
@@ -567,6 +574,25 @@ def _decode_temporal(data: object, target: type, path: tuple[str, ...]) -> objec
         ) from err
 
 
+def _decode_uuid(data: object, target: type, path: tuple[str, ...]) -> object:
+    """Decode a string into a ``UUID`` (the canonical form ``_encode_value`` emits)."""
+    if not isinstance(data, str):
+        raise CodecError(
+            f"expected a UUID string, got {type(data).__name__}",
+            path=path,
+            target_name=target.__name__,
+        )
+    try:
+        return target(data)
+    except ValueError as err:
+        raise CodecError(
+            f"{data!r} is not a valid {target.__name__}",
+            path=path,
+            target_name=target.__name__,
+            error=err,
+        ) from err
+
+
 def _dispatch_union(
     data: object,
     base: type,
@@ -632,13 +658,15 @@ def _encode_value(value: object) -> object:
         return _encode_dataclass(value)
     if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
         return value.isoformat()
+    if isinstance(value, uuid.UUID):
+        return str(value)
     if isinstance(value, bytes):
         try:
             return value.decode("utf-8")
         except UnicodeDecodeError as err:
             raise SerializationError("cannot encode non-UTF-8 bytes value") from err
     if isinstance(value, cabc.Mapping):
-        return {k: _encode_value(v) for k, v in value.items()}
+        return {_encode_key(k): _encode_value(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_encode_value(v) for v in value]
     raise SerializationError(f"cannot encode value of type {type(value).__name__}")
@@ -659,6 +687,42 @@ def _encode_dataclass(value: object) -> dict[str, object]:
             continue
         out[wire] = _encode_value(attr)
     return out
+
+
+def _encode_key(key: object) -> str | int | float | bool | None:
+    """Collapse a mapping key into a document-legal scalar key.
+
+    Runs the key through ``_encode_value`` (which folds an enum to its value, a
+    datetime/date/time to its ISO string, and a ``UUID`` to its canonical
+    string) then ensures the result is a JSON object key type. A leftover
+    ``str`` / ``int`` / ``float`` / ``bool`` / ``None`` passes through; anything
+    else is coerced to ``str(...)``.
+
+    Round-trip note: enum, temporal, and ``UUID`` keys reconstruct to their
+    declared type on decode because ``_decode_mapping`` recurses through a
+    branch that rebuilds them. A bare scalar key (``int`` / ``float`` / ``bool``)
+    follows the codec's no-coercion rule instead — JSON renders it as a string
+    and decode returns that string unchanged, so such a key does not survive a
+    full wire round-trip as its original type.
+
+    Args:
+        key: The original mapping key.
+
+    Returns:
+        A ``str`` / ``int`` / ``float`` / ``bool`` / ``None`` document key.
+
+    Raises:
+        SerializationError: If the collapsed key is a container or other type
+            that has no meaningful scalar key form.
+    """
+    encoded = _encode_value(key)
+    if encoded is None or isinstance(encoded, (str, int, float, bool)):
+        return encoded
+    if isinstance(encoded, (cabc.Mapping, list, tuple, set, frozenset)):
+        raise SerializationError(
+            f"cannot encode mapping key of type {type(key).__name__}",
+        )
+    return str(encoded)
 
 
 # --------------------------------------------------------------------------- #
@@ -689,8 +753,11 @@ def _is_tristate(target: object) -> bool:
     ``get_type_hints`` resolves a ``type`` alias such as ``Tristate[str]`` to a
     ``GenericAlias`` whose origin is the ``Tristate`` alias object itself, not a
     ``Union``. Older / expanded forms surface as a ``Present``-bearing union, so
-    both shapes are recognised.
+    both shapes are recognised. A bare, non-parametrised ``Tristate`` field is
+    treated as ``Tristate[object]`` (inner type ``object``).
     """
+    if target is Tristate:
+        return True
     if get_origin(target) is Tristate:
         return True
     if get_origin(target) in (Union, types.UnionType):

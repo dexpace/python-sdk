@@ -4,15 +4,15 @@
 """Async SansIO runners — mirror the sync ``_SansIO*Runner`` shapes.
 
 Async SansIO steps may be plain callables (``(value, ctx) -> value``) or
-async callables (``async def``); both forms are supported. The runner
-detects coroutine results and awaits them. This is Azure's
-``inspect.iscoroutinefunction`` pattern, adapted to use ``asyncio.iscoroutine``
-on the returned object so wrapped/bound callables still work.
+async callables (``async def``); both forms are supported. Detection keys off
+the *returned value* rather than the callable: ``_resolve`` awaits anything
+that is an ``Awaitable`` (coroutines, futures, and custom awaitables alike)
+and passes plain values through unchanged. Inspecting the result rather than
+the callable means wrapped, bound, or ``functools.partial`` steps work too.
 """
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 
 async def _resolve(value: Any) -> Any:
-    if asyncio.iscoroutine(value) or isinstance(value, Awaitable):
+    if isinstance(value, Awaitable):
         return await value
     return value
 

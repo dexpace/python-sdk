@@ -7,10 +7,11 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from types import TracebackType
+from typing import Self
 
 
 class TracingScope(ABC):
-    """Lifecycle handle for a span activated via :meth:`Span.make_current`.
+    """Lifecycle handle for a span activated via `Span.make_current`.
 
     While the scope is open the associated span is the "current" span for the
     executing thread; closing the scope restores the previously active span.
@@ -22,7 +23,7 @@ class TracingScope(ABC):
     def close(self) -> None:
         """Restore the previously active span. Idempotent."""
 
-    def __enter__(self) -> TracingScope:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(

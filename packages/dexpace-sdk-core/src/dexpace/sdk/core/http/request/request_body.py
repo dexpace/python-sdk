@@ -63,14 +63,19 @@ class RequestBody(ABC):
 
     @abstractmethod
     def iter_bytes(self, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
-        """Yield the body's bytes in chunks of at most ``chunk_size`` bytes.
+        """Yield the body's bytes in chunks.
 
         Called once per send attempt; replayable bodies may have this method
         invoked multiple times across retries (a fresh iterator is returned).
 
+        ``chunk_size`` is a hint, not a hard cap: bytes- and file-backed
+        bodies honour it as a suggested upper bound, but the iterable-backed
+        body (``from_iter``) passes its source chunks through unchanged and so
+        may yield chunks larger than ``chunk_size``.
+
         Args:
             chunk_size: Suggested chunk size. Implementations may yield smaller
-                chunks at end-of-stream.
+                chunks at end-of-stream, and ``from_iter`` ignores it entirely.
 
         Yields:
             Successive ``bytes`` chunks until the body is exhausted.
@@ -169,7 +174,10 @@ class RequestBody(ABC):
         Returns:
             A replayable form body carrying the standard media type.
         """
-        encoded = "&".join(f"{quote(k, safe='')}={quote(v, safe='')}" for k, v in fields.items())
+        encoded = "&".join(
+            f"{quote(k, safe='', encoding=encoding)}={quote(v, safe='', encoding=encoding)}"
+            for k, v in fields.items()
+        )
         return _BytesBody(
             encoded.encode(encoding),
             common_media_types.APPLICATION_FORM_URLENCODED,

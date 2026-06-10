@@ -26,14 +26,14 @@ Limitations of the underlying ``urllib.request`` transport:
   outbound) and, in proxy/forwarder scenarios, ``WWW-Authenticate``. Use a
   production transport if you need to emit repeated outbound headers.
 
-The response body is exposed as a :class:`ResponseBody.from_stream` wrapper
+The response body is exposed as a `ResponseBody.from_stream` wrapper
 so streaming reads on the response side are possible. Maps urllib's
 exception types into the SDK error hierarchy.
 """
 
 from __future__ import annotations
 
-from socket import timeout as _SocketTimeout  # noqa: N812 — re-exporting the stdlib lowercase name
+import contextlib
 from types import TracebackType
 from typing import Final, Self
 from urllib.error import HTTPError, URLError
@@ -87,23 +87,34 @@ class UrllibHttpClient:
 
         Raises:
             ServiceRequestError: When the connection cannot be established.
+            ServiceRequestTimeoutError: When the connection times out before
+                the request is transmitted (connect phase).
             ServiceResponseError: When reading the response fails.
+            ServiceResponseTimeoutError: When the request was transmitted but
+                the response read times out (read phase).
         """
         if self._closed:
             raise ServiceRequestError("UrllibHttpClient is closed")
         raw = _build_urllib_request(request)
         try:
             opened = urlopen(raw, timeout=self.timeout)
-        except TimeoutError as err:
-            raise ServiceRequestTimeoutError(str(err), error=err) from err
         except HTTPError as err:
             # urllib raises HTTPError for 4xx/5xx; surface them via the
             # normal Response path so policies (retry, error_map) can react.
             return _build_response(request, err)
         except URLError as err:
-            if isinstance(err.reason, _SocketTimeout):
-                raise ServiceResponseTimeoutError(str(err), error=err) from err
+            # Since 3.10 ``socket.timeout`` is ``TimeoutError``. A connect
+            # timeout reaches us wrapped as ``URLError(reason=TimeoutError)``
+            # — the request never left, so it is a *request* timeout.
+            if isinstance(err.reason, TimeoutError):
+                raise ServiceRequestTimeoutError(str(err), error=err) from err
             raise ServiceRequestError(str(err), error=err) from err
+        except TimeoutError as err:
+            # A *bare* ``TimeoutError`` (not wrapped in ``URLError``) is a
+            # read-phase timeout: the request was transmitted but the response
+            # stalled. Classify as a *response* timeout so non-idempotent
+            # reads are not auto-retried as if they never reached the service.
+            raise ServiceResponseTimeoutError(str(err), error=err) from err
         return _build_response(request, opened)
 
     def close(self) -> None:
@@ -146,6 +157,10 @@ def _build_response(request: Request, opened: object) -> Response:
     try:
         status = Status(status_code)
     except ValueError as err:
+        # A valid-but-unregistered code raises here before the body wraps the
+        # stream. Release the underlying response first so the connection is
+        # not leaked (parity with the aiohttp/httpx adapters).
+        _close_quietly(opened)
         raise ServiceResponseError(f"Unknown status code: {status_code}", error=err) from err
     raw_headers = getattr(opened, "headers", None)
     headers = _convert_headers(raw_headers)
@@ -159,6 +174,21 @@ def _build_response(request: Request, opened: object) -> Response:
         reason=reason,
         body=body,
     )
+
+
+def _close_quietly(opened: object) -> None:
+    """Close ``opened`` if it exposes ``close``, swallowing any error.
+
+    Used on the failure path before raising so a partially constructed
+    response does not leak its underlying connection.
+
+    Args:
+        opened: The urllib response (or ``HTTPError``) to release.
+    """
+    close = getattr(opened, "close", None)
+    if callable(close):
+        with contextlib.suppress(Exception):
+            close()
 
 
 def _convert_headers(raw: object) -> Headers:

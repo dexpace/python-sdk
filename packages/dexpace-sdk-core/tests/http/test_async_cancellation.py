@@ -18,6 +18,7 @@ import asyncio
 
 import pytest
 
+from dexpace.sdk.core.http.request import AsyncRequestBody
 from dexpace.sdk.core.http.response import AsyncResponse, AsyncResponseBody
 from dexpace.sdk.core.http.response.async_response_body import _shielded_cleanup
 from dexpace.sdk.core.http.sse.parser import parse_async_events
@@ -59,6 +60,27 @@ async def test_aiter_bytes_releases_stream_and_propagates_when_cancelled_mid_rea
             pass
 
     task = asyncio.ensure_future(consume())
+    await asyncio.sleep(0)  # let the task reach the blocking read
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert stream.closed is True
+    assert stream.close_completed is True
+
+
+async def test_request_aiter_bytes_releases_stream_and_propagates_when_cancelled() -> None:
+    # The request-side stream body must shield its close just like the
+    # response side, so a cancel mid-read still releases the upstream stream.
+    stream = _SlowStream()
+    body = AsyncRequestBody.from_async_stream(stream)
+
+    async def produce() -> None:
+        async for _ in body.aiter_bytes():
+            pass
+
+    task = asyncio.ensure_future(produce())
     await asyncio.sleep(0)  # let the task reach the blocking read
     task.cancel()
 

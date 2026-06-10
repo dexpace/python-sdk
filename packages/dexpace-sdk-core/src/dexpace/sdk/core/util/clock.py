@@ -6,7 +6,7 @@
 Time-dependent components (retry backoff, bearer-token refresh, deadline
 arithmetic) accept a ``Clock`` / ``AsyncClock`` rather than calling
 ``time.time`` / ``time.sleep`` / ``asyncio.sleep`` directly. Production
-code wires in :data:`SYSTEM_CLOCK` or :data:`ASYNC_SYSTEM_CLOCK`; tests
+code wires in `SYSTEM_CLOCK` or `ASYNC_SYSTEM_CLOCK`; tests
 substitute a deterministic fake (see ``tests/conftest.py::FakeClock``).
 
 Both protocols are ``@runtime_checkable`` so callers can assert
@@ -61,7 +61,7 @@ class Clock(Protocol):
 
 @runtime_checkable
 class AsyncClock(Protocol):
-    """Async twin of :class:`Clock` for use inside ``async def`` callers.
+    """Async twin of `Clock` for use inside ``async def`` callers.
 
     ``now`` / ``monotonic`` remain synchronous — they are cheap reads
     against the operating system. Only ``sleep`` is awaitable.
@@ -86,7 +86,7 @@ class AsyncClock(Protocol):
 
 
 class _SystemClock:
-    """Default :class:`Clock` backed by :mod:`time`."""
+    """Default `Clock` backed by `time`."""
 
     __slots__ = ()
 
@@ -105,7 +105,7 @@ class _SystemClock:
 
 
 class _AsyncSystemClock:
-    """Default :class:`AsyncClock` backed by :mod:`asyncio`."""
+    """Default `AsyncClock` backed by `asyncio`."""
 
     __slots__ = ()
 
@@ -124,7 +124,7 @@ class _AsyncSystemClock:
 
 
 SYSTEM_CLOCK: Clock = _SystemClock()
-"""Process-wide default :class:`Clock` backed by the standard library."""
+"""Process-wide default `Clock` backed by the standard library."""
 
 ASYNC_SYSTEM_CLOCK: AsyncClock = _AsyncSystemClock()
-"""Process-wide default :class:`AsyncClock` backed by :mod:`asyncio`."""
+"""Process-wide default `AsyncClock` backed by `asyncio`."""

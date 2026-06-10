@@ -14,10 +14,10 @@ shapes:
 - ``HttpResponseError`` — a 4xx or 5xx response was received intact. Carries
   the response so callers can inspect status, headers, and body.
 
-Plus exceptions for body lifecycle violations (``StreamConsumedError``,
-``StreamClosedError``, ``ResponseNotReadError``), serialization
-(``SerializationError``, ``DeserializationError``), and pipeline aborts
-(``PipelineAbortedError``).
+Plus exceptions for body / stream lifecycle violations
+(``StreamConsumedError``, ``StreamClosedError``, ``ResponseNotReadError``,
+``StreamingError``), serialization (``SerializationError``,
+``DeserializationError``), and pipeline aborts (``PipelineAbortedError``).
 """
 
 from __future__ import annotations

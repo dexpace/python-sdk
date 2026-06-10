@@ -60,20 +60,42 @@ class JsonSerializer:
     def serialize(self, value: Any) -> str:
         """Serialise ``value`` to a JSON string.
 
+        ``json`` treats ``cls=`` and ``default=`` as mutually exclusive: passing
+        both makes the encoder class's ``default`` method unreachable. To keep
+        the built-in datetime / date / time / bytes handling alongside a
+        caller-supplied ``default``, the user callable is chained behind the
+        encoder class instead — the encoder's checks run first and the user
+        fallback only sees types the encoder rejects.
+
         Raises:
             SerializationError: If encoding fails.
         """
+        encoder = self._build_encoder()
         try:
-            return json.dumps(
-                value,
-                cls=self._encoder_cls,
-                default=self._default,
-                sort_keys=self._sort_keys,
-                allow_nan=self._allow_nan,
-                separators=(",", ":"),
-            )
+            return encoder.encode(value)
         except (TypeError, ValueError, UnicodeDecodeError) as err:
             raise SerializationError(str(err), error=err) from err
+
+    def _build_encoder(self) -> json.JSONEncoder:
+        """Build an encoder chaining the built-in ``default`` to the user one."""
+        encoder_cls = self._encoder_cls
+        kwargs: dict[str, Any] = {
+            "sort_keys": self._sort_keys,
+            "allow_nan": self._allow_nan,
+            "separators": (",", ":"),
+        }
+        if self._default is None:
+            return encoder_cls(**kwargs)
+        fallback: Callable[[Any], Any] = self._default
+
+        class _ChainedEncoder(encoder_cls):  # type: ignore[valid-type, misc]
+            def default(self, o: Any) -> Any:
+                try:
+                    return super().default(o)
+                except TypeError:
+                    return fallback(o)
+
+        return _ChainedEncoder(**kwargs)
 
     def serialize_to_bytes(self, value: Any) -> bytes:
         """Serialise ``value`` to UTF-8-encoded JSON bytes."""

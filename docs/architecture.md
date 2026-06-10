@@ -17,7 +17,13 @@ plug in a concrete transport via the `HttpClient` Protocol.
          │   - Pipeline      │          │   - BearerToken     │
          │   - Policy        │          │   - KeyCredential   │
          │   - PipelineStep  │          │   - BasicAuth       │
-         │   - retry, log,   │          │   - TokenCache      │
+         │   - redirect,     │          │   - TokenCache      │
+         │     idempotency,  │          │                     │
+         │     retry,        │          │                     │
+         │     set-date,     │          │                     │
+         │     client-       │          │                     │
+         │     identity,     │          │                     │
+         │     logging,      │          │                     │
          │     tracing       │          │                     │
          └──────────┬────────┘          └─────────────────────┘
                     │
@@ -32,9 +38,13 @@ plug in a concrete transport via the `HttpClient` Protocol.
                     │
          ┌──────────▼─────────────────────────────────────────┐
          │   client/  HttpClient + AsyncHttpClient            │
+         │   - Protocols only; transports plug in here        │
+         └──────────┬─────────────────────────────────────────┘
+                    │
+         ┌──────────▼─────────────────────────────────────────┐
+         │   dexpace-sdk-http-stdlib (separate distribution)  │
          │   - UrllibHttpClient (sync reference)              │
          │   - AsyncioHttpClient (async reference)            │
-         │   - real transports plug in here                   │
          └────────────────────────────────────────────────────┘
 ```
 
@@ -67,5 +77,5 @@ The Java port has an `IoProvider` / `Buffer` / `Source` / `Sink` layer
 (a port of Okio). In Python, `bytes` / `bytearray` / `memoryview` /
 `BytesIO` / `BinaryIO` already cover the same surface idiomatically.
 Bodies use `iter_bytes(chunk_size)` for streaming and ordinary stdlib
-primitives for everything else. See `to-implement.md` for the design
-rationale.
+primitives for everything else. See the "Things That Will Bite You"
+section in `CLAUDE.md` for the design rationale.

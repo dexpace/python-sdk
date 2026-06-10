@@ -147,6 +147,9 @@ class BearerTokenPolicy(Policy):
         handler_header = self._apply_challenge_handler(request, response, status)
         if handler_header is not None:
             request = request.with_header(*handler_header)
+            # The rejected challenge response is not handed back; close it to
+            # release the pooled connection before the authenticated retry.
+            response.close()
             response = self.next.send(request, ctx)
             if int(response.status) not in (401, 407):
                 return response
@@ -157,6 +160,8 @@ class BearerTokenPolicy(Policy):
             return response
         if "WWW-Authenticate" in response.headers and self.on_challenge(request, response):
             request = self._authorize(request, ctx, force_refresh=True)
+            # Release the rejected 401 before retrying with the refreshed token.
+            response.close()
             response = self.next.send(request, ctx)
             if int(response.status) != 401:
                 return response
@@ -245,10 +250,25 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
     double-checked pattern; the underlying ``AsyncTokenCredential`` is
     invoked at most once per refresh window even when many tasks call
     ``send`` concurrently.
+
+    Like the sync policy, an optional ``challenge_handler`` plugs in a
+    scheme-aware handler (e.g. ``DigestChallengeHandler``); it is consulted
+    before ``on_challenge`` on 401/407 and, if it satisfies the challenge,
+    the returned ``(name, value)`` pair is stamped on the retried request.
+    A 401 invalidates the cached origin token; a 407 leaves it alone because
+    the proxy, not the origin, rejected the request.
     """
 
     STAGE = Stage.AUTH
-    __slots__ = ("_audience", "_cache", "_clock", "_credential", "_lock", "_scopes")
+    __slots__ = (
+        "_audience",
+        "_cache",
+        "_challenge_handler",
+        "_clock",
+        "_credential",
+        "_lock",
+        "_scopes",
+    )
 
     def __init__(
         self,
@@ -257,6 +277,7 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         cache: TokenCache | None = None,
         audience: str | None = None,
         clock: AsyncClock | None = None,
+        challenge_handler: ChallengeHandler | None = None,
     ) -> None:
         if not scopes:
             raise ValueError("at least one scope is required")
@@ -269,19 +290,69 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         # variants), so the protocol mismatch on ``sleep`` is irrelevant.
         self._clock: AsyncClock = clock if clock is not None else ASYNC_SYSTEM_CLOCK
         self._lock = asyncio.Lock()
+        self._challenge_handler = challenge_handler
 
     async def send(self, request: Request, ctx: PipelineContext) -> AsyncResponse:
         request = await self._authorize(request, ctx)
         response = await self.next.send(request, ctx)
-        if int(response.status) != 401:
+        status = int(response.status)
+        if status not in (401, 407):
             return response
-        self._cache.set(self._scopes, _expired_token(), self._audience)
+        # On 401 the bearer token was rejected: drop it from the cache so the
+        # ``on_challenge`` fallback path forces a refresh. A 407 means the
+        # proxy rejected us, not the origin — leave the cached token alone.
+        if status == 401:
+            self._cache.set(self._scopes, _expired_token(), self._audience)
+        handler_header = self._apply_challenge_handler(request, response, status)
+        if handler_header is not None:
+            request = request.with_header(*handler_header)
+            # The rejected challenge response is not handed back; close it to
+            # release the pooled connection before the authenticated retry.
+            await response.close()
+            response = await self.next.send(request, ctx)
+            if int(response.status) not in (401, 407):
+                return response
+            raise ClientAuthenticationError(response=response)
+        if status != 401:
+            # No handler match on a 407; surface the response unchanged so
+            # callers can inspect proxy-auth failures themselves.
+            return response
         if "WWW-Authenticate" in response.headers and await self.on_challenge(request, response):
             request = await self._authorize(request, ctx, force_refresh=True)
+            # Release the rejected 401 before retrying with the refreshed token.
+            await response.close()
             response = await self.next.send(request, ctx)
             if int(response.status) != 401:
                 return response
         raise ClientAuthenticationError(response=response)
+
+    def _apply_challenge_handler(
+        self,
+        request: Request,
+        response: AsyncResponse,
+        status: int,
+    ) -> tuple[str, str] | None:
+        """Delegate to the configured ``ChallengeHandler``, if any.
+
+        Returns the ``(name, value)`` pair to stamp on the retry, or ``None``
+        when no handler is configured or the handler declines the challenge.
+        """
+        if self._challenge_handler is None:
+            return None
+        is_proxy = status == 407
+        header_name = "Proxy-Authenticate" if is_proxy else "WWW-Authenticate"
+        raw = response.headers.get(header_name)
+        if raw is None:
+            return None
+        challenges = parse_challenges(raw)
+        if not challenges or not self._challenge_handler.can_handle(challenges):
+            return None
+        return self._challenge_handler.handle(
+            request.method,
+            request.url,
+            challenges,
+            is_proxy=is_proxy,
+        )
 
     async def on_challenge(
         self,

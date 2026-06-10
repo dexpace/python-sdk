@@ -21,6 +21,7 @@ configuration should degrade, not crash.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from collections.abc import Callable
@@ -167,13 +168,13 @@ class Configuration:
 
         Returns:
             Duration in seconds, or ``default_seconds`` on miss / failure /
-            negative result.
+            non-finite (``inf`` / ``nan``) / negative result.
         """
         raw = self.get(name)
         if raw is None:
             return default_seconds
         parsed = _parse_duration_seconds(raw)
-        if parsed is None or parsed < 0:
+        if parsed is None or not math.isfinite(parsed) or parsed < 0:
             return default_seconds
         return parsed
 

@@ -251,7 +251,7 @@ class SseConnection:
 
 
 class AsyncSseConnection:
-    """Asynchronous twin of :class:`SseConnection`.
+    """Asynchronous twin of `SseConnection`.
 
     Mirrors the sync client exactly with ``async`` iteration semantics. Each
     (re)connection is dispatched through ``source`` — an ``AsyncPipeline`` (run

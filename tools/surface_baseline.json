@@ -368,7 +368,7 @@
             "end": "end(self) -> int | None",
             "format": "format(self) -> str",
             "format_many": "format_many(cls, ranges: Sequence[HttpRange]) -> str",
-            "suffix": "suffix(cls, count: int) -> _SuffixHttpRange",
+            "suffix": "suffix(cls, count: int) -> HttpRange",
             "to_header_value": "to_header_value(self) -> str"
           }
         }
@@ -469,7 +469,9 @@
       },
       "dexpace.sdk.core.http.context.call_context": {
         "CallContext": {
-          "bases": [],
+          "bases": [
+            "abc.ABC"
+          ],
           "methods": {
             "close": "close(self) -> None"
           }
@@ -1268,10 +1270,6 @@
         }
       },
       "dexpace.sdk.core.pipeline.step.config": {
-        "RetryConfig": {
-          "bases": [],
-          "methods": {}
-        },
         "StepMetadata": {
           "bases": [],
           "methods": {}
@@ -1586,7 +1584,6 @@
         "Policy",
         "RequestPipelineStep",
         "ResponsePipelineStep",
-        "RetryConfig",
         "Stage",
         "StagedPipelineBuilder",
         "StepMetadata",

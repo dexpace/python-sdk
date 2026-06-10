@@ -14,7 +14,7 @@ from typing import ClassVar
 class TraceId:
     """Identifier shared by every span in the same logical trace.
 
-    The encoding (hex / decimal, length) depends on the :class:`TraceIdType` of
+    The encoding (hex / decimal, length) depends on the `TraceIdType` of
     the originating context.
     """
 
@@ -66,7 +66,7 @@ TraceState.NOOP = TraceState("")
 
 
 class TraceIdType(StrEnum):
-    """Encoding flavour of a :class:`TraceId`.
+    """Encoding flavour of a `TraceId`.
 
     Different backends expect different wire formats (W3C hex vs Datadog
     decimal); the type drives how the trace id is rendered for propagation.

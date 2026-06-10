@@ -6,7 +6,7 @@
 Stdlib-only HMAC-SHA256 verification of inbound webhooks: rebuild the signed
 content ``{id}.{timestamp}.{body}``, compare constant-time against any of the
 provided ``v1,<base64>`` signatures, and reject deliveries outside a ±5-minute
-timestamp window. :class:`WebhookVerifier.unwrap` additionally parses the
+timestamp window. `WebhookVerifier.unwrap` additionally parses the
 verified JSON body.
 """
 

@@ -79,8 +79,9 @@ with UrllibHttpClient() as client, client.execute(request) as response:
 ### A configured pipeline
 
 `default_pipeline()` returns a `StagedPipelineBuilder` pre-wired with the
-canonical policy stack (redirect, retry, set-date, logging, tracing). Add
-authentication and adjust whatever the defaults get wrong for you:
+canonical policy stack (redirect, idempotency, retry, set-date,
+client-identity, logging, tracing). Add authentication and adjust whatever
+the defaults get wrong for you:
 
 ```python
 from dexpace.sdk.core.http.auth import BearerTokenPolicy
@@ -112,7 +113,8 @@ from dexpace.sdk.core.http.request import RequestBody
 RequestBody.from_stream(open("payload.bin", "rb"))
 RequestBody.from_iter([b"chunk-1", b"chunk-2"])
 
-# Replayable (transports may use zero-copy sendfile)
+# Replayable; a transport could special-case file bodies (e.g. zero-copy
+# sendfile), though none of the shipped transports do so today
 RequestBody.from_file("upload.bin")
 
 # Convert any single-use body into a replayable one before retrying
@@ -130,8 +132,9 @@ the way back up. The terminal policy hands the request to an `HttpClient`
 transport.
 
 ```
-caller → Pipeline → REDIRECT → RETRY → SET_DATE → AUTH → LOGGING → POST_LOGGING → HttpClient → wire
-                     (pillar)  (pillar)            (pillar) (pillar)
+caller → Pipeline → REDIRECT → POST_REDIRECT → RETRY → POST_RETRY → [AUTH] → LOGGING → POST_LOGGING → HttpClient → wire
+                     (pillar)   idempotency    (pillar)  set-date    (pillar) (pillar)  tracing
+                                                          client-identity
 ```
 
 Ordering is governed by `Stage`, an `IntEnum` whose values sit 100 apart so
@@ -169,12 +172,14 @@ Bottom-up, the layers are:
 | `http.common`       | `Headers`, `HttpHeaderName`, `MediaType`, `Protocol`, `Url`, `QueryParams`, `ETag`, `HttpRange`, `RequestConditions`, paging primitives |
 | `http.context`      | `CallContext` → `DispatchContext` → `RequestContext` → `ExchangeContext` chain, `ContextStore`           |
 | `http.auth`         | `BearerTokenPolicy`, `BasicAuthPolicy`, `KeyCredentialPolicy`, `DigestChallengeHandler`, RFC 7235 challenge parser, `TokenCache` |
-| `http.sse`          | `SseParser` for Server-Sent Events streams                                                               |
+| `http.sse`          | `SseParser`, plus reconnecting `SseConnection` / `AsyncSseConnection` (Last-Event-ID replay + backoff)   |
+| `http.webhooks`     | `WebhookVerifier`, `InvalidWebhookSignatureError` — HMAC signature verification with timestamp tolerance  |
+| `pagination`        | `Page`, `Paginator` / `AsyncPaginator`, `PaginationStrategy` (`CursorStrategy`, `PageNumberStrategy`, `LinkHeaderStrategy`) |
 | `pipeline`          | `Pipeline`, `AsyncPipeline`, `Policy` ABC, `Stage` enum, `StagedPipelineBuilder`, `default_pipeline()`   |
-| `pipeline.policies` | `RetryPolicy`, `RedirectPolicy`, `SetDatePolicy`, `LoggingPolicy`, `TracingPolicy` (+ async twins)       |
+| `pipeline.policies` | `RedirectPolicy`, `IdempotencyPolicy`, `RetryPolicy`, `SetDatePolicy`, `ClientIdentityPolicy`, `LoggingPolicy`, `TracingPolicy` (async twins for all but logging/tracing) |
 | `client`            | `HttpClient` and `AsyncHttpClient` Protocols                                                             |
 | `serde`             | `Serde`, `Serializer`, `Deserializer` Protocols + `JsonSerde` reference impl                             |
-| `instrumentation`   | `ClientLogger`, `UrlRedactor`, `Tracer`, `Span`, `InstrumentationContext`, noop singletons               |
+| `instrumentation`   | `ClientLogger`, `UrlRedactor`, `Tracer`, `Span`, `InstrumentationContext`, `contextvars` correlation helpers, noop singletons |
 | `errors`            | `SdkError` hierarchy: `ServiceRequestError`, `ServiceResponseError`, `HttpResponseError[ModelT]`, …      |
 | `util`              | `Clock`, `AsyncClock`, `ProxyOptions`                                                                    |
 | `config`            | `Configuration` (layered env-var + override lookup) + `ConfigurationBuilder`                             |
@@ -203,7 +208,16 @@ Bottom-up, the layers are:
   OpenTelemetry-compatible spans via `TracingPolicy`, URL redaction with
   allowlisted query parameters, and capped body capture for diagnostics.
 - **Server-Sent Events.** A WHATWG-compliant `SseParser` with a bounded
-  line buffer.
+  line buffer, plus reconnecting `SseConnection` / `AsyncSseConnection`
+  that resume with `Last-Event-ID` and honour server `retry:` backoff.
+- **Pagination.** A top-level `pagination` package: `Page`, sync and async
+  `Paginator`s that iterate item-by-item or page-by-page, and pluggable
+  `PaginationStrategy` (cursor, page-number, and `Link`-header).
+- **Webhooks.** `WebhookVerifier` checks HMAC signatures with a timestamp
+  tolerance and constant-time comparison, raising
+  `InvalidWebhookSignatureError` on mismatch.
+- **Correlation.** `contextvars`-based trace/span propagation so the
+  idempotency and client-identity policies and logging share one id.
 - **A lean core.** `dexpace-sdk-core` carries a single runtime dependency
   (`furl`, which backs `Url` parsing); each transport adapter adds exactly
   one HTTP library.
@@ -220,8 +234,8 @@ uv sync
 ```
 
 ```bash
-uv run pytest -q                 # 646 tests across 5 packages
-uv run mypy --strict             # type-check (171 source files)
+uv run pytest -q                 # run the full test suite across 5 packages
+uv run mypy --strict             # type-check every package under strict mode
 uv run ruff check                # lint
 uv run ruff format --check       # formatting gate
 ```

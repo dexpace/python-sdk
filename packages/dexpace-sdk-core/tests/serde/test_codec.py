@@ -13,6 +13,7 @@ import dataclasses
 import enum
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time
+from uuid import UUID
 
 import pytest
 
@@ -168,6 +169,24 @@ def test_decode_tristate_recurses_into_inner_type() -> None:
 
     model = Codec().decode({"when": "2026-01-02T03:04:05Z"}, Wrapped)
     assert model.when == Present(datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC))
+
+
+def test_decode_bare_tristate_value_wraps_in_present() -> None:
+    @dataclass(frozen=True, slots=True)
+    class Wrapped:
+        note: Tristate = ABSENT  # type: ignore[type-arg]
+
+    model = Codec().decode({"note": "hi"}, Wrapped)
+    assert model.note == Present("hi")
+
+
+def test_decode_bare_tristate_null_becomes_null() -> None:
+    @dataclass(frozen=True, slots=True)
+    class Wrapped:
+        note: Tristate = ABSENT  # type: ignore[type-arg]
+
+    model = Codec().decode({"note": None}, Wrapped)
+    assert model.note is NULL
 
 
 # --------------------------------------------------------------------------- #
@@ -566,6 +585,99 @@ def test_decode_dict_scalar_keys_follow_value_no_coercion_rule(codec: Codec) -> 
 def test_decode_dict_recovers_enum_keys_and_model_values(codec: Codec) -> None:
     decoded = codec.decode({"second": {"x": 5}}, dict[_KeyKind, _Inner])
     assert decoded == {_KeyKind.SECOND: _Inner(5)}
+
+
+# --------------------------------------------------------------------------- #
+# Mapping encode collapses non-string keys (decode/encode round-trip)          #
+# --------------------------------------------------------------------------- #
+
+
+def test_encode_dict_with_enum_keys_collapses_to_value(codec: Codec) -> None:
+    encoded = codec.encode({_KeyKind.FIRST: 10})
+    assert encoded == {"first": 10}
+
+
+def test_dict_enum_key_field_round_trips(codec: Codec) -> None:
+    @dataclass(frozen=True, slots=True)
+    class Holder:
+        counts: dict[_KeyKind, int]
+
+    model = Holder({_KeyKind.FIRST: 10, _KeyKind.SECOND: 20})
+    encoded = codec.encode(model)
+    assert isinstance(encoded, dict)
+    assert encoded["counts"] == {"first": 10, "second": 20}
+    decoded = codec.decode(encoded, Holder)
+    assert decoded == model
+
+
+def test_encode_dict_with_date_keys_collapses_to_iso(codec: Codec) -> None:
+    encoded = codec.encode({date(2026, 1, 2): 5})
+    assert encoded == {"2026-01-02": 5}
+
+
+def test_dict_date_key_field_round_trips(codec: Codec) -> None:
+    @dataclass(frozen=True, slots=True)
+    class Holder:
+        by_day: dict[date, int]
+
+    model = Holder({date(2026, 1, 2): 5, date(2026, 3, 4): 6})
+    encoded = codec.encode(model)
+    assert isinstance(encoded, dict)
+    assert encoded["by_day"] == {"2026-01-02": 5, "2026-03-04": 6}
+    decoded = codec.decode(encoded, Holder)
+    assert decoded == model
+
+
+def test_encode_dict_rejects_non_collapsible_key(codec: Codec) -> None:
+    with pytest.raises(SerializationError):
+        codec.encode({object(): 1})
+
+
+# --------------------------------------------------------------------------- #
+# UUID values and keys (symmetric encode/decode round-trip)                    #
+# --------------------------------------------------------------------------- #
+
+_UUID = UUID("12345678-1234-5678-1234-567812345678")
+
+
+def test_encode_uuid_value_collapses_to_str(codec: Codec) -> None:
+    assert codec.encode(_UUID) == "12345678-1234-5678-1234-567812345678"
+    assert type(codec.encode(_UUID)) is str
+
+
+def test_uuid_value_field_round_trips(codec: Codec) -> None:
+    @dataclass(frozen=True, slots=True)
+    class Holder:
+        id: UUID
+
+    model = Holder(_UUID)
+    decoded = codec.decode(codec.encode(model), Holder)
+    assert decoded == model
+    assert isinstance(decoded.id, UUID)
+
+
+def test_encode_dict_with_uuid_keys_collapses_to_str(codec: Codec) -> None:
+    assert codec.encode({_UUID: 5}) == {"12345678-1234-5678-1234-567812345678": 5}
+
+
+def test_dict_uuid_key_field_round_trips(codec: Codec) -> None:
+    @dataclass(frozen=True, slots=True)
+    class Holder:
+        by_id: dict[UUID, int]
+
+    model = Holder({_UUID: 5})
+    encoded = codec.encode(model)
+    assert isinstance(encoded, dict)
+    assert encoded["by_id"] == {"12345678-1234-5678-1234-567812345678": 5}
+    decoded = codec.decode(encoded, Holder)
+    assert decoded == model
+    assert all(isinstance(k, UUID) for k in decoded.by_id)
+
+
+def test_decode_invalid_uuid_raises_with_path(codec: Codec) -> None:
+    with pytest.raises(CodecError) as info:
+        codec.decode("not-a-uuid", UUID)
+    assert "UUID" in str(info.value)
 
 
 # --------------------------------------------------------------------------- #

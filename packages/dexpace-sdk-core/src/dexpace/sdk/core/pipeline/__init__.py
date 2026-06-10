@@ -15,7 +15,7 @@ from .policy import Policy
 from .stage import Stage
 from .staged_builder import StagedPipelineBuilder
 from .step import PipelineStep, RequestPipelineStep, ResponsePipelineStep
-from .step.config import RetryConfig, StepMetadata
+from .step.config import StepMetadata
 
 __all__ = [
     "AsyncPipeline",
@@ -27,7 +27,6 @@ __all__ = [
     "Policy",
     "RequestPipelineStep",
     "ResponsePipelineStep",
-    "RetryConfig",
     "Stage",
     "StagedPipelineBuilder",
     "StepMetadata",

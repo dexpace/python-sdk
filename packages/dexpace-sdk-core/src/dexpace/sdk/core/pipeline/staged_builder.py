@@ -26,15 +26,15 @@ if TYPE_CHECKING:
 
 
 class StagedPipelineBuilder:
-    """Build a :class:`Pipeline` by stage rather than user-specified order.
+    """Build a `Pipeline` by stage rather than user-specified order.
 
     Surgical edits (``replace`` / ``insert_after`` / ``insert_before`` /
     ``remove``) take a policy *type* and operate on the first matching
     instance — useful for tweaking an already-built pipeline obtained via
-    :meth:`from_pipeline`.
+    `from_pipeline`.
 
     Thread-safety: not thread-safe. Construct on one thread, then call
-    :meth:`build` — the resulting :class:`Pipeline` is independent.
+    `build` — the resulting `Pipeline` is independent.
     """
 
     __slots__ = ("_buckets", "_client", "_pillars")
@@ -71,7 +71,7 @@ class StagedPipelineBuilder:
     def prepend(self, policy: Policy, *, force: bool = False) -> Self:
         """Prepend ``policy`` to the head of its stage's bucket.
 
-        Pillar behaviour mirrors :meth:`append`.
+        Pillar behaviour mirrors `append`.
         """
         stage = policy.STAGE
         if stage.is_pillar:
@@ -133,12 +133,12 @@ class StagedPipelineBuilder:
         return self
 
     def build(self) -> Pipeline:
-        """Flatten the builder's contents into a :class:`Pipeline`."""
+        """Flatten the builder's contents into a `Pipeline`."""
         return Pipeline(self._client, policies=self._flatten())
 
     @classmethod
     def from_pipeline(cls, pipeline: Pipeline) -> Self:
-        """Seed a builder from an existing :class:`Pipeline`'s policies.
+        """Seed a builder from an existing `Pipeline`'s policies.
 
         Walks the pipeline's policy chain (skipping the internal transport
         runner) and re-slots each policy into its declared stage. Useful
@@ -148,7 +148,9 @@ class StagedPipelineBuilder:
         Raises:
             ValueError: If the input pipeline's policies do not satisfy
                 stage ordering — i.e. their declared stages do not appear
-                in non-decreasing order in the chain.
+                in non-decreasing order in the chain — or if the chain
+                contains a list-constructor SansIO step (a bare callable),
+                which carries no ``STAGE`` and so cannot be rehydrated.
         """
         from ._transport_runner import _TransportRunner
 
@@ -156,6 +158,13 @@ class StagedPipelineBuilder:
         chain: list[Policy] = []
         node: Policy | None = pipeline._chain
         while node is not None and not isinstance(node, _TransportRunner):
+            if getattr(node, "STAGE", None) is None:
+                raise ValueError(
+                    f"Pipeline node {type(node).__name__} carries no STAGE; "
+                    f"it is a list-constructor SansIO step (a bare callable) "
+                    f"that cannot be rehydrated into a staged builder. Rebuild "
+                    f"the pipeline via the list constructor instead."
+                )
             chain.append(node)
             node = getattr(node, "next", None)
         last_stage: Stage | None = None

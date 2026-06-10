@@ -10,8 +10,10 @@ from collections.abc import AsyncIterable, AsyncIterator, Mapping
 from typing import Protocol, runtime_checkable
 from urllib.parse import quote
 
+from .._shielded import _shielded_cleanup
 from ..common import common_media_types
 from ..common.media_type import MediaType
+from .request_body import _check_chunk_size
 
 
 @runtime_checkable
@@ -34,10 +36,11 @@ class AsyncRequestBody(ABC):
     """Async twin of ``RequestBody``.
 
     Produces bytes via ``aiter_bytes``; ``write_to`` is the convenience
-    drainer for transports holding a ``SupportsAsyncWrite``. Replayability
-    semantics mirror the sync side: factories ``from_bytes`` / ``from_string``
-    / ``from_form`` produce replayable bodies, while ``from_async_iter`` and
-    ``from_async_stream`` are single-use.
+    drainer for transports holding a ``SupportsAsyncWrite``. This async
+    surface ships a subset of the sync factories: ``from_bytes`` /
+    ``from_string`` / ``from_form`` produce replayable bodies, while
+    ``from_async_iter`` and ``from_async_stream`` are single-use. The sync
+    ``from_file`` / ``from_multipart`` factories have no async twin here.
     """
 
     @abstractmethod
@@ -102,7 +105,10 @@ class AsyncRequestBody(ABC):
         fields: Mapping[str, str],
         encoding: str = "utf-8",
     ) -> AsyncRequestBody:
-        encoded = "&".join(f"{quote(k, safe='')}={quote(v, safe='')}" for k, v in fields.items())
+        encoded = "&".join(
+            f"{quote(k, safe='', encoding=encoding)}={quote(v, safe='', encoding=encoding)}"
+            for k, v in fields.items()
+        )
         return _AsyncBytesBody(
             encoded.encode(encoding),
             common_media_types.APPLICATION_FORM_URLENCODED,
@@ -149,6 +155,7 @@ class _AsyncBytesBody(AsyncRequestBody):
         return self
 
     async def aiter_bytes(self, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
+        _check_chunk_size(chunk_size)
         view = memoryview(self._data)
         for start in range(0, len(view), chunk_size):
             yield bytes(view[start : start + chunk_size])
@@ -177,6 +184,7 @@ class _AsyncIterBody(AsyncRequestBody):
         return self._length
 
     async def aiter_bytes(self, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
+        _check_chunk_size(chunk_size)
         del chunk_size
         if self._consumed:
             raise RuntimeError(
@@ -189,7 +197,16 @@ class _AsyncIterBody(AsyncRequestBody):
 
 
 class _AsyncStreamBody(AsyncRequestBody):
-    """Single-use body backed by an async-read stream."""
+    """Single-use body backed by an async-read stream.
+
+    Note:
+        Cancellation contract. ``aiter_bytes`` releases the underlying stream
+        from a ``finally`` clause. If the producing task is cancelled
+        mid-iteration that clause runs with a ``CancelledError`` already in
+        flight, so the close is routed through ``_shielded_cleanup`` to run to
+        completion before the cancellation continues to propagate — cleanup
+        never swallows it.
+    """
 
     __slots__ = ("_consumed", "_length", "_media_type", "_stream")
 
@@ -211,6 +228,7 @@ class _AsyncStreamBody(AsyncRequestBody):
         return self._length
 
     async def aiter_bytes(self, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
+        _check_chunk_size(chunk_size)
         if self._consumed:
             raise RuntimeError(
                 "AsyncRequestBody.aiter_bytes was already called — the stream is exhausted."
@@ -223,7 +241,7 @@ class _AsyncStreamBody(AsyncRequestBody):
                     return
                 yield chunk
         finally:
-            await self._stream.close()
+            await _shielded_cleanup(self._stream.close())
 
 
 __all__ = ["AsyncRequestBody", "SupportsAsyncRead", "SupportsAsyncWrite"]

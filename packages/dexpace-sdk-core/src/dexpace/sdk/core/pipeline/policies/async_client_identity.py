@@ -1,7 +1,7 @@
 # Copyright (c) 2026 dexpace and Omar Aljarrah.
 # Licensed under the MIT License. See LICENSE.md in the repository root for details.
 
-"""Async twin of :class:`ClientIdentityPolicy`."""
+"""Async twin of `ClientIdentityPolicy`."""
 
 from __future__ import annotations
 
@@ -19,15 +19,15 @@ if TYPE_CHECKING:
 
 
 class AsyncClientIdentityPolicy(AsyncPolicy):
-    """Async variant of :class:`ClientIdentityPolicy`.
+    """Async variant of `ClientIdentityPolicy`.
 
     Behaviour mirrors the sync twin: the ``User-Agent`` defaults to
-    :func:`default_user_agent`, append-vs-replace is selectable, and the token
-    is guaranteed non-blank. Building the value is synchronous, so :meth:`send`
+    `default_user_agent`, append-vs-replace is selectable, and the token
+    is guaranteed non-blank. Building the value is synchronous, so `send`
     differs only in the ``await`` on the downstream call.
 
     Attributes:
-        STAGE: Pinned to :attr:`Stage.POST_RETRY` at the type level so
+        STAGE: Pinned to `Stage.POST_RETRY` at the type level so
             mis-slotting is caught by ``mypy``.
     """
 
@@ -39,7 +39,7 @@ class AsyncClientIdentityPolicy(AsyncPolicy):
 
         Args:
             user_agent: ``User-Agent`` token to stamp. ``None`` (the default)
-                uses :func:`default_user_agent`. An empty or whitespace-only
+                uses `default_user_agent`. An empty or whitespace-only
                 value is rejected so the header is never blank.
             replace: When ``True``, overwrite any caller-set ``User-Agent``.
                 When ``False`` (the default), append after the caller's value.

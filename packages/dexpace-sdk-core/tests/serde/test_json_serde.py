@@ -116,3 +116,47 @@ def test_allow_nan_true_emits_nan() -> None:
     ser = JsonSerializer(allow_nan=True)
     text = ser.serialize({"v": math.nan})
     assert "NaN" in text
+
+
+def test_custom_default_still_encodes_builtin_datetime() -> None:
+    class _Custom:
+        pass
+
+    def my_default(o: object) -> object:
+        if isinstance(o, _Custom):
+            return "custom"
+        raise TypeError(o)
+
+    ser = JsonSerializer(default=my_default)
+    when = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    text = ser.serialize({"at": when})
+    assert "2024-01-01T12:00:00+00:00" in text
+
+
+def test_custom_default_handles_its_own_types() -> None:
+    class _Custom:
+        pass
+
+    def my_default(o: object) -> object:
+        if isinstance(o, _Custom):
+            return "custom"
+        raise TypeError(o)
+
+    ser = JsonSerializer(default=my_default)
+    assert ser.serialize({"x": _Custom()}) == '{"x":"custom"}'
+
+
+def test_custom_default_encodes_both_datetime_and_custom() -> None:
+    class _Custom:
+        pass
+
+    def my_default(o: object) -> object:
+        if isinstance(o, _Custom):
+            return "custom"
+        raise TypeError(o)
+
+    ser = JsonSerializer(default=my_default)
+    when = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    text = ser.serialize({"at": when, "x": _Custom()})
+    assert "2024-01-01T12:00:00+00:00" in text
+    assert '"x":"custom"' in text

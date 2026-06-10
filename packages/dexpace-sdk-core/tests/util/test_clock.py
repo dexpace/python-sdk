@@ -1,7 +1,7 @@
 # Copyright (c) 2026 dexpace and Omar Aljarrah.
 # Licensed under the MIT License. See LICENSE.md in the repository root for details.
 
-"""Tests for the :mod:`dexpace.sdk.core.util.clock` module."""
+"""Tests for the `dexpace.sdk.core.util.clock` module."""
 
 from __future__ import annotations
 
@@ -93,13 +93,13 @@ def test_async_system_clock_now_and_monotonic() -> None:
 
 
 def test_clock_protocol_satisfied_by_system_clock() -> None:
-    """``SYSTEM_CLOCK`` structurally satisfies the :class:`Clock` protocol."""
+    """``SYSTEM_CLOCK`` structurally satisfies the `Clock` protocol."""
     assert isinstance(SYSTEM_CLOCK, Clock)
     assert isinstance(_SystemClock(), Clock)
 
 
 def test_async_clock_protocol_satisfied_by_async_system_clock() -> None:
-    """``ASYNC_SYSTEM_CLOCK`` structurally satisfies :class:`AsyncClock`."""
+    """``ASYNC_SYSTEM_CLOCK`` structurally satisfies `AsyncClock`."""
     assert isinstance(ASYNC_SYSTEM_CLOCK, AsyncClock)
     assert isinstance(_AsyncSystemClock(), AsyncClock)
 
@@ -128,7 +128,7 @@ def test_fake_clock_advance(fake_clock: FakeClock) -> None:
 
 
 def test_fake_clock_satisfies_clock_protocol(fake_clock: FakeClock) -> None:
-    """``FakeClock`` is structurally a :class:`Clock`."""
+    """``FakeClock`` is structurally a `Clock`."""
     assert isinstance(fake_clock, Clock)
 
 

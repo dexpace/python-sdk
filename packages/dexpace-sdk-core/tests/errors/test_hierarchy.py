@@ -55,6 +55,23 @@ def test_sdk_error_captures_sys_exc_info() -> None:
     assert "inner" in str(err.exc_value)
 
 
+def test_sdk_error_traceback_falls_back_to_cause() -> None:
+    # Capture a caught exception, then construct the SdkError *outside* its
+    # except block so ``sys.exc_info()`` is the empty (None, None, None)
+    # triple. The traceback must still fall back to the cause's own
+    # ``__traceback__`` rather than leaving an incoherent (type, value, None).
+    cause: RuntimeError
+    try:
+        raise RuntimeError("inner")
+    except RuntimeError as exc:
+        cause = exc
+    assert cause.__traceback__ is not None
+    err = SdkError("outer", error=cause)
+    assert err.exc_type is RuntimeError
+    assert err.exc_value is cause
+    assert err.exc_traceback is cause.__traceback__
+
+
 def test_continuation_token_propagates() -> None:
     err = SdkError("paging", continuation_token="next-page-3")
     assert err.continuation_token == "next-page-3"

@@ -35,7 +35,7 @@ two parallel variants:
 ## Construction
 
 ```python
-from dexpace.sdk.core.client import UrllibHttpClient
+from dexpace.sdk.http.stdlib import UrllibHttpClient
 from dexpace.sdk.core.pipeline import Pipeline
 from dexpace.sdk.core.pipeline.policies import LoggingPolicy, RetryPolicy, TracingPolicy
 

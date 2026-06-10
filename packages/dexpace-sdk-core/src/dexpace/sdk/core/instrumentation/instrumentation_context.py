@@ -35,10 +35,10 @@ class InstrumentationContext:
     context across service boundaries so spans on either side correlate into
     one logical trace.
 
-    The shared no-op singleton :data:`NOOP_INSTRUMENTATION_CONTEXT` is used
+    The shared no-op singleton `NOOP_INSTRUMENTATION_CONTEXT` is used
     when tracing is disabled.
 
-    ``http_tracer_factory`` mints a per-operation :class:`HttpTracer` for
+    ``http_tracer_factory`` mints a per-operation `HttpTracer` for
     fine-grained request telemetry; it defaults to the no-op factory so callers
     that don't instrument pay nothing.
     """

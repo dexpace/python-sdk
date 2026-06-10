@@ -47,7 +47,7 @@ def default_user_agent() -> str:
     The shape is ``dexpace-sdk/<sdk-version> python/<python-version>`` — for
     example ``dexpace-sdk/1.2.0 python/3.12.4``. Transport packages may append
     their own ``<lib>/<version>`` token by passing a longer ``user_agent`` to
-    :class:`ClientIdentityPolicy`.
+    `ClientIdentityPolicy`.
 
     Returns:
         A non-empty ``User-Agent`` string.
@@ -60,7 +60,7 @@ class ClientIdentityPolicy(Policy):
 
     A consistent ``User-Agent`` lets servers and the SDK's own observability
     attribute traffic to the toolkit and its version. The token string defaults
-    to :func:`default_user_agent` (``dexpace-sdk/<ver> python/<pyver>``).
+    to `default_user_agent` (``dexpace-sdk/<ver> python/<pyver>``).
 
     Two modes control interaction with a caller-set header:
 
@@ -73,7 +73,7 @@ class ClientIdentityPolicy(Policy):
     an empty ``User-Agent`` header.
 
     Attributes:
-        STAGE: Pinned to :attr:`Stage.POST_RETRY` at the type level so
+        STAGE: Pinned to `Stage.POST_RETRY` at the type level so
             mis-slotting is caught by ``mypy``.
 
     Example:
@@ -90,7 +90,7 @@ class ClientIdentityPolicy(Policy):
 
         Args:
             user_agent: ``User-Agent`` token to stamp. ``None`` (the default)
-                uses :func:`default_user_agent`. An empty or whitespace-only
+                uses `default_user_agent`. An empty or whitespace-only
                 value is rejected so the header is never blank.
             replace: When ``True``, overwrite any caller-set ``User-Agent``.
                 When ``False`` (the default), append after the caller's value.

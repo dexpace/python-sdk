@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from io import BytesIO
 from types import TracebackType
 from typing import BinaryIO, Self
 
@@ -228,5 +227,4 @@ class _StreamResponseBody(ResponseBody):
         self._stream.close()
 
 
-# Re-exported from ``io`` for adapter convenience.
-__all__ = ["BytesIO", "ResponseBody"]
+__all__ = ["ResponseBody"]

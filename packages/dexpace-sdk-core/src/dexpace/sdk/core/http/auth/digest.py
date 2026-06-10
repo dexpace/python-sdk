@@ -19,6 +19,7 @@ import hashlib
 import secrets
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Final
 
 from ..common.url import Url
@@ -27,6 +28,21 @@ from .challenge import AuthenticateChallenge
 
 # Type alias for the algorithm parameter strings recognised on the wire.
 DigestAlgorithm = str
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedChallenge:
+    """The validated parameters extracted from a selected Digest challenge."""
+
+    algorithm: str
+    algo_key: str
+    hasher: Callable[[bytes], hashlib._Hash]
+    realm: str
+    nonce: str
+    opaque: str | None
+    charset: str
+    qop: str | None
+
 
 _DEFAULT_PREFERENCE: Final[tuple[DigestAlgorithm, ...]] = (
     "SHA-256-sess",
@@ -51,7 +67,11 @@ class DigestChallengeHandler:
         password: Secret used to compute ``HA1``.
         preferred_algorithms: Ordered preference for the algorithm parameter
             when the server offers more than one Digest challenge. The
-            first preference matched against an offered challenge wins.
+            first preference matched against an offered challenge wins. The
+            tuple also acts as an allow-list: an offered algorithm outside it
+            is never selected, even as a fallback, so narrowing the tuple to
+            ``("SHA-256",)`` declines an ``MD5``-only server. The default
+            contains every supported algorithm, so ``MD5`` stays reachable.
         cnonce_factory: Override for the client nonce generator. Defaults
             to ``secrets.token_hex(16)``; tests inject a deterministic
             value to assert against RFC fixtures.
@@ -99,55 +119,95 @@ class DigestChallengeHandler:
         selected = self._select(challenges)
         if selected is None:
             return None
-        algorithm = selected.parameters.get("algorithm", "MD5")
-        algo_key = algorithm.upper()
-        hasher = _HASHERS.get(algo_key)
-        if hasher is None:
-            return None
-        realm = selected.parameters.get("realm", "")
-        nonce = selected.parameters.get("nonce", "")
-        opaque = selected.parameters.get("opaque")
-        charset = _select_charset(selected.parameters.get("charset"))
-        qop = self._pick_qop(selected.parameters.get("qop"))
-        if qop is None and "qop" in selected.parameters:
-            # The server advertised qop but did not include ``auth``: we
-            # only implement auth, so we cannot satisfy this challenge.
+        resolved = self._resolve(selected)
+        if resolved is None:
             return None
         nc = self._next_nc()
         cnonce = self._cnonce_factory()
         uri = _request_uri(url)
         response = self._compute_response(
-            hasher=hasher,
-            algorithm=algo_key,
+            hasher=resolved.hasher,
+            algorithm=resolved.algo_key,
             method=str(method),
             uri=uri,
-            realm=realm,
-            nonce=nonce,
+            realm=resolved.realm,
+            nonce=resolved.nonce,
             nc=nc,
             cnonce=cnonce,
-            qop=qop,
-            charset=charset,
+            qop=resolved.qop,
+            charset=resolved.charset,
         )
         header_value = _format_header(
             username=self._username,
-            realm=realm,
-            nonce=nonce,
+            realm=resolved.realm,
+            nonce=resolved.nonce,
             uri=uri,
             response=response,
-            algorithm=algorithm,
+            algorithm=resolved.algorithm,
             cnonce=cnonce,
             nc=nc,
-            qop=qop,
-            opaque=opaque,
+            qop=resolved.qop,
+            opaque=resolved.opaque,
         )
         header_name = "Proxy-Authorization" if is_proxy else "Authorization"
         return header_name, header_value
 
+    def _resolve(self, selected: AuthenticateChallenge) -> _ResolvedChallenge | None:
+        """Validate and extract the parameters needed to answer ``selected``.
+
+        Returns ``None`` (decline) when the algorithm is unsupported, the
+        credentials are not encodable under the negotiated charset, or the
+        server advertised a ``qop`` we do not implement.
+        """
+        algorithm = selected.parameters.get("algorithm", "MD5")
+        algo_key = algorithm.upper()
+        hasher = _HASHERS.get(algo_key)
+        if hasher is None:
+            return None
+        charset = _select_charset(selected.parameters.get("charset"))
+        if not self._credentials_encodable(charset):
+            # A charset-less challenge defaults to ISO-8859-1, which cannot
+            # represent CJK/emoji credentials. Decline rather than letting a
+            # ``UnicodeEncodeError`` escape the documented contract.
+            return None
+        qop = self._pick_qop(selected.parameters.get("qop"))
+        if qop is None and "qop" in selected.parameters:
+            # The server advertised qop but did not include ``auth``: we
+            # only implement auth, so we cannot satisfy this challenge.
+            return None
+        if qop is None and algo_key.endswith("-SESS"):
+            # A session variant folds ``cnonce`` into HA1, but without ``qop``
+            # the response header omits ``cnonce``/``nc`` (RFC 7616 §3.4), so
+            # the server cannot reconstruct HA1. Such a challenge is
+            # self-contradictory (session variants were introduced alongside
+            # qop); decline rather than emit an unverifiable header.
+            return None
+        return _ResolvedChallenge(
+            algorithm=algorithm,
+            algo_key=algo_key,
+            hasher=hasher,
+            realm=selected.parameters.get("realm", ""),
+            nonce=selected.parameters.get("nonce", ""),
+            opaque=selected.parameters.get("opaque"),
+            charset=charset,
+            qop=qop,
+        )
+
     def _select(self, challenges: list[AuthenticateChallenge]) -> AuthenticateChallenge | None:
-        """Return the best Digest challenge per ``preferred_algorithms``."""
+        """Return the best Digest challenge per ``preferred_algorithms``.
+
+        ``preferred_algorithms`` is both a preference order and an allow-list:
+        an offered algorithm is only accepted if it appears in the tuple. The
+        first preference matched against an offered challenge wins; failing an
+        exact-preference match, the first challenge whose algorithm is still
+        within the allow-list is taken. The default preference contains every
+        supported algorithm, so ``MD5`` remains reachable unless the caller
+        narrows the tuple to exclude it.
+        """
         digest_challenges = [c for c in challenges if c.scheme.casefold() == "digest"]
         if not digest_challenges:
             return None
+        allowed = {preferred.upper() for preferred in self._preferred}
         # First, match by preference order.
         for preferred in self._preferred:
             target = preferred.upper()
@@ -155,10 +215,11 @@ class DigestChallengeHandler:
                 algo = challenge.parameters.get("algorithm", "MD5").upper()
                 if algo == target and algo in _HASHERS:
                     return challenge
-        # Fallback: take the first challenge whose algorithm we recognise.
+        # Fallback: the first challenge whose algorithm we recognise *and*
+        # the caller allowed via ``preferred_algorithms``.
         for challenge in digest_challenges:
             algo = challenge.parameters.get("algorithm", "MD5").upper()
-            if algo in _HASHERS:
+            if algo in _HASHERS and algo in allowed:
                 return challenge
         return None
 
@@ -170,6 +231,15 @@ class DigestChallengeHandler:
             self._counter = (self._counter + 1) & 0xFFFFFFFF
             value = self._counter
         return f"{value:08x}"
+
+    def _credentials_encodable(self, charset: str) -> bool:
+        """Report whether username/password survive ``charset`` encoding."""
+        try:
+            self._username.encode(charset)
+            self._password.encode(charset)
+        except UnicodeEncodeError:
+            return False
+        return True
 
     @staticmethod
     def _pick_qop(qop_param: str | None) -> str | None:
@@ -256,11 +326,13 @@ def _format_header(
         f'response="{response}"',
         # ``algorithm`` is conventionally sent unquoted (RFC 7616 §3.4).
         f"algorithm={algorithm}",
-        f'cnonce="{_quote(cnonce)}"',
-        # ``nc`` is conventionally unquoted (8 lowercase hex digits).
-        f"nc={nc}",
     ]
     if qop is not None:
+        # RFC 7616 §3.4: ``cnonce`` and ``nc`` are sent only alongside
+        # ``qop``. A qop-less (RFC 2069) response must omit both.
+        parts.append(f'cnonce="{_quote(cnonce)}"')
+        # ``nc`` is conventionally unquoted (8 lowercase hex digits).
+        parts.append(f"nc={nc}")
         parts.append(f"qop={qop}")
     if opaque is not None:
         parts.append(f'opaque="{_quote(opaque)}"')

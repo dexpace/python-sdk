@@ -37,6 +37,34 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
+class _SyncClockView:
+    """Expose an `AsyncClock`'s synchronous readings as a sync `Clock`.
+
+    ``AsyncClock`` already provides synchronous ``now`` and ``monotonic``;
+    only ``sleep`` is awaitable. ``AsyncRetryPolicy`` drives sleeping through
+    its own async ``_sleep_bounded``, so the inner ``RetryPolicy`` config
+    never calls ``sleep``. This view threads the injected clock's wall-time
+    into that config so an HTTP-date ``Retry-After`` is measured against the
+    same clock on the async path as on the sync path.
+    """
+
+    __slots__ = ("_clock",)
+
+    def __init__(self, clock: AsyncClock) -> None:
+        self._clock = clock
+
+    def now(self) -> float:
+        """Return the wrapped clock's wall-clock reading, in seconds."""
+        return self._clock.now()
+
+    def monotonic(self) -> float:
+        """Return the wrapped clock's monotonic reading, in seconds."""
+        return self._clock.monotonic()
+
+    def sleep(self, duration: float) -> None:
+        """No-op: the async retry loop sleeps via its own async path."""
+
+
 class AsyncRetryPolicy(AsyncPolicy):
     """Async retry policy.
 
@@ -49,6 +77,8 @@ class AsyncRetryPolicy(AsyncPolicy):
     """
 
     STAGE = Stage.RETRY
+
+    __slots__ = ("_clock", "config")
 
     config: RetryPolicy
 
@@ -93,6 +123,10 @@ class AsyncRetryPolicy(AsyncPolicy):
             kwargs["retry_on_status_codes"] = retry_on_status_codes
         if rand is not None:
             kwargs["rand"] = rand
+        # Thread the injected clock into the inner config so the HTTP-date
+        # ``Retry-After`` branch (``RetryPolicy._server_delay``) measures
+        # delay against the same clock as the sync policy, not wall time.
+        kwargs["clock"] = _SyncClockView(clock)
         self.config = RetryPolicy(**kwargs)
         self._clock = clock
 
@@ -143,6 +177,10 @@ class AsyncRetryPolicy(AsyncPolicy):
             ctx.data["retry_count"] = len(history)
             delay = cfg._delay_for(settings, response)
             tracer.attempt_failed(_StatusRetryError(int(response.status)), delay)
+            # The intermediate response is not handed back to the caller, so
+            # close it to release the pooled connection before sleeping. The
+            # return branches above keep the response open — the caller owns it.
+            await response.close()
             await self._sleep_bounded(delay, absolute_deadline)
 
     async def _sleep_bounded(

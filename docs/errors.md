@@ -21,6 +21,7 @@ Exception
    ├─ StreamConsumedError                # body already consumed
    ├─ StreamClosedError                  # body closed before reading
    ├─ ResponseNotReadError               # attribute access before read
+   ├─ StreamingError                     # stream framing / decode error (e.g. SSE)
    ├─ PipelineAbortedError               # SansIO step returned None
    ├─ SerializationError                 # also a ValueError
    └─ DeserializationError               # also a ValueError
@@ -54,8 +55,10 @@ with client.execute(request) as response:
     return response
 ```
 
-`ErrorMap` is a generic typed alternative that accepts a default error
-type for unmatched status codes — useful when wrapping a long-tail API.
+`map_error` only raises when `status_code` is a key in the supplied
+map; an unmapped code (or a `None` map) is a no-op and returns without
+raising. There is no default error type for unmatched codes — handle
+the long tail yourself after `map_error` returns.
 
 ## Continuation tokens
 

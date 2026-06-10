@@ -11,7 +11,7 @@ from enum import StrEnum
 class Method(StrEnum):
     """HTTP request methods recognized by the SDK.
 
-    :class:`enum.StrEnum` (3.11+) gives string-valued members whose ``str()``
+    `enum.StrEnum` (3.11+) gives string-valued members whose ``str()``
     *is* the wire form, so callers can interpolate or compare against bare
     strings: ``Method.GET == "GET"``.
     """

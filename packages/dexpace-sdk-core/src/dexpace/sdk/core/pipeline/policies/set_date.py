@@ -26,14 +26,14 @@ class SetDatePolicy(Policy):
     shape. Any caller-supplied ``Date`` header is overwritten so the value
     on the wire always reflects the moment the request leaves this policy.
 
-    The policy is placed at :attr:`Stage.POST_RETRY` so each retry attempt
+    The policy is placed at `Stage.POST_RETRY` so each retry attempt
     receives a fresh timestamp. Stamping earlier — outside the retry
     wrapper — would cache the time across attempts and risk false
     signatures on services that bind the date into request signing
     (notably AWS SigV4 and similar).
 
     Attributes:
-        STAGE: Pinned to :attr:`Stage.POST_RETRY` at the type level so
+        STAGE: Pinned to `Stage.POST_RETRY` at the type level so
             mis-slotting is caught by ``mypy``.
 
     Example:
@@ -50,7 +50,7 @@ class SetDatePolicy(Policy):
 
         Args:
             clock: Source of wall-clock time. Defaults to the process-wide
-                :data:`SYSTEM_CLOCK`; tests substitute a deterministic fake.
+                `SYSTEM_CLOCK`; tests substitute a deterministic fake.
         """
         self._clock = clock
 
