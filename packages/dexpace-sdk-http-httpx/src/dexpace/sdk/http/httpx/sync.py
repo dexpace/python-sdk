@@ -1,16 +1,16 @@
 # Copyright (c) 2026 dexpace and Omar Aljarrah.
 # Licensed under the MIT License. See LICENSE.md in the repository root for details.
 
-"""Synchronous ``HttpClient`` implementation built on :mod:`httpx`.
+"""Synchronous ``HttpClient`` implementation built on `httpx`.
 
 Supports streaming uploads and downloads, per-phase timeouts (connect /
-read / write / pool), HTTP/2 (opt-in via :mod:`httpx`), and proxies.
+read / write / pool), HTTP/2 (opt-in via `httpx`), and proxies.
 Production-grade alternative to the urllib reference client shipped in
 ``dexpace-sdk-http-stdlib``.
 
-The transport delegates to :class:`httpx.Client`, streaming the request
-body via :meth:`RequestBody.iter_bytes` and exposing the response as a
-:class:`ResponseBody` whose ``iter_bytes`` walks the httpx response's own
+The transport delegates to `httpx.Client`, streaming the request
+body via `RequestBody.iter_bytes` and exposing the response as a
+`ResponseBody` whose ``iter_bytes`` walks the httpx response's own
 ``iter_bytes`` iterator. Closing the SDK response closes the underlying
 httpx response and releases the connection back to the pool.
 """
@@ -40,7 +40,7 @@ _DEFAULT_CHUNK_SIZE: Final[int] = 8192
 
 
 class HttpxHttpClient:
-    """Synchronous transport over :class:`httpx.Client`.
+    """Synchronous transport over `httpx.Client`.
 
     Behaves as a structural ``HttpClient`` (single ``execute`` method) plus
     a context-manager surface so a ``Pipeline`` can take ownership and call
@@ -48,7 +48,7 @@ class HttpxHttpClient:
 
     Per-phase timeouts (``connect_timeout``, ``read_timeout``,
     ``write_timeout``, ``pool_timeout``) are forwarded to
-    :class:`httpx.Timeout`. ``None`` disables the phase's timeout.
+    `httpx.Timeout`. ``None`` disables the phase's timeout.
 
     Args:
         connect_timeout: Seconds allowed for connection establishment.
@@ -58,9 +58,9 @@ class HttpxHttpClient:
             request body.
         pool_timeout: Seconds allowed to acquire a connection from the
             pool.
-        transport: Optional :class:`httpx.BaseTransport`; the primary
+        transport: Optional `httpx.BaseTransport`; the primary
             extension hook for tests (``httpx.MockTransport``).
-        client: Optional pre-built :class:`httpx.Client` — overrides the
+        client: Optional pre-built `httpx.Client` — overrides the
             timeout / transport kwargs entirely. Ownership transfers to
             this transport.
     """

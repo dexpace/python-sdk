@@ -5,15 +5,18 @@
 
 from __future__ import annotations
 
+import io
 import socketserver
 import threading
 import time
 from collections.abc import Iterator
 
 import pytest
+import requests
 
 from dexpace.sdk.core.errors import (
     ServiceRequestError,
+    ServiceResponseError,
     ServiceResponseTimeoutError,
 )
 from dexpace.sdk.core.http.common import Url
@@ -187,3 +190,49 @@ def test_closed_client_raises() -> None:
 def test_invalid_timeout_raises() -> None:
     with pytest.raises(ValueError):
         RequestsHttpClient(timeout=0)
+
+
+class _UnknownStatusAdapter(requests.adapters.BaseAdapter):
+    """Transport adapter that returns a 999 response with a tracked close."""
+
+    def __init__(self, closed: dict[str, bool]) -> None:
+        super().__init__()
+        self._closed = closed
+
+    def send(  # signature mirrors BaseAdapter.send
+        self,
+        request: requests.PreparedRequest,
+        stream: bool = False,
+        timeout: float | tuple[float | None, float | None] | None = None,
+        verify: bool | str = True,
+        cert: str | tuple[str, str] | None = None,
+        proxies: dict[str, str] | None = None,
+    ) -> requests.Response:
+        response = requests.Response()
+        response.status_code = 999
+        response.reason = "Bonkers"
+        response.url = request.url or ""
+        response.raw = io.BytesIO(b"")
+        tracker = self._closed
+
+        def _close() -> None:
+            tracker["yes"] = True
+
+        # ``requests.Response.close`` releases ``raw``; record the call.
+        response.close = _close  # type: ignore[method-assign]
+        return response
+
+    def close(self) -> None:  # pragma: no cover - nothing to release
+        pass
+
+
+def test_unknown_status_closes_response() -> None:
+    """When Status() rejects an unknown code, the response must be released."""
+    closed = {"yes": False}
+    session = requests.Session()
+    session.mount("http://", _UnknownStatusAdapter(closed))
+    client = RequestsHttpClient(session=session)
+    request = Request(method=Method.GET, url=Url.parse("http://example.test/"))
+    with client, pytest.raises(ServiceResponseError):
+        client.execute(request)
+    assert closed["yes"], "Response should be closed when status mapping fails"

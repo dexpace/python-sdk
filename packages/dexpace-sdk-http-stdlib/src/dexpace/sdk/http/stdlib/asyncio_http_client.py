@@ -15,14 +15,17 @@ The implementation handles only:
 - ``Content-Length``-framed responses (no chunked transfer-encoding)
 - Connection: close (one request per connection)
 
-Additional limitations that mirror :mod:`urllib_http_client`:
+Additional limitations that mirror `urllib_http_client`:
 
 - **No streaming uploads.** The request body is fully buffered into memory
   via ``b"".join(request.body.iter_bytes())`` before send. For streaming
   uploads, plug in an alternative transport (``httpx``, ``aiohttp``).
 - **Coarse timeouts.** A single ``timeout`` value is applied to connect,
   status-line read, header read, and body read. Production transports
-  expose per-phase granularity.
+  expose per-phase granularity. A connect-phase timeout surfaces as
+  ``ServiceRequestTimeoutError``; a timeout during any read phase
+  (status line, headers, or body) surfaces as
+  ``ServiceResponseTimeoutError``.
 - **Multi-value request headers are emitted as repeated lines** (one
   ``Name: Value`` line per value), which is the wire-correct form on the
   async side — note this differs from the urllib reference client, which
@@ -45,6 +48,7 @@ from dexpace.sdk.core.errors import (
     ServiceRequestError,
     ServiceRequestTimeoutError,
     ServiceResponseError,
+    ServiceResponseTimeoutError,
 )
 from dexpace.sdk.core.http.common.headers import Headers
 from dexpace.sdk.core.http.common.protocol import Protocol
@@ -94,6 +98,26 @@ class AsyncioHttpClient:
         try:
             await self._send(writer, request, host, path)
             return await self._read(reader, request)
+        except TimeoutError as err:
+            # The connection was established (``_open`` already maps connect
+            # timeouts), so a timeout here is a read/write-phase stall.
+            raise ServiceResponseTimeoutError(
+                f"Read from {host}:{port} timed out", error=err
+            ) from err
+        except (asyncio.IncompleteReadError, ValueError) as err:
+            # Mid-body drop (``readexactly``) or an over-limit line
+            # (``readline`` re-raises ``LimitOverrunError`` as ``ValueError``).
+            raise ServiceResponseError(
+                f"Reading response from {host}:{port} failed: {err}", error=err
+            ) from err
+        except ServiceResponseError:
+            raise
+        except OSError as err:
+            # A mid-exchange socket error after a successful connect is a
+            # response-side failure, not a connect failure.
+            raise ServiceResponseError(
+                f"Exchange with {host}:{port} failed: {err}", error=err
+            ) from err
         finally:
             writer.close()
             with contextlib.suppress(ConnectionError, OSError):
@@ -142,7 +166,11 @@ class AsyncioHttpClient:
         body_bytes = b""
         if request.body is not None:
             body_bytes = b"".join(request.body.iter_bytes())
-        headers = Headers(request.headers.items()).with_set("Host", host)
+        headers = Headers(request.headers.items())
+        if "host" not in headers:
+            # Preserve a caller-supplied Host (virtual hosting); only derive
+            # it from the URL when the request did not set one.
+            headers = headers.with_set("Host", host)
         if "content-length" not in headers and body_bytes:
             headers = headers.with_set("Content-Length", str(len(body_bytes)))
         headers = headers.with_set("Connection", "close")

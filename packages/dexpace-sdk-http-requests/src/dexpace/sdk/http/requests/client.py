@@ -5,15 +5,15 @@
 
 ``RequestsHttpClient`` wraps a ``requests.Session`` configured with
 ``stream=True`` so response bodies are read lazily and surfaced through the
-SDK's :class:`ResponseBody` streaming API. Request bodies are produced via
-:meth:`RequestBody.iter_bytes` in 8 KiB chunks.
+SDK's `ResponseBody` streaming API. Request bodies are produced via
+`RequestBody.iter_bytes` in 8 KiB chunks.
 
 Exception mapping (``requests`` -> SDK):
 
-- ``requests.ConnectTimeout`` -> :class:`ServiceRequestTimeoutError`
-- ``requests.ReadTimeout`` -> :class:`ServiceResponseTimeoutError`
-- ``requests.ConnectionError`` -> :class:`ServiceRequestError`
-- ``requests.RequestException`` (catch-all) -> :class:`ServiceRequestError`
+- ``requests.ConnectTimeout`` -> `ServiceRequestTimeoutError`
+- ``requests.ReadTimeout`` -> `ServiceResponseTimeoutError`
+- ``requests.ConnectionError`` -> `ServiceRequestError`
+- ``requests.RequestException`` (catch-all) -> `ServiceRequestError`
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ class RequestsHttpClient:
     a context-manager surface so a ``Pipeline`` can take ownership and call
     ``close`` on exit. Each call sends one ``requests`` request with
     ``stream=True`` and wraps the streamed response into a
-    :class:`ResponseBody`.
+    `ResponseBody`.
 
     Attributes:
         timeout: Single timeout in seconds applied to ``Session.request``;
@@ -145,6 +145,7 @@ def _build_response(request: Request, raw: requests.Response) -> Response:
     try:
         status = Status(raw.status_code)
     except ValueError as err:
+        raw.close()
         raise ServiceResponseError(f"Unknown status code: {raw.status_code}", error=err) from err
     headers = Headers(list(raw.headers.items()))
     body = ResponseBody.from_stream(_IterContentStream(raw))  # type: ignore[arg-type]
@@ -162,7 +163,7 @@ def _build_response(request: Request, raw: requests.Response) -> Response:
 class _IterContentStream:
     """Adapter that exposes ``requests.Response.iter_content`` as a stream.
 
-    :class:`ResponseBody.from_stream` calls ``read(chunk_size)`` and
+    `ResponseBody.from_stream` calls ``read(chunk_size)`` and
     ``close()`` on its argument. ``requests`` doesn't expose a file-like
     object that honours chunk-size hints once decoded, but ``iter_content``
     does — this adapter buffers what the iterator yields and serves it in
@@ -182,7 +183,7 @@ class _IterContentStream:
             return b""
         if self._iter is None:
             self._iter = self._response.iter_content(chunk_size=_CHUNK_SIZE)
-        if size is None or size < 0:
+        if size < 0:
             for chunk in self._iter:
                 if chunk:
                     self._buf.extend(chunk)

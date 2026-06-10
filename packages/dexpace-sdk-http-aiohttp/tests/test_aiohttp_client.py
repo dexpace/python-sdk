@@ -13,6 +13,8 @@ from aiohttp import web
 
 from dexpace.sdk.core.errors import (
     ServiceRequestError,
+    ServiceRequestTimeoutError,
+    ServiceResponseError,
     ServiceResponseTimeoutError,
 )
 from dexpace.sdk.core.http.common import Url
@@ -20,6 +22,7 @@ from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.request.request_body import RequestBody
 from dexpace.sdk.core.http.response import Status
 from dexpace.sdk.http.aiohttp import AiohttpHttpClient
+from dexpace.sdk.http.aiohttp.client import _wrap_response
 
 # ---------------------------------------------------------------------- handlers
 
@@ -170,3 +173,85 @@ async def test_content_length_extracted_from_response(base_url: str) -> None:
             assert response.body is not None
             # /ok returns a small JSON; Content-Length should be set by aiohttp.
             assert response.body.content_length() > 0
+
+
+# ----------------------------------------------------------- unknown status (M21)
+
+
+class _FakeAioResponse:
+    """Minimal stand-in for an ``aiohttp.ClientResponse`` carrying a raw status."""
+
+    def __init__(self, status: int) -> None:
+        self.status = status
+        self.released = False
+
+    def release(self) -> None:  # aiohttp's release() is synchronous
+        self.released = True
+
+
+def test_unknown_status_releases_connection_and_raises() -> None:
+    """An unregistered status code must release the response before raising."""
+    request = Request(method=Method.GET, url=Url.parse("http://example.test/"))
+    fake = _FakeAioResponse(520)  # Cloudflare 'Web Server Returned an Unknown Error'
+
+    with pytest.raises(ServiceResponseError) as exc_info:
+        _wrap_response(request, fake)  # type: ignore[arg-type]
+
+    assert fake.released, "connection leaked: release() was not called"
+    assert "520" in str(exc_info.value)
+
+
+# ----------------------------------------------------------- post-close (M22)
+
+
+async def test_execute_after_aclose_raises() -> None:
+    """A closed client must not resurrect; execute() raises ServiceRequestError."""
+    client = AiohttpHttpClient(timeout=5.0)
+    await client.aclose()
+    with pytest.raises(ServiceRequestError, match="closed"):
+        await client.execute(Request(method=Method.GET, url=Url.parse("http://example.test/")))
+
+
+async def test_aclose_is_idempotent() -> None:
+    """Calling aclose() twice is a no-op and stays in the closed state."""
+    client = AiohttpHttpClient(timeout=5.0)
+    await client.aclose()
+    await client.aclose()  # must not raise
+    with pytest.raises(ServiceRequestError, match="closed"):
+        await client.execute(Request(method=Method.GET, url=Url.parse("http://example.test/")))
+
+
+# ----------------------------------------------------- connect timeout (L36)
+
+
+class _ConnectTimeoutSession:
+    """Stub session whose ``request`` raises aiohttp's connect-phase timeout.
+
+    aiohttp only surfaces ``ConnectionTimeoutError`` for a connect-scoped
+    timeout (``connect=`` / ``sock_connect=``); a plain ``total=`` timeout that
+    happens to expire mid-connect raises a bare ``TimeoutError`` instead, which
+    is indistinguishable from a read-phase timeout. We therefore drive the
+    branch directly with the exception aiohttp actually raises for a connect
+    timeout, keeping the test hermetic.
+    """
+
+    def request(self, **_kwargs: object) -> _ConnectTimeoutSession:
+        return self
+
+    def __await__(self) -> object:
+        raise aiohttp.ConnectionTimeoutError("connect timed out")
+        yield  # pragma: no cover - makes this an awaitable generator
+
+
+async def test_connect_timeout_maps_to_request_timeout() -> None:
+    """A connect-phase timeout maps to ServiceRequestTimeoutError, not a response timeout."""
+    client = AiohttpHttpClient(timeout=5.0, session=_ConnectTimeoutSession())  # type: ignore[arg-type]
+    with pytest.raises(ServiceRequestTimeoutError):
+        await client.execute(Request(method=Method.GET, url=Url.parse("http://example.test/")))
+
+
+async def test_total_timeout_maps_to_response_timeout(base_url: str) -> None:
+    """A bare total timeout (read phase) still maps to ServiceResponseTimeoutError."""
+    async with AiohttpHttpClient(timeout=0.25) as client:
+        with pytest.raises(ServiceResponseTimeoutError):
+            await client.execute(Request(method=Method.GET, url=Url.parse(f"{base_url}/slow")))
