@@ -102,6 +102,37 @@ def test_bypasses_proxy_leading_dot_entry() -> None:
     assert options.bypasses_proxy("notexample.com") is False
 
 
+def test_bypasses_proxy_ignores_port_on_candidate_and_entry() -> None:
+    """Conventional NO_PROXY parity: ports on the candidate or entry are ignored."""
+    options = ProxyOptions(
+        type=ProxyType.HTTP,
+        host="proxy.corp",
+        port=8080,
+        non_proxy_hosts=("example.com:443",),
+    )
+    # A port on the candidate host is stripped before matching.
+    assert options.bypasses_proxy("api.example.com:443") is True
+    assert options.bypasses_proxy("example.com:8443") is True
+    # A port on the entry itself is ignored (host-only suffix match).
+    assert options.bypasses_proxy("api.example.com") is True
+    # No spurious match through the port handling.
+    assert options.bypasses_proxy("notexample.com:443") is False
+
+
+def test_bypasses_proxy_ipv6_literal_with_port() -> None:
+    """A bracketed IPv6 literal still matches once a port is appended."""
+    options = ProxyOptions(
+        type=ProxyType.HTTP,
+        host="proxy.corp",
+        port=8080,
+        non_proxy_hosts=("::1",),
+    )
+    # Bare IPv6 (multiple colons, no port) is left intact and matches exactly.
+    assert options.bypasses_proxy("::1") is True
+    # Bracketed form with a port drops both brackets and port before matching.
+    assert options.bypasses_proxy("[::1]:443") is True
+
+
 def test_bypasses_proxy_explicit_glob_still_works() -> None:
     """Explicit ``*`` globs keep their fnmatch semantics."""
     options = ProxyOptions(
