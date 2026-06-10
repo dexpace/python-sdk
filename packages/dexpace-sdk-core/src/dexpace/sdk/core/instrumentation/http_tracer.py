@@ -11,7 +11,7 @@ inherits the rest. ``HttpTracerFactory`` mints a fresh tracer per logical
 operation so per-call state (attempt counters, timers) stays isolated.
 
 Modeled on Google gax's ``ApiTracer``. The SDK ships the contract plus a no-op
-default (:class:`NoopHttpTracer` / :data:`NOOP_HTTP_TRACER_FACTORY`); consumers
+default (`NoopHttpTracer` / `NOOP_HTTP_TRACER_FACTORY`); consumers
 plug in a real implementation per their metrics/tracing stack.
 """
 
@@ -34,7 +34,10 @@ class HttpTracer(ABC):
 
     Implementations are notified from whatever thread or task drives the
     request and should keep callbacks cheap and non-blocking; they must not
-    raise.
+    raise. The SDK does not guard these callbacks: a raising tracer propagates
+    out of the notifying policy and can mask the original error (for example,
+    inside ``TracingPolicy._dispatch``), so the no-raise rule is a hard
+    requirement on the implementation, not something the SDK enforces.
     """
 
     def operation_started(self) -> None:
@@ -108,7 +111,7 @@ class HttpTracer(ABC):
 
 @runtime_checkable
 class HttpTracerFactory(Protocol):
-    """Mints a fresh :class:`HttpTracer` per logical operation.
+    """Mints a fresh `HttpTracer` per logical operation.
 
     Policies create one tracer at the start of each operation so per-call state
     (attempt counters, timers) never leaks across operations.

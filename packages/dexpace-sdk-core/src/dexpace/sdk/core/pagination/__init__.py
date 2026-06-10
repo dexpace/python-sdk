@@ -5,18 +5,18 @@
 
 The public surface is a small set of pieces that compose:
 
-* :class:`Page` — a frozen page of items plus the request that reaches the
+* `Page` — a frozen page of items plus the request that reaches the
   next page (and, when supported, the previous one). It is a context manager
   so the underlying response closes deterministically.
-* :class:`PaginationStrategy` — the SPI that turns one decoded response into a
-  :class:`Page`. Built-ins: :class:`CursorStrategy` (cursor / token),
-  :class:`PageNumberStrategy` (page index), and :class:`LinkHeaderStrategy`
+* `PaginationStrategy` — the SPI that turns one decoded response into a
+  `Page`. Built-ins: `CursorStrategy` (cursor / token),
+  `PageNumberStrategy` (page index), and `LinkHeaderStrategy`
   (RFC 5988 ``Link`` header).
-* :class:`Paginator` / :class:`AsyncPaginator` — iterate the sequence
+* `Paginator` / `AsyncPaginator` — iterate the sequence
   item-by-item by default, or page-by-page via ``by_page``. Each page fetch
   runs through the full pipeline, so retry, auth, redirect, and tracing apply
   to every page.
-* :func:`parse_link_header` / :func:`find_rel` — the standalone RFC 5988
+* `parse_link_header` / `find_rel` — the standalone RFC 5988
   parser the link strategy is built on.
 """
 

@@ -1,7 +1,7 @@
 # Copyright (c) 2026 dexpace and Omar Aljarrah.
 # Licensed under the MIT License. See LICENSE.md in the repository root for details.
 
-"""Tests for the :mod:`dexpace.sdk.core.util.proxy` module."""
+"""Tests for the `dexpace.sdk.core.util.proxy` module."""
 
 from __future__ import annotations
 
@@ -67,6 +67,53 @@ def test_bypasses_proxy_no_match() -> None:
         non_proxy_hosts=("*.internal.example.com",),
     )
     assert options.bypasses_proxy("api.example.org") is False
+
+
+def test_bypasses_proxy_bare_entry_matches_subdomains() -> None:
+    """A bare ``example.com`` entry follows curl/Go suffix semantics."""
+    options = ProxyOptions(
+        type=ProxyType.HTTP,
+        host="proxy.corp",
+        port=8080,
+        non_proxy_hosts=("example.com",),
+    )
+    # Suffix match: any subdomain is bypassed.
+    assert options.bypasses_proxy("api.example.com") is True
+    # Exact match of the entry itself.
+    assert options.bypasses_proxy("example.com") is True
+    # Case-insensitive.
+    assert options.bypasses_proxy("API.EXAMPLE.COM") is True
+    # A host that merely ends with the same characters but is not a
+    # dot-delimited suffix must NOT be bypassed.
+    assert options.bypasses_proxy("notexample.com") is False
+    assert options.bypasses_proxy("example.org") is False
+
+
+def test_bypasses_proxy_leading_dot_entry() -> None:
+    """A leading-dot ``.example.com`` entry strips the dot and matches the suffix."""
+    options = ProxyOptions(
+        type=ProxyType.HTTP,
+        host="proxy.corp",
+        port=8080,
+        non_proxy_hosts=(".example.com",),
+    )
+    assert options.bypasses_proxy("api.example.com") is True
+    assert options.bypasses_proxy("example.com") is True
+    assert options.bypasses_proxy("notexample.com") is False
+
+
+def test_bypasses_proxy_explicit_glob_still_works() -> None:
+    """Explicit ``*`` globs keep their fnmatch semantics."""
+    options = ProxyOptions(
+        type=ProxyType.HTTP,
+        host="proxy.corp",
+        port=8080,
+        non_proxy_hosts=("*.example.com",),
+    )
+    assert options.bypasses_proxy("api.example.com") is True
+    assert options.bypasses_proxy("a.b.example.com") is True
+    # A bare ``*.example.com`` glob does not match the apex domain.
+    assert options.bypasses_proxy("example.com") is False
 
 
 def test_repr_masks_credentials() -> None:

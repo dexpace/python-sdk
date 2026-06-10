@@ -20,9 +20,9 @@ class Span(ABC):
     across services through their shared trace context and may nest to model
     parent/child relationships.
 
-    Most callers obtain a span from a :class:`Tracer` and end it once the
+    Most callers obtain a span from a `Tracer` and end it once the
     underlying operation completes. Operations that don't perform tracing
-    receive the no-op :data:`NOOP_SPAN` singleton.
+    receive the no-op `NOOP_SPAN` singleton.
     """
 
     @property
@@ -47,7 +47,7 @@ class Span(ABC):
     def make_current(self) -> TracingScope:
         """Make this span the active span for the current execution context.
 
-        Returns a :class:`TracingScope` whose ``close()`` restores the
+        Returns a `TracingScope` whose ``close()`` restores the
         previously active span. Use as a context manager to guarantee cleanup.
         """
 
@@ -55,7 +55,7 @@ class Span(ABC):
     def end(self, error: BaseException | None = None) -> None:
         """Finish the span.
 
-        Pass ``error`` to record an exception as the cause. Calling :meth:`end`
+        Pass ``error`` to record an exception as the cause. Calling `end`
         more than once, or on a non-recording span, is a documented no-op.
         """
 

@@ -21,7 +21,10 @@ def test_allowlisted_query_unredacted() -> None:
     redactor = UrlRedactor()
     redacted = redactor.redact("https://api.example.com/v1?api-version=1.0&token=hunter2")
     assert "api-version=1.0" in redacted
-    assert "token=REDACTED" in redacted
+    # Non-allowlisted params collapse to a canonical REDACTED=REDACTED so the
+    # parameter name ("token") never leaks either.
+    assert "REDACTED=REDACTED" in redacted
+    assert "token" not in redacted
     assert "hunter2" not in redacted
 
 
@@ -29,7 +32,9 @@ def test_accepts_parsed_url() -> None:
     redactor = UrlRedactor()
     parsed = Url.parse("https://api.example.com/v1?secret=value")
     out = redactor.redact(parsed)
-    assert "secret=REDACTED" in out
+    assert "REDACTED=REDACTED" in out
+    assert "secret" not in out
+    assert "value" not in out
 
 
 def test_unparseable_input_returns_input_unchanged() -> None:
@@ -41,14 +46,26 @@ def test_custom_allowlist() -> None:
     redactor = UrlRedactor(allowed_query_keys={"plain"})
     out = redactor.redact("https://example.com/?plain=ok&api-version=1.0")
     assert "plain=ok" in out
-    # api-version was not in the custom allow-list; should be redacted.
-    assert "api-version=REDACTED" in out
+    # api-version was not in the custom allow-list; key and value are redacted.
+    assert "REDACTED=REDACTED" in out
+    assert "api-version" not in out
 
 
 def test_multiple_values_per_key() -> None:
     redactor = UrlRedactor(allowed_query_keys=set())
     out = redactor.redact("https://example.com/?a=1&a=2")
-    assert out.count("a=REDACTED") == 2
+    assert out.count("REDACTED=REDACTED") == 2
+    assert "a=" not in out
+
+
+def test_bare_token_query_redacts_key_and_value() -> None:
+    # A bare token with no '=' parses as a key with an empty value. Without
+    # key redaction the secret would survive verbatim as the parameter name.
+    redactor = UrlRedactor()
+    token = "eyJhbGciOiJIUzI1NiJ9.payload.signature"
+    out = redactor.redact(f"https://api.example.com/v1?{token}")
+    assert token not in out
+    assert "REDACTED=REDACTED" in out
 
 
 def test_redactor_redacts_fragment_by_default() -> None:

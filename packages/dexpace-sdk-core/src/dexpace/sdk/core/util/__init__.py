@@ -3,9 +3,9 @@
 
 """Cross-cutting utilities used throughout the SDK core.
 
-Exports the :class:`Clock` / :class:`AsyncClock` abstractions that let
+Exports the `Clock` / `AsyncClock` abstractions that let
 time-dependent code (retry backoff, token expiry) be driven deterministically
-in tests, and the :class:`ProxyOptions` value type used to describe outbound
+in tests, and the `ProxyOptions` value type used to describe outbound
 HTTP / SOCKS proxies in a transport-agnostic way.
 """
 

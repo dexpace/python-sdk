@@ -1,7 +1,7 @@
 # Copyright (c) 2026 dexpace and Omar Aljarrah.
 # Licensed under the MIT License. See LICENSE.md in the repository root for details.
 
-""":class:`HttpClient` Protocol."""
+"""`HttpClient` Protocol."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class HttpClient(Protocol):
-    """Transport seam: send one :class:`Request`, get one :class:`Response`.
+    """Transport seam: send one `Request`, get one `Response`.
 
     The SDK is an HTTP-client *toolkit*, not an HTTP client — consuming
     libraries plug in a transport by implementing this single-method Protocol.
@@ -22,7 +22,7 @@ class HttpClient(Protocol):
 
     Implementations are expected to be safe for concurrent calls from multiple
     threads. Per-request state must be confined to local variables or to the
-    returned :class:`Response` graph. The response body is not pre-buffered —
+    returned `Response` graph. The response body is not pre-buffered —
     callers are responsible for closing it.
     """
 

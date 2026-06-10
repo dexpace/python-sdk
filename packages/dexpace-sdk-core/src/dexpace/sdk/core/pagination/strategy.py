@@ -47,7 +47,7 @@ class HasHeaders(Protocol):
 
 @runtime_checkable
 class PaginationStrategy[T](Protocol):
-    """Translates one decoded response into a :class:`Page`.
+    """Translates one decoded response into a `Page`.
 
     Implementations are pure functions of their inputs — they perform no I/O
     and hold no mutable per-iteration state, so a single strategy instance is
