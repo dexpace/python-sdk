@@ -8,13 +8,20 @@ server responses: it splits a header into one or more challenges and recovers
 the scheme + parameter map for each. Quoted-string values are unquoted and
 ``quoted-pair`` escapes (``\\X`` → ``X``) decoded per RFC 7230 §3.2.6.
 
+Auth-params within a challenge must be comma-separated; this parser does not
+recover whitespace-separated parameters. ``token68`` credentials (as used by
+the ``Negotiate`` and ``NTLM`` schemes) are not supported — only ``scheme
+auth-param`` challenges are recognised.
+
 Malformed tokens are skipped rather than aborting the parse; callers see
 whatever valid challenges were extracted.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,17 +32,21 @@ class AuthenticateChallenge:
         scheme: The auth scheme name as it appeared on the wire (e.g.
             ``"Basic"``, ``"Digest"``, ``"Bearer"``). Compare with
             ``casefold()`` for case-insensitive matching.
-        parameters: Parameter map for the challenge. Keys are lower-cased on
-            parse so lookups are case-insensitive per RFC 7235 §2.1.
-            Values preserve their original casing.
+        parameters: Read-only parameter map for the challenge. Keys are
+            lower-cased on parse so lookups are case-insensitive per RFC 7235
+            §2.1. Values preserve their original casing.
     """
 
     scheme: str
-    parameters: dict[str, str]
+    parameters: Mapping[str, str]
 
 
 def parse_challenges(header_value: str) -> list[AuthenticateChallenge]:
     """Parse a ``WWW-Authenticate`` or ``Proxy-Authenticate`` header.
+
+    Auth-params within a challenge are recognised only when comma-separated;
+    whitespace-separated params are not recovered. ``token68`` credentials
+    (e.g. ``Negotiate``/``NTLM``) are unsupported and yield no parameters.
 
     Args:
         header_value: The full header value (a single line concatenated
@@ -48,30 +59,35 @@ def parse_challenges(header_value: str) -> list[AuthenticateChallenge]:
     """
     tokens = _split_top_level(header_value)
     challenges: list[AuthenticateChallenge] = []
-    current: AuthenticateChallenge | None = None
+    current_scheme: str | None = None
+    current_params: dict[str, str] = {}
     for token in tokens:
         token = token.strip()
         if not token:
             continue
-        scheme, params, has_params = _try_parse_scheme_start(token)
+        scheme, params, _has_params = _try_parse_scheme_start(token)
         if scheme is not None:
-            if current is not None:
-                challenges.append(current)
-            current = AuthenticateChallenge(scheme=scheme, parameters=params)
-            if not has_params:
-                continue
+            if current_scheme is not None:
+                challenges.append(_freeze(current_scheme, current_params))
+            current_scheme = scheme
+            current_params = params
             continue
         # Otherwise this token is a continuation parameter for the current
         # challenge: ``key=value`` or ``key="quoted"``.
-        if current is None:
+        if current_scheme is None:
             continue
         key, value = _try_parse_param(token)
         if key is None or value is None:
             continue
-        current.parameters[key] = value
-    if current is not None:
-        challenges.append(current)
+        current_params[key] = value
+    if current_scheme is not None:
+        challenges.append(_freeze(current_scheme, current_params))
     return challenges
+
+
+def _freeze(scheme: str, params: dict[str, str]) -> AuthenticateChallenge:
+    """Build a challenge whose parameters are a read-only view."""
+    return AuthenticateChallenge(scheme=scheme, parameters=MappingProxyType(dict(params)))
 
 
 def _split_top_level(value: str) -> list[str]:
@@ -114,7 +130,9 @@ def _try_parse_scheme_start(
     """Detect a ``scheme [param]`` token.
 
     A scheme is recognised when the first whitespace-delimited word is a
-    valid token68/token AND it is not itself a ``key=value`` pair. Returns
+    valid token AND it is not itself a ``key=value`` pair. ``token68``
+    credentials (e.g. ``Negotiate``/``NTLM``) are not parsed — only
+    comma-separated ``key=value`` auth-params are recovered. Returns
     ``(scheme, params, has_params)``. If ``token`` is purely a continuation
     parameter, returns ``(None, {}, False)``.
     """
@@ -154,7 +172,11 @@ def _try_parse_scheme_start(
 
 
 def _split_param_list(value: str) -> list[str]:
-    """Split a parameter list (space or comma separated) at the top level."""
+    """Split a comma-separated parameter list at the top level.
+
+    Auth-params must be comma-separated; whitespace alone does not delimit
+    parameters, so a whitespace-separated run collapses into one segment.
+    """
     out: list[str] = []
     buf: list[str] = []
     in_quote = False

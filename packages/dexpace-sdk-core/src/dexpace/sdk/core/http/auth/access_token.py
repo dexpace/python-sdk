@@ -67,7 +67,7 @@ class AccessTokenInfo:
                 seconds (default 5 minutes).
             clock: Optional ``Clock`` (or ``AsyncClock``) used as the
                 time source when ``now`` is not supplied. Defaults to
-                :data:`~dexpace.sdk.core.util.clock.SYSTEM_CLOCK`.
+                `SYSTEM_CLOCK`.
                 ``expires_on`` is wall-clock, so ``clock.now()`` (not
                 ``monotonic()``) is consulted. ``AsyncClock`` is accepted
                 because its ``now()`` method is synchronous — only
