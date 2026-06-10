@@ -41,13 +41,16 @@ Changed).
 - **Client-identity policy** (`pipeline.policies.client_identity`, plus its
   async twin). Sets a consistent `User-Agent` / client-identity header derived
   from the configured application id and SDK version.
-- **Per-operation tracing policy** (`OperationTracingPolicy` in
-  `pipeline.policies.tracing_policy`, with a new outermost `Stage.OPERATION`).
-  Emits the per-operation `HttpTracer` lifecycle (`operation_started`, then
-  exactly one `operation_succeeded` / `operation_failed`) from outside the retry
-  and redirect wrappers, so the reported outcome reflects the final result of
-  the whole call rather than a single attempt or hop. Sync-only, in line with
-  the rest of the tracing stack; the async pipeline carries no tracing.
+- **Per-operation tracing policy** (`OperationTracingPolicy` and its async twin
+  `AsyncOperationTracingPolicy`, with a new outermost `Stage.OPERATION`). Emits
+  the per-operation `HttpTracer` lifecycle (`operation_started`, then exactly
+  one `operation_succeeded` / `operation_failed`) from outside the retry and
+  redirect wrappers, so the reported outcome reflects the final result of the
+  whole call rather than a single attempt or hop. Both `default_pipeline` and
+  `default_async_pipeline` wire it, so the async stack now reports the same
+  lifecycle alongside the attempt-level events its retry / redirect policies
+  already emit. Only `TracingPolicy`'s per-attempt OpenTelemetry span policy
+  remains sync-only.
 - **HTTP tracer** (`instrumentation.http_tracer`). An adapter-style tracer base
   whose per-event methods default to no-ops, so a subclass overrides only the
   events it cares about. Wired through the tracing policy for span emission.
@@ -153,9 +156,11 @@ The following were intentionally left out of this round and are **not** included
   errors themselves.
 - **`sendfile` fast-path** — file bodies are streamed via the existing
   `iter_bytes` path; no zero-copy `sendfile` transport optimisation was added.
-- **Async tracing / logging** — the tracing and logging policies (including the
-  new `OperationTracingPolicy`) ship sync-only; `default_async_pipeline` carries
-  no tracing, and async callers handle per-operation observability themselves.
+- **Async OpenTelemetry spans / logging** — the per-attempt span policy
+  (`TracingPolicy`) and `LoggingPolicy` ship sync-only, so
+  `default_async_pipeline` emits the per-operation `HttpTracer` lifecycle and
+  attempt-level events but no OpenTelemetry spans or structured request /
+  response logs.
 - **MCP support** — no Model Context Protocol integration is included.
 - **Java SDK items** — the Java counterpart lives in a separate repository and
   was out of scope here.

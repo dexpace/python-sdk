@@ -176,7 +176,7 @@ Bottom-up, the layers are:
 | `http.webhooks`     | `WebhookVerifier`, `InvalidWebhookSignatureError` — HMAC signature verification with timestamp tolerance  |
 | `pagination`        | `Page`, `Paginator` / `AsyncPaginator`, `PaginationStrategy` (`CursorStrategy`, `PageNumberStrategy`, `LinkHeaderStrategy`) |
 | `pipeline`          | `Pipeline`, `AsyncPipeline`, `Policy` ABC, `Stage` enum, `StagedPipelineBuilder`, `default_pipeline()`   |
-| `pipeline.policies` | `RedirectPolicy`, `IdempotencyPolicy`, `RetryPolicy`, `SetDatePolicy`, `ClientIdentityPolicy`, `LoggingPolicy`, `OperationTracingPolicy`, `TracingPolicy` (async twins for all but logging/tracing) |
+| `pipeline.policies` | `RedirectPolicy`, `IdempotencyPolicy`, `RetryPolicy`, `SetDatePolicy`, `ClientIdentityPolicy`, `LoggingPolicy`, `OperationTracingPolicy`, `TracingPolicy` (async twins for all but `LoggingPolicy` and `TracingPolicy`) |
 | `client`            | `HttpClient` and `AsyncHttpClient` Protocols                                                             |
 | `serde`             | `Serde`, `Serializer`, `Deserializer` Protocols + `JsonSerde` reference impl                             |
 | `instrumentation`   | `ClientLogger`, `UrlRedactor`, `Tracer`, `Span`, `InstrumentationContext`, `contextvars` correlation helpers, noop singletons |

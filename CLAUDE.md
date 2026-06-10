@@ -132,7 +132,7 @@ python-sdk/
     │   │   │   │
     │   │   │   ├── policies/               # redirect, idempotency, retry, set_date,
     │   │   │   │                           # client_identity, logging, tracing
-    │   │   │   │                           # (async twins only for the first five)
+    │   │   │   │                           # (async twins for all but logging and per-attempt tracing)
     │   │   │   └── step/                   # PipelineStep, StepMetadata
     │   │   ├── client/                     # HttpClient + AsyncHttpClient Protocols
     │   │   ├── config/                     # Configuration
@@ -207,13 +207,14 @@ Layered, bottom-up:
    `Pipeline` / `AsyncPipeline` run an ordered set of policies grouped into
    `Stage`s via `StagedPipelineBuilder`. Shipped policies: redirect,
    idempotency, retry, set-date, client-identity, logging, tracing, and
-   operation-tracing. Async twins under `pipeline/policies/` exist only for
-   redirect, idempotency, retry, set-date, and client-identity; logging,
-   tracing, and operation-tracing are sync-only.
+   operation-tracing. Async twins exist for redirect, idempotency, retry,
+   set-date, client-identity, and operation-tracing; logging and the
+   per-attempt tracing policy are sync-only.
    `default_pipeline()` / `default_async_pipeline()` assemble the standard
    stack in the order operation-tracing → redirect → idempotency → retry →
    set-date → client-identity → [auth] → logging → tracing (the async
-   pipeline omits the tracing and logging policies). The lower-level
+   pipeline keeps operation-tracing but omits logging and the per-attempt
+   tracing span). The lower-level
    `pipeline/step/PipelineStep` Protocol (`(input, context) -> output`) plus
    `StepMetadata` remain for custom composition.
 5. **`client/HttpClient`** — single-method Protocol

@@ -35,6 +35,8 @@ from dexpace.sdk.core.instrumentation import (
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import AsyncPipeline, Pipeline
 from dexpace.sdk.core.pipeline.policies import (
+    AsyncOperationTracingPolicy,
+    AsyncRetryPolicy,
     OperationTracingPolicy,
     RetryPolicy,
     TracingPolicy,
@@ -515,6 +517,182 @@ class TestOperationEventsFireOncePerOperation:
         assert names.count("operation_succeeded") == 0
         failed = [payload for name, payload in tracer.events if name == "operation_failed"]
         assert failed == [boom]
+
+
+class _RaiseThenOkAsyncClient(AsyncHttpClient):
+    """Raises a retryable error on the first ``fail_count`` calls, then OK."""
+
+    def __init__(self, *, error: BaseException, fail_count: int) -> None:
+        self._error = error
+        self._fail_count = fail_count
+        self.calls = 0
+
+    async def execute(self, request: Request) -> AsyncResponse:
+        self.calls += 1
+        if self.calls <= self._fail_count:
+            raise self._error
+        return AsyncResponse(request=request, protocol=Protocol.HTTP_1_1, status=Status.OK)
+
+
+class _AlwaysRaisesAsyncClient(AsyncHttpClient):
+    """Raises a retryable error on every call to exhaust the retry budget."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+        self.calls = 0
+
+    async def execute(self, request: Request) -> AsyncResponse:
+        self.calls += 1
+        raise self._error
+
+
+class _RedirectThenRaiseAsyncClient(AsyncHttpClient):
+    """Returns a redirect, then raises on the reissued (post-redirect) request."""
+
+    def __init__(self, *, location: str, error: BaseException) -> None:
+        self._location = location
+        self._error = error
+        self.calls = 0
+
+    async def execute(self, request: Request) -> AsyncResponse:
+        self.calls += 1
+        if self.calls == 1:
+            response = AsyncResponse(
+                request=request,
+                protocol=Protocol.HTTP_1_1,
+                status=Status.MOVED_PERMANENTLY,
+            )
+            return response.with_header("Location", self._location)
+        raise self._error
+
+
+class _AsyncFakeClock:
+    """Deterministic ``AsyncClock`` for tests; advances time on sleep."""
+
+    __slots__ = ("_t",)
+
+    def __init__(self, start: float = 0.0) -> None:
+        self._t = start
+
+    def now(self) -> float:
+        return self._t
+
+    def monotonic(self) -> float:
+        return self._t
+
+    async def sleep(self, duration: float) -> None:
+        self._t += max(0.0, duration)
+
+
+class TestAsyncOperationEventsFireOncePerOperation:
+    """`AsyncOperationTracingPolicy` mirrors the sync per-operation guarantees.
+
+    The async retry / redirect policies already emit attempt-level events
+    through the shared per-operation tracer; these tests pin that the operation
+    lifecycle now brackets them exactly once and reflects the final outcome.
+    """
+
+    async def test_async_retry_then_success_reports_operation_succeeded(self) -> None:
+        # A connect failure retried to success must report a single
+        # operation_succeeded, never operation_failed for the discarded attempt.
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        client = _RaiseThenOkAsyncClient(error=ServiceRequestError("connect failed"), fail_count=1)
+        retry = AsyncRetryPolicy(connect_retries=3, total_retries=3, clock=_AsyncFakeClock())
+        async with AsyncPipeline(
+            client,
+            policies=[AsyncOperationTracingPolicy(), retry],
+        ) as p:
+            response = await p.run(_request(), DispatchContext(instr))
+        assert int(response.status) == 200
+        assert client.calls == 2
+        names = tracer.names()
+        assert names.count("operation_started") == 1
+        assert names.count("operation_succeeded") == 1
+        assert names.count("operation_failed") == 0
+        # client.calls == 2 confirms the first attempt was retried; the single
+        # lifecycle bracket still opens before anything the chain emits.
+        assert names[0] == "operation_started"
+
+    async def test_async_retry_exhaustion_emits_operation_failed_once(self) -> None:
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        boom = ServiceRequestError("connect failed")
+        client = _AlwaysRaisesAsyncClient(boom)
+        retry = AsyncRetryPolicy(connect_retries=2, total_retries=2, clock=_AsyncFakeClock())
+        raised: BaseException | None = None
+        async with AsyncPipeline(
+            client,
+            policies=[AsyncOperationTracingPolicy(), retry],
+        ) as p:
+            try:
+                await p.run(_request(), DispatchContext(instr))
+            except ServiceRequestError as err:
+                raised = err
+        assert raised is boom
+        names = tracer.names()
+        assert names.count("operation_started") == 1
+        assert names.count("operation_failed") == 1
+        assert names.count("operation_succeeded") == 0
+        failed = [payload for name, payload in tracer.events if name == "operation_failed"]
+        assert failed == [boom]
+
+    async def test_async_redirect_emits_operation_lifecycle_once_across_hops(self) -> None:
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        client = _ScriptedAsyncClient(
+            [
+                _Hop(Status.MOVED_PERMANENTLY, "https://api.example.com/new"),
+                _Hop(Status.OK),
+            ],
+        )
+        async with AsyncPipeline(
+            client,
+            policies=[AsyncOperationTracingPolicy(), AsyncRedirectPolicy()],
+        ) as p:
+            await p.run(_request("https://api.example.com/start"), DispatchContext(instr))
+        op_events = [name for name in tracer.names() if name.startswith("operation_")]
+        assert op_events == ["operation_started", "operation_succeeded"]
+        # Two hops still resolve two URLs inside the single operation bracket.
+        assert tracer.names().count("request_url_resolved") == 2
+
+    async def test_async_redirect_then_failure_reports_operation_failed(self) -> None:
+        # When a later redirect hop fails, the operation outcome is the failure
+        # that escapes — not the success of the earlier 3xx hop.
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        boom = ServiceRequestError("connect failed")
+        client = _RedirectThenRaiseAsyncClient(location="https://api.example.com/new", error=boom)
+        raised: BaseException | None = None
+        async with AsyncPipeline(
+            client,
+            policies=[AsyncOperationTracingPolicy(), AsyncRedirectPolicy()],
+        ) as p:
+            try:
+                await p.run(_request("https://api.example.com/start"), DispatchContext(instr))
+            except ServiceRequestError as err:
+                raised = err
+        assert raised is boom
+        names = tracer.names()
+        assert names.count("operation_started") == 1
+        assert names.count("operation_failed") == 1
+        assert names.count("operation_succeeded") == 0
+
+    async def test_async_no_operation_events_when_tracing_disabled(self) -> None:
+        tracer = _RecordingHttpTracer()
+        instr = _instr(tracer)
+        client = _ScriptedAsyncClient([_Hop(Status.OK)])
+        async with AsyncPipeline(
+            client,
+            policies=[AsyncOperationTracingPolicy(), AsyncRedirectPolicy()],
+        ) as p:
+            await p.run(
+                _request("https://api.example.com/start"),
+                DispatchContext(instr),
+                tracing_enabled=False,
+            )
+        op_events = [name for name in tracer.names() if name.startswith("operation_")]
+        assert op_events == []
 
 
 # ----- request_sent fires for unknown-length bodies -----------------

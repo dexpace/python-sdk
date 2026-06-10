@@ -11,6 +11,7 @@ from .async_idempotency import AsyncIdempotencyPolicy
 from .async_redirect import AsyncRedirectPolicy
 from .async_retry import AsyncRetryPolicy
 from .async_set_date import AsyncSetDatePolicy
+from .async_tracing_policy import AsyncOperationTracingPolicy
 from .client_identity import ClientIdentityPolicy, default_user_agent
 from .idempotency import IdempotencyPolicy
 from .logging_policy import LoggingPolicy
@@ -22,6 +23,7 @@ from .tracing_policy import OperationTracingPolicy, TracingPolicy
 __all__ = [
     "AsyncClientIdentityPolicy",
     "AsyncIdempotencyPolicy",
+    "AsyncOperationTracingPolicy",
     "AsyncRedirectPolicy",
     "AsyncRetryPolicy",
     "AsyncSetDatePolicy",
