@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-<h1 align="center">Dexpace Python SDK</h1>
+<h1 align="center">Python SDKs Platform</h1>
 
 [![CI](https://github.com/dexpace/python-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/dexpace/python-sdk/actions/workflows/ci.yml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
