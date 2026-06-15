@@ -1,4 +1,11 @@
-# Dexpace Python SDK
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/dexpace-wordmark-dark.svg">
+    <img alt="dexpace" src="docs/assets/dexpace-wordmark-light.svg" width="320">
+  </picture>
+</p>
+
+<h1 align="center">Dexpace Python SDK</h1>
 
 [![CI](https://github.com/dexpace/python-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/dexpace/python-sdk/actions/workflows/ci.yml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
