@@ -232,7 +232,7 @@ class AsyncioHttpClient:
             raise ServiceResponseError(f"Malformed status line: {status_line!r}")
         protocol = _PROTOCOL_BY_VERSION.get(parts[0], Protocol.HTTP_1_1)
         status = _parse_status(parts[1])
-        reason = parts[2] if len(parts) > 2 else None
+        reason = (parts[2] or None) if len(parts) > 2 else None
         headers = await self._read_headers(reader)
         body_bytes = await self._read_body(reader, headers)
         return AsyncResponse(
