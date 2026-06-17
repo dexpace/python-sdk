@@ -22,6 +22,11 @@ class Status(IntEnum):
     classification (`is_success`, `is_redirect`, ...) and integer comparisons
     intact, instead of being discarded. Integers outside 100..599 (for
     example ``42`` or ``1000``) remain invalid and raise `ValueError`.
+
+    .. note::
+        Synthesized ``UNKNOWN_<code>`` members are dynamically instantiated and 
+        are not identity-stable across lookups. Always use value equality 
+        (``==``) or band predicates rather than identity checks (``is``).
     """
 
     # 1xx Informational
