@@ -87,7 +87,7 @@ with UrllibHttpClient() as client, client.execute(request) as response:
 
 `default_pipeline()` returns a `StagedPipelineBuilder` pre-wired with the
 canonical policy stack (redirect, idempotency, retry, set-date,
-client-identity, logging, tracing). Add authentication and adjust whatever
+client-identity, logging, tracing, operation-tracing). Add authentication and adjust whatever
 the defaults get wrong for you:
 
 ```python
