@@ -18,12 +18,15 @@ classmethod factories for the common shapes.
 
 Single-use bodies raise `RuntimeError` on the second `iter_bytes` call.
 The retry policy in `pipeline.policies.retry` **does** automatically
-buffer single-use bodies when retries are enabled: `RetryPolicy.send`
-calls `body.to_replayable()` before the first attempt whenever
-`total_retries > 0`, so a retry can re-emit the same payload. The
-buffering step is skipped when `total_retries == 0`; if you bypass the
-retry policy you can still call `body.to_replayable()` yourself before
-the first send.
+buffer single-use bodies when the effective per-call retry total is
+positive: `RetryPolicy.send` merges any `retry_total` override in
+`ctx.options` with the policy's `total_retries` default, then calls
+`body.to_replayable()` before the first attempt whenever that merged
+total is greater than zero. A per-call `retry_total=3` over a
+`total_retries=0` policy still buffers for replay, while a per-call
+`retry_total=0` over a retrying policy skips the buffering step. If you
+bypass the retry policy you can still call `body.to_replayable()`
+yourself before the first send.
 
 ## Response shape
 
