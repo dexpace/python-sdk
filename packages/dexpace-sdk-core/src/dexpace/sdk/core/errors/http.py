@@ -112,7 +112,7 @@ class HttpResponseError(SdkError, Generic[ModelT]):  # noqa: UP046
     def body_snapshot(self, max_bytes: int | None = None) -> bytes:
         """Preview the error response body without consuming it.
 
-        For a LoggableResponseBody, the snapshot drains and caches the inner
+        For a ``LoggableResponseBody``, the snapshot drains and caches the inner
         body on the first access (this initial read is synchronous and
         may incur I/O, but subsequent reads are repeatable and fast); for
         any other body — or when no response/body is present — an empty
