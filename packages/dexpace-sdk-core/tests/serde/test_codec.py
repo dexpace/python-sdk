@@ -786,6 +786,30 @@ def test_decode_unresolvable_forward_ref_raises_codec_error(codec: Codec) -> Non
     assert "resolve" in str(info.value)
 
 
+def test_decode_stale_qualified_ref_raises_codec_error(codec: Codec) -> None:
+    # ``get_type_hints`` raises ``AttributeError`` for a string annotation
+    # referencing a non-existent attribute on a valid module.
+    @dataclass(frozen=True, slots=True)
+    class HasStaleRef:
+        value: "os.ThisDoesNotExist"  # type: ignore[name-defined]  # noqa: F821
+
+    with pytest.raises(CodecError) as info:
+        codec.decode({"value": 1}, HasStaleRef)
+    assert "resolve" in str(info.value)
+
+
+def test_decode_malformed_expression_raises_codec_error(codec: Codec) -> None:
+    # ``get_type_hints`` raises ``SyntaxError`` for a string annotation
+    # that is not a valid expression.
+    @dataclass(frozen=True, slots=True)
+    class HasBadSyntax:
+        value: "def f("  # type: ignore[name-defined]  # noqa: F821
+
+    with pytest.raises(CodecError) as info:
+        codec.decode({"value": 1}, HasBadSyntax)
+    assert "resolve" in str(info.value)
+
+
 @dataclass(frozen=True, slots=True)
 class _Box[T]:
     item: T

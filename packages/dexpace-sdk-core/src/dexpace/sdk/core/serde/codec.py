@@ -908,10 +908,12 @@ def _resolve_info(target: type) -> _ModelInfo:
     localns = {tp.__name__: tp for tp in type_params} or None
     try:
         hints = get_type_hints(target, include_extras=True, localns=localns)
-    except NameError as err:
+    except (NameError, AttributeError, TypeError, SyntaxError) as err:
         # An unresolvable forward reference (a string annotation whose name is
         # not in scope) surfaces as a bare ``NameError`` from ``get_type_hints``;
-        # wrap it so the codec keeps its ``CodecError`` contract.
+        # other evaluation failures (stale qualified references, malformed
+        # expressions) raise ``AttributeError``, ``TypeError``, or ``SyntaxError``.
+        # Wrap them all so the codec keeps its ``CodecError`` contract.
         raise CodecError(
             f"cannot resolve a type hint on {target.__name__}: {err}",
             target_name=target.__name__,
