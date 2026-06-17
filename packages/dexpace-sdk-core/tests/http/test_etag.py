@@ -58,6 +58,13 @@ def test_parse_embedded_space_raises() -> None:
         ETag.parse('"a b"')
 
 
+def test_parse_above_obs_text_raises() -> None:
+        # RFC 7232 §2.3: obs-text tops out at 0xFF; codepoints above
+        # that (e.g. U+20AC) are not valid entity-tag characters.
+        with pytest.raises(ValueError):
+            ETag.parse('"a€b"')
+
+
 def test_parse_empty_strong_etag_raises() -> None:
     with pytest.raises(ValueError, match="empty"):
         ETag.parse('""')
