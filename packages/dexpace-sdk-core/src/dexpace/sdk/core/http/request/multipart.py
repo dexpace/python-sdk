@@ -150,7 +150,10 @@ class MultipartField:
             disposition line.
 
         Raises:
-            ValueError: If ``name`` is not ASCII.
+            ValueError: If ``name`` is not ASCII; if ``filename`` is not ASCII
+            and no ``filename*=`` parameter was provided through ``headers``;
+            or if ``name``, ``filename``, the rendered ``media_type``, or any
+            custom header name/value contains CR, LF, or NUL.
         """
         legacy = filename if _is_ascii(filename) else ascii_fallback
         encoded = quote(filename, safe="", encoding="utf-8")
