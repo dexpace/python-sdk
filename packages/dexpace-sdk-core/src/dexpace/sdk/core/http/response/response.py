@@ -25,9 +25,7 @@ type _Name = str | HttpHeaderName
 class Response:
     """Immutable HTTP response produced by a transport.
 
-    Implements the context-manager protocol so callers can
-
-    .. code-block:: python
+    Implements the context-manager protocol so callers can::
 
         with http_client.execute(request) as response:
             ...
