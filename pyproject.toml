@@ -23,10 +23,10 @@ dexpace-sdk-http-requests = { workspace = true }
 
 [dependency-groups]
 dev = [
-    "pytest>=9.1.0",
+    "pytest>=9.1.1",
     "pytest-cov>=4.1",
     "pytest-asyncio>=1.4.0",
-    "ruff>=0.15.17",
+    "ruff>=0.15.20",
     "mypy>=1.10",
 ]
 
