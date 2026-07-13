@@ -14,7 +14,7 @@ sibling packages.
 
 from __future__ import annotations
 
-from .client_logger import ClientLogger, CorrelationFilter
+from .client_logger import ClientLogger, CorrelationFilter, LogEvent
 from .correlation import (
     bind_correlation,
     get_span_id,
@@ -66,6 +66,7 @@ __all__ = [
     "HttpTracer",
     "HttpTracerFactory",
     "InstrumentationContext",
+    "LogEvent",
     "LogLevel",
     "MetricsContext",
     "Span",
