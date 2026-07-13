@@ -28,6 +28,7 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "ruff>=0.15.17",
     "mypy>=1.10",
+    "import-linter>=2.0",
 ]
 
 [tool.pytest.ini_options]
