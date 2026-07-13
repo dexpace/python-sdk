@@ -43,13 +43,20 @@ class Span(ABC):
     def set_error(self, error_type: str) -> Self:
         """Mark this span as having encountered an error of the given type."""
 
-    @abstractmethod
     def make_current(self) -> TracingScope:
         """Make this span the active span for the current execution context.
 
-        Returns a `TracingScope` whose ``close()`` restores the
-        previously active span. Use as a context manager to guarantee cleanup.
+        The default activates this span in the ambient current-span
+        ``contextvar`` and returns a `TracingScope` whose ``close()`` restores
+        the previously active span — including when the scope body raises. Use
+        as a context manager to guarantee cleanup. Backends may override to add
+        their own book-keeping but should preserve the restore-on-close
+        contract; the no-op span overrides this to return a shared do-nothing
+        scope so the tracing-disabled path allocates nothing.
         """
+        from .correlation import activate_span
+
+        return activate_span(self)
 
     @abstractmethod
     def end(self, error: BaseException | None = None) -> None:

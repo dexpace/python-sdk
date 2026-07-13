@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from dexpace.sdk.core.instrumentation import (
     NOOP_HTTP_TRACER,
     NOOP_HTTP_TRACER_FACTORY,
@@ -88,3 +90,37 @@ def test_request_sent_accepts_known_and_unknown_lengths() -> None:
     tracer.request_sent(None)  # unknown length, e.g. an unsized streamed body
 
     assert received == [64, None]
+
+
+def test_retry_exhaustion_pairs_with_operation_failure() -> None:
+    # Lifecycle ordering: when the retry budget is exhausted the operation fails
+    # permanently. A tracer therefore observes ``attempt_retries_exhausted``
+    # before the terminal ``operation_failed`` carrying the escaping error.
+    events: list[str] = []
+    boom = TimeoutError("exhausted")
+
+    class _RecordingTracer(HttpTracer):
+        def attempt_retries_exhausted(self) -> None:
+            events.append("attempt_retries_exhausted")
+
+        def operation_failed(self, error: BaseException) -> None:
+            events.append(f"operation_failed:{type(error).__name__}")
+
+    tracer = _RecordingTracer()
+    tracer.attempt_retries_exhausted()
+    tracer.operation_failed(boom)
+
+    assert events == ["attempt_retries_exhausted", "operation_failed:TimeoutError"]
+
+
+def test_tracer_callback_exception_is_not_wrapped() -> None:
+    # A raising callback propagates unchanged: the SDK never guards these.
+    sentinel = RuntimeError("callback boom")
+
+    class _BoomTracer(HttpTracer):
+        def operation_started(self) -> None:
+            raise sentinel
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _BoomTracer().operation_started()
+    assert excinfo.value is sentinel

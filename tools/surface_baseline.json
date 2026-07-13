@@ -812,7 +812,12 @@
         }
       },
       "dexpace.sdk.core.instrumentation.correlation": {
+        "activate_span": "activate_span(span: Span) -> TracingScope",
         "bind_correlation": "bind_correlation(*, trace_id: str | None, span_id: str | None) -> Iterator[None]",
+        "bind_to_context": "bind_to_context(func: Callable[P, T]) -> Callable[P, T]",
+        "capture_context": "capture_context() -> Context",
+        "correlation_scope": "correlation_scope(span: Span) -> Iterator[None]",
+        "get_current_span": "get_current_span() -> Span",
         "get_span_id": "get_span_id() -> str | None",
         "get_trace_id": "get_trace_id() -> str | None",
         "set_span_id": "set_span_id(value: str | None) -> Token[str | None]",
@@ -849,7 +854,10 @@
       "dexpace.sdk.core.instrumentation.identifiers": {
         "SpanId": {
           "bases": [],
-          "methods": {}
+          "methods": {
+            "generate": "generate(cls) -> Self",
+            "is_valid": "is_valid(self) -> bool"
+          }
         },
         "TraceFlags": {
           "bases": [],
@@ -857,7 +865,10 @@
         },
         "TraceId": {
           "bases": [],
-          "methods": {}
+          "methods": {
+            "generate": "generate(cls) -> Self",
+            "is_valid": "is_valid(self) -> bool"
+          }
         },
         "TraceIdType": {
           "bases": [
@@ -1569,7 +1580,12 @@
         "TracingScope",
         "UpDownCounter",
         "UrlRedactor",
+        "activate_span",
         "bind_correlation",
+        "bind_to_context",
+        "capture_context",
+        "correlation_scope",
+        "get_current_span",
         "get_span_id",
         "get_trace_id",
         "set_span_id",

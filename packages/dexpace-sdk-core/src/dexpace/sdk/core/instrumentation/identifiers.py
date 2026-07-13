@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar
+from typing import ClassVar, Self
+from uuid import uuid4
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,12 +16,34 @@ class TraceId:
     """Identifier shared by every span in the same logical trace.
 
     The encoding (hex / decimal, length) depends on the `TraceIdType` of
-    the originating context.
+    the originating context. The all-zero `NOOP` value is the documented
+    invalid sentinel; a generated trace id is never all-zero.
     """
 
     value: str
 
     NOOP: ClassVar[TraceId]
+
+    @classmethod
+    def generate(cls) -> Self:
+        """Return a fresh, valid W3C trace id (32 lowercase hex characters).
+
+        Sourced from `uuid.uuid4().hex`. UUID4 is a non-blocking, non-crypto
+        generator, which is appropriate here: trace ids are correlation handles,
+        not secrets (unlike nonces / credentials elsewhere, which use
+        `secrets`). The result can never equal the all-zero `NOOP` sentinel:
+        `uuid4` fixes the version nibble to ``'4'`` at hex index 12, so at least
+        one character is always non-zero by construction.
+
+        Returns:
+            A newly generated `TraceId`.
+        """
+        return cls(uuid4().hex)
+
+    @property
+    def is_valid(self) -> bool:
+        """True when this id is not the all-zero invalid sentinel."""
+        return self != TraceId.NOOP
 
 
 TraceId.NOOP = TraceId("0" * 32)
@@ -30,12 +53,33 @@ TraceId.NOOP = TraceId("0" * 32)
 class SpanId:
     """Identifier of the current span within its parent trace.
 
-    Rendered as a 16-character hex string per the W3C Trace Context spec.
+    Rendered as a 16-character hex string per the W3C Trace Context spec. The
+    all-zero `NOOP` value is the documented invalid sentinel; a generated span
+    id is never all-zero.
     """
 
     value: str
 
     NOOP: ClassVar[SpanId]
+
+    @classmethod
+    def generate(cls) -> Self:
+        """Return a fresh, valid W3C span id (16 lowercase hex characters).
+
+        Sourced from the first 16 hex characters of `uuid.uuid4().hex` — a
+        non-blocking, non-crypto source, appropriate for a correlation handle.
+        The slice includes the version nibble ``'4'`` (hex index 12), so the
+        result can never equal the all-zero `NOOP` sentinel by construction.
+
+        Returns:
+            A newly generated `SpanId`.
+        """
+        return cls(uuid4().hex[:16])
+
+    @property
+    def is_valid(self) -> bool:
+        """True when this id is not the all-zero invalid sentinel."""
+        return self != SpanId.NOOP
 
 
 SpanId.NOOP = SpanId("0" * 16)
