@@ -42,7 +42,13 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
-from ...instrumentation import NOOP_HTTP_TRACER, NOOP_TRACER, Tracer, bind_correlation
+from ...instrumentation import (
+    NOOP_HTTP_TRACER,
+    NOOP_TRACER,
+    Tracer,
+    UrlRedactor,
+    bind_correlation,
+)
 from ..policy import Policy
 from ..stage import Stage
 from .redirect import resolve_http_tracer
@@ -134,8 +140,9 @@ class TracingPolicy(Policy):
     OpenTelemetry semantic conventions:
 
     - ``http.request.method``: HTTP method.
-    - ``url.full``: Full URL (no redaction — install a separate redactor
-      if you need it).
+    - ``url.full``: URL redacted through the shared ``UrlRedactor`` (userinfo
+      and non-allowlisted query parameters stripped). Pass a custom
+      ``redactor`` to widen the allow-list or redact the path.
     - ``server.address`` / ``server.port``: Resolved from the URL.
     - ``http.response.status_code``: Set on success.
     - ``error.type``: Set on exception.
@@ -160,10 +167,16 @@ class TracingPolicy(Policy):
     """
 
     STAGE = Stage.POST_LOGGING
-    __slots__ = ("_tracer",)
+    __slots__ = ("_redactor", "_tracer")
 
-    def __init__(self, *, tracer: Tracer | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        tracer: Tracer | None = None,
+        redactor: UrlRedactor | None = None,
+    ) -> None:
         self._tracer = tracer or NOOP_TRACER
+        self._redactor = redactor or UrlRedactor()
 
     def send(self, request: Request, ctx: PipelineContext) -> Response:
         if not ctx.options.get("tracing_enabled", True):
@@ -178,7 +191,7 @@ class TracingPolicy(Policy):
         if http_tracer is not NOOP_HTTP_TRACER and _OPERATION_BRACKET_KEY not in ctx.data:
             _warn_missing_operation_bracket_once()
         span = self._tracer.start_span(f"HTTP {request.method}", parent=parent)
-        _set_request_attributes(span, request)
+        _set_request_attributes(span, request, self._redactor)
         with bind_correlation(trace_id=_trace_id(span), span_id=_span_id(span)):
             return self._dispatch(request, ctx, span, http_tracer)
 
@@ -212,11 +225,16 @@ class TracingPolicy(Policy):
         return response
 
 
-def _set_request_attributes(span: Span, request: Request) -> None:
-    """Stamp the OpenTelemetry request attributes onto the span."""
+def _set_request_attributes(span: Span, request: Request, redactor: UrlRedactor) -> None:
+    """Stamp the OpenTelemetry request attributes onto the span.
+
+    The ``url.full`` attribute is routed through the shared ``UrlRedactor`` so
+    userinfo and non-allowlisted query parameters never reach the tracing
+    backend.
+    """
     host, port = _split_host(request.url)
     span.set_attribute("http.request.method", str(request.method))
-    span.set_attribute("url.full", str(request.url))
+    span.set_attribute("url.full", redactor.redact(request.url))
     if host:
         span.set_attribute("server.address", host)
     if port is not None:
