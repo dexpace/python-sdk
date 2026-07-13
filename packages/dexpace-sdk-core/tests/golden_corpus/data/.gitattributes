@@ -1,0 +1,5 @@
+# Golden wire-exactness fixtures are raw bytes. Git must never apply EOL
+# normalization here, or the CR / LF / CRLF SSE streams (and the exact
+# byte layout of every other fixture) would be silently corrupted on
+# checkin/checkout. `-text` pins verbatim bytes while keeping files diffable.
+* -text
