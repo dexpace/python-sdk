@@ -795,8 +795,14 @@
         "ClientLogger": {
           "bases": [],
           "methods": {
+            "at_error": "at_error(self) -> LogEvent",
+            "at_info": "at_info(self) -> LogEvent",
+            "at_level": "at_level(self, level: LogLevel) -> LogEvent",
+            "at_verbose": "at_verbose(self) -> LogEvent",
+            "at_warning": "at_warning(self) -> LogEvent",
             "error": "error(self, message: str, **fields: Any) -> None",
             "info": "info(self, message: str, **fields: Any) -> None",
+            "is_enabled": "is_enabled(self, level: LogLevel) -> bool",
             "log": "log(self, level: LogLevel, message: str, **fields: Any) -> None",
             "verbose": "verbose(self, message: str, **fields: Any) -> None",
             "warning": "warning(self, message: str, **fields: Any) -> None"
@@ -808,6 +814,16 @@
           ],
           "methods": {
             "filter": "filter(self, record: logging.LogRecord) -> bool"
+          }
+        },
+        "LogEvent": {
+          "bases": [
+            "ABC"
+          ],
+          "methods": {
+            "add": "add(self, key: str, value: Any) -> Self",
+            "event": "event(self, name: str) -> Self",
+            "log": "log(self, message: str) -> None"
           }
         }
       },
@@ -1548,6 +1564,7 @@
         "HttpTracer",
         "HttpTracerFactory",
         "InstrumentationContext",
+        "LogEvent",
         "LogLevel",
         "MetricsContext",
         "NOOP_COUNTER",
