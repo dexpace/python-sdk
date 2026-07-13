@@ -19,14 +19,20 @@ from .async_policy import AsyncPolicy
 from .stage import Stage
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from ..client.async_http_client import AsyncHttpClient
 
 
 class AsyncStagedPipelineBuilder:
     """Build an `AsyncPipeline` by stage rather than user-specified order.
 
-    See `StagedPipelineBuilder` for the full behaviour; this is the
-    async counterpart.
+    See `StagedPipelineBuilder` for the full behaviour — pillar single-occupancy
+    enforced on every mutation path, no relocation of shipped singletons, and
+    the all-or-nothing ``batch()`` transaction; this is the async counterpart.
+
+    Thread-safety: not thread-safe. Construct on one thread, then call
+    `build` — the resulting `AsyncPipeline` is independent.
     """
 
     __slots__ = ("_buckets", "_client", "_pillars")
@@ -55,24 +61,41 @@ class AsyncStagedPipelineBuilder:
         return self
 
     def replace(self, target: type[AsyncPolicy], new: AsyncPolicy) -> Self:
-        """Replace the first instance of ``target`` with ``new``."""
+        """Replace the first instance of ``target`` with ``new``.
+
+        Raises:
+            ValueError: If no instance of ``target`` exists in the builder, or
+                if ``target`` occupies a pillar (singleton) stage and ``new``
+                declares a different stage — a shipped singleton owns its stage
+                and may not be relocated.
+        """
         pillar_stage = next(
             (stage for stage, pillar in self._pillars.items() if isinstance(pillar, target)),
             None,
         )
         if pillar_stage is not None:
-            # The lookup above finished iterating before we mutate ``_pillars``.
+            if pillar_stage != new.STAGE:
+                raise ValueError(
+                    f"Cannot relocate the {pillar_stage.name} singleton: "
+                    f"replacement {type(new).__name__} declares stage "
+                    f"{new.STAGE.name}. A shipped singleton owns its stage; "
+                    f"pass a replacement declared at {pillar_stage.name}."
+                )
+            # Same-stage swap. The lookup above finished iterating before we
+            # mutate ``_pillars``; ``force`` overwrites the vacated slot.
             del self._pillars[pillar_stage]
             self.append(new, force=True)
             return self
-        for stage, bucket in self._buckets.items():
+        for stage, bucket in list(self._buckets.items()):
             for i, p in enumerate(bucket):
                 if isinstance(p, target):
                     if stage == new.STAGE:
                         bucket[i] = new
                     else:
-                        del bucket[i]
+                        # Place ``new`` first so a rejected pillar occupancy
+                        # leaves the incumbent intact — no half-applied swap.
                         self.append(new)
+                        del bucket[i]
                     return self
         raise ValueError(f"No instance of {target.__name__} in the builder.")
 
@@ -96,6 +119,27 @@ class AsyncStagedPipelineBuilder:
     def build(self) -> AsyncPipeline:
         """Flatten the builder's contents into an `AsyncPipeline`."""
         return AsyncPipeline(self._client, policies=self._flatten())
+
+    @contextlib.contextmanager
+    def batch(self) -> Iterator[Self]:
+        """Apply a group of edits as an all-or-nothing transaction.
+
+        Yields ``self`` so edits chain naturally inside the ``with`` block. If
+        any edit raises, the builder rolls back to its pre-batch state, so a
+        failing batch leaves no partial mutation visible and any pipeline built
+        beforehand is untouched.
+
+        Yields:
+            This builder, for chaining edits inside the ``with`` block.
+        """
+        saved_pillars = dict(self._pillars)
+        saved_buckets = {stage: list(bucket) for stage, bucket in self._buckets.items()}
+        try:
+            yield self
+        except Exception:
+            self._pillars = saved_pillars
+            self._buckets = saved_buckets
+            raise
 
     @classmethod
     def from_pipeline(cls, pipeline: AsyncPipeline) -> Self:
@@ -172,13 +216,35 @@ class AsyncStagedPipelineBuilder:
         return out
 
     def _reload(self, policies: list[AsyncPolicy]) -> None:
-        self._pillars.clear()
-        self._buckets.clear()
+        """Rebuild the stage buckets from a flat policy list, atomically.
+
+        Validates single-occupancy of every pillar stage across the whole list
+        before touching any builder state, so a list that would double-fill a
+        pillar raises without leaving the builder half-reloaded.
+
+        Args:
+            policies: The full, ordered policy list to re-bucket.
+
+        Raises:
+            ValueError: If two policies claim the same pillar stage. The error
+                names the stage and the incumbent policy type.
+        """
+        pillars: dict[Stage, AsyncPolicy] = {}
+        buckets: dict[Stage, list[AsyncPolicy]] = {}
         for p in policies:
-            if p.STAGE.is_pillar:
-                self._pillars[p.STAGE] = p
+            stage = p.STAGE
+            if not stage.is_pillar:
+                buckets.setdefault(stage, []).append(p)
+            elif stage in pillars:
+                raise ValueError(
+                    f"Pillar stage {stage.name} is already filled by "
+                    f"{type(pillars[stage]).__name__}; it cannot also admit "
+                    f"{type(p).__name__}."
+                )
             else:
-                self._buckets.setdefault(p.STAGE, []).append(p)
+                pillars[stage] = p
+        self._pillars = pillars
+        self._buckets = buckets
 
 
 def _detach(policy: AsyncPolicy) -> None:
