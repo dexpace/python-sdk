@@ -46,6 +46,9 @@ jobs:
       - name: Run ruff format --check
         run: uv run ruff format --check
 
+      - name: Run import-linter
+        run: uv run lint-imports
+
   packaging:
     name: packaging invariants
     runs-on: ubuntu-latest
