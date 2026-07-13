@@ -345,6 +345,7 @@
             "get": "get(self, name: _Name, default: str | None) -> str | None",
             "items": "items(self) -> tuple[tuple[str, tuple[str, ...]], ...]",
             "names": "names(self) -> tuple[str, ...]",
+            "outbound": "outbound(cls, entries: _Entries | None) -> Self",
             "values": "values(self, name: _Name) -> tuple[str, ...]",
             "with_added": "with_added(self, name: _Name, value: str) -> Self",
             "with_merged": "with_merged(self, other: Headers) -> Self",
