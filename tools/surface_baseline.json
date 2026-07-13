@@ -699,6 +699,7 @@
             "is_redirect": "is_redirect(self) -> bool",
             "is_server_error": "is_server_error(self) -> bool",
             "is_success": "is_success(self) -> bool",
+            "parse": "parse(self, target: type[T], *, serde: Serde | None) -> T",
             "with_body": "with_body(self, body: ResponseBody | None) -> Self",
             "with_header": "with_header(self, name: _Name, value: str) -> Self",
             "with_headers": "with_headers(self, headers: Headers) -> Self",

@@ -63,9 +63,13 @@ def test_without_header_drops_it() -> None:
     assert AUTHORIZATION not in r.headers
 
 
+def _post_request() -> Request:
+    return Request(method=Method.POST, url=Url.parse("https://example.com/"))
+
+
 def test_with_body() -> None:
     body = RequestBody.from_string("payload")
-    r = _request().with_body(body)
+    r = _post_request().with_body(body)
     assert r.body is body
 
 
@@ -81,3 +85,102 @@ def test_default_headers_are_empty() -> None:
     r = _request()
     assert isinstance(r.headers, Headers)
     assert len(r.headers) == 0
+
+
+# --- Validation grammar -----------------------------------------------------
+
+
+def test_missing_url_raises_field_named_error() -> None:
+    with pytest.raises(ValueError, match=r"^url is required$"):
+        Request(method=Method.GET, url=None)  # type: ignore[arg-type]
+
+
+def test_missing_method_raises_field_named_error() -> None:
+    with pytest.raises(ValueError, match=r"^method is required$"):
+        Request(method=None, url=Url.parse("https://example.com/"))  # type: ignore[arg-type]
+
+
+def test_body_on_get_is_rejected() -> None:
+    body = RequestBody.from_string("payload")
+    with pytest.raises(ValueError, match="body is not permitted on a GET request"):
+        Request(method=Method.GET, url=Url.parse("https://example.com/"), body=body)
+
+
+def test_body_on_head_is_rejected() -> None:
+    body = RequestBody.from_string("payload")
+    with pytest.raises(ValueError, match="body is not permitted on a HEAD request"):
+        Request(method=Method.HEAD, url=Url.parse("https://example.com/"), body=body)
+
+
+def test_with_body_on_get_is_rejected() -> None:
+    body = RequestBody.from_string("payload")
+    with pytest.raises(ValueError, match="body is not permitted on a GET request"):
+        _request().with_body(body)
+
+
+def test_replace_revalidates_body_on_get() -> None:
+    from dataclasses import replace
+
+    post = _post_request().with_body(RequestBody.from_string("payload"))
+    with pytest.raises(ValueError, match="body is not permitted on a GET request"):
+        replace(post, method=Method.GET)
+
+
+def test_with_method_to_get_drops_body() -> None:
+    post = _post_request().with_body(RequestBody.from_string("payload"))
+    switched = post.with_method(Method.GET)
+    assert switched.method is Method.GET
+    assert switched.body is None
+    # The original is untouched (value semantics).
+    assert post.body is not None
+
+
+def test_with_method_between_body_methods_keeps_body() -> None:
+    body = RequestBody.from_string("payload")
+    post = _post_request().with_body(body)
+    switched = post.with_method(Method.PUT)
+    assert switched.method is Method.PUT
+    assert switched.body is body
+
+
+# --- Per-call boundary ------------------------------------------------------
+
+
+def test_timeout_zero_is_rejected() -> None:
+    with pytest.raises(ValueError, match="timeout must be positive"):
+        Request(method=Method.GET, url=Url.parse("https://example.com/"), timeout=0)
+
+
+def test_timeout_negative_is_rejected() -> None:
+    with pytest.raises(ValueError, match="timeout must be positive"):
+        Request(method=Method.GET, url=Url.parse("https://example.com/"), timeout=-1.0)
+
+
+def test_positive_timeout_is_accepted() -> None:
+    r = Request(method=Method.GET, url=Url.parse("https://example.com/"), timeout=2.5)
+    assert r.timeout == 2.5
+
+
+def test_negative_retries_is_rejected() -> None:
+    with pytest.raises(ValueError, match="retries must not be negative"):
+        Request(method=Method.GET, url=Url.parse("https://example.com/"), retries=-1)
+
+
+def test_zero_retries_means_no_retries() -> None:
+    r = Request(method=Method.GET, url=Url.parse("https://example.com/"), retries=0)
+    assert r.retries == 0
+
+
+# --- Repr redaction ---------------------------------------------------------
+
+
+def test_repr_redacts_url_and_header_credentials() -> None:
+    r = Request(
+        method=Method.GET,
+        url=Url.parse("https://user:secret@example.com/path?token=abc&page=2"),
+    ).with_header(AUTHORIZATION, "Bearer super-secret")
+    rendered = repr(r)
+    assert "secret" not in rendered  # covers both userinfo and the bearer token
+    assert "abc" not in rendered
+    assert "REDACTED" in rendered
+    assert "page=2" in rendered  # an allow-listed query key survives
