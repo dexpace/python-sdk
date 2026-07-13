@@ -350,6 +350,10 @@
           }
         }
       },
+      "dexpace.sdk.core.http.common._query_codec": {
+        "parse_query": "parse_query(raw: str) -> list[tuple[str, str]]",
+        "render_query": "render_query(pairs: Iterable[tuple[str, str]]) -> str"
+      },
       "dexpace.sdk.core.http.common.etag": {
         "ETag": {
           "bases": [],

@@ -8,9 +8,11 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Self
-from urllib.parse import parse_qsl, quote, urlencode, urlsplit
+from urllib.parse import urlsplit
 
 from furl import furl as _furl
+
+from ._query_codec import parse_query, render_query
 
 type _QueryValue = str | Iterable[str]
 type _QueryEntries = Mapping[str, _QueryValue] | Iterable[tuple[str, _QueryValue]]
@@ -135,8 +137,14 @@ class QueryParams:
         return _construct_query(type(self), entries)
 
     def encode(self) -> str:
-        """Serialise to ``application/x-www-form-urlencoded`` form (no leading ``?``)."""
-        return urlencode(self.flatten(), doseq=False, quote_via=quote)
+        """Render to a strict RFC 3986 query string (no leading ``?``).
+
+        Uses the pure, furl-free query codec: a space renders as ``%20`` (never
+        ``+``) and a ``+`` as ``%2B``, so the output is a true query component
+        rather than an ``application/x-www-form-urlencoded`` payload. Insertion
+        order is preserved verbatim.
+        """
+        return render_query(self.flatten())
 
     def __str__(self) -> str:
         return self.encode()
@@ -161,15 +169,14 @@ class QueryParams:
     def parse(cls, raw: str) -> Self:
         """Parse a ``foo=1&bar=2`` query string (leading ``?`` is tolerated).
 
-        ``parse_qsl`` already percent-decodes keys and values; we do not
-        call ``unquote`` again to avoid double-decoding ``%2520`` → space.
+        Delegates to the pure, furl-free query codec: percent escapes are
+        UTF-8 decoded, a wire ``+`` stays a literal ``+`` (it is NOT
+        form-decoded to a space, unlike ``parse_qsl``), and a bare flag with no
+        ``=`` becomes a present empty-string value distinct from an absent name.
         """
         if raw.startswith("?"):
             raw = raw[1:]
-        if not raw:
-            return _construct_query(cls, ())
-        pairs = parse_qsl(raw, keep_blank_values=True, strict_parsing=False)
-        return cls(pairs)
+        return cls(parse_query(raw))
 
     @classmethod
     def empty(cls) -> QueryParams:
@@ -236,6 +243,20 @@ class Url:
         return "".join(parts)
 
     def _to_furl(self, *, with_userinfo: bool) -> _furl:
+        """Build a furl carrying every component EXCEPT the query.
+
+        furl handles only the scheme / authority / path / fragment
+        parse-and-serialise plumbing. The query is rendered by the pure,
+        furl-free codec and spliced in by ``_serialise`` instead, so furl's own
+        normalisations never touch the wire-exact query bytes (furl re-encodes
+        ``%20`` back to ``+`` when it serialises a query it was handed).
+
+        Args:
+            with_userinfo: When True, includes ``user[:password]`` credentials.
+
+        Returns:
+            A furl for every component except the query.
+        """
         f = _furl()
         f.scheme = self.scheme
         f.host = self.host
@@ -243,8 +264,6 @@ class Url:
             f.port = self.port
         if self.path:
             f.path = self.path
-        if len(self.query):
-            f.query = self.query.encode()
         if self.fragment:
             f.fragment = self.fragment
         if with_userinfo and self.userinfo is not None:
@@ -254,8 +273,26 @@ class Url:
                 f.password = pwd
         return f
 
+    def _serialise(self, *, with_userinfo: bool) -> str:
+        """Serialise to wire form, splicing the pure-codec query before any fragment.
+
+        Args:
+            with_userinfo: When True, includes ``user[:password]@`` credentials.
+
+        Returns:
+            The wire-form URL string.
+        """
+        rendered = str(self._to_furl(with_userinfo=with_userinfo))
+        if not len(self.query):
+            return rendered
+        query = self.query.encode()
+        hash_index = rendered.find("#")
+        if hash_index == -1:
+            return f"{rendered}?{query}"
+        return f"{rendered[:hash_index]}?{query}{rendered[hash_index:]}"
+
     def __str__(self) -> str:
-        return str(self._to_furl(with_userinfo=False))
+        return self._serialise(with_userinfo=False)
 
     def wire_form(self) -> str:
         """Serialise to wire form including ``userinfo`` if present.
@@ -264,7 +301,7 @@ class Url:
         credentials; default ``str(url)`` redacts userinfo to avoid
         accidental leakage through logging.
         """
-        return str(self._to_furl(with_userinfo=True))
+        return self._serialise(with_userinfo=True)
 
     def __repr__(self) -> str:
         userinfo = "[REDACTED]" if self.userinfo else None
@@ -309,12 +346,17 @@ class Url:
             userinfo = f.username
             if f.password is not None:
                 userinfo = f"{f.username}:{f.password}"
+        # Extract the query from the raw string via ``urlsplit`` (which
+        # preserves the bytes verbatim) rather than ``f.query`` — furl
+        # re-encodes ``%20`` to ``+`` when it re-serialises a parsed query,
+        # which would corrupt the wire-exact round-trip.
+        split = urlsplit(raw)
         return cls(
             scheme=f.scheme,
             host=f.host,
-            port=urlsplit(raw).port,
+            port=split.port,
             path=str(f.path),
-            query=QueryParams.parse(str(f.query)),
+            query=QueryParams.parse(split.query),
             fragment=str(f.fragment),
             userinfo=userinfo,
         )

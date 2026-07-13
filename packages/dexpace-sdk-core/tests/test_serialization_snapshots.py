@@ -67,9 +67,10 @@ def test_url_serialization_encodes_space_and_ampersand_in_query() -> None:
         path="/search",
         query=QueryParams({"q": "a b", "tag": ["x", "y"]}),
     )
-    assert str(url) == "https://api.example.com/search?q=a+b&tag=x&tag=y"
-    # ``QueryParams.encode`` uses percent-encoding for the space (RFC 3986),
-    # whereas the full-URL serializer renders the form-style ``+``.
+    # The full-URL serializer renders the query through the same pure RFC 3986
+    # codec as ``QueryParams.encode`` — a space is ``%20`` (never the form-style
+    # ``+``), and furl's own query normalisation never leaks into the bytes.
+    assert str(url) == "https://api.example.com/search?q=a%20b&tag=x&tag=y"
     assert url.query.encode() == "q=a%20b&tag=x&tag=y"
 
 
