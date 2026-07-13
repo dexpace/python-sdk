@@ -28,17 +28,7 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _TOOL_PATH = _REPO_ROOT / "tools" / "parity_check.py"
-_POLICIES = (
-    _REPO_ROOT
-    / "packages"
-    / "dexpace-sdk-core"
-    / "src"
-    / "dexpace"
-    / "sdk"
-    / "core"
-    / ("pipeline")
-    / "policies"
-)
+_POLICIES = _REPO_ROOT / "packages/dexpace-sdk-core/src/dexpace/sdk/core/pipeline/policies"
 
 # A clean, properly-paired sync/async fixture: the async twin differs only by
 # async syntax and declared token swaps (``Policy``/``AsyncPolicy``,
