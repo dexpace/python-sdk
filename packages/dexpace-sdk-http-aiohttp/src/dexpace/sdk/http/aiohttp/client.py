@@ -239,10 +239,9 @@ def _next_chunk(iterator: Iterator[bytes]) -> bytes | None:
 def _wrap_response(request: Request, aio_response: aiohttp.ClientResponse) -> AsyncResponse:
     """Build an `AsyncResponse` from an `aiohttp.ClientResponse`.
 
-    An in-range HTTP status (100..599), named or not, is preserved on a live
-    response so the body still reaches retry/error-map policies. Only a status
-    outside that range maps to `ServiceResponseError` (releasing the handle
-    first).
+    Status is total over integers (TRANSPORT-24): any HTTP status, in or out
+    of the registered 100..599 band, named or not, is preserved on a live
+    response so the body still reaches retry/error-map policies.
 
     Args:
         request: The originating request.
@@ -250,20 +249,8 @@ def _wrap_response(request: Request, aio_response: aiohttp.ClientResponse) -> As
 
     Returns:
         The wrapped async response.
-
-    Raises:
-        ServiceResponseError: If the status code is outside 100..599.
     """
-    try:
-        status = Status(aio_response.status)
-    except ValueError as err:
-        # Genuinely invalid status (outside 100..599): release the handle
-        # before bailing so the connection returns to the pool rather than
-        # leaking (aiohttp's release() is synchronous).
-        aio_response.release()
-        raise ServiceResponseError(
-            f"Invalid status code: {aio_response.status}", error=err
-        ) from err
+    status = Status(aio_response.status)
     headers = Headers(tuple(aio_response.headers.items()))
     reason = aio_response.reason
     content_length = _content_length(aio_response, headers)

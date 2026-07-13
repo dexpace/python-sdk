@@ -99,54 +99,46 @@ def _quote_if_needed(s: str) -> str:
 class MediaType:
     """An HTTP media type (RFC 7231 §3.1.1.1).
 
-    Immutable and hashable. The normalised parts are held in unexported
-    fields and read through the `type`, `subtype`, and `parameters`
-    properties, so the invariant — lower-case type/subtype, parameters sorted
-    with lower-cased keys — cannot be bypassed by holding raw state. `__post_init__`
-    normalises on every construction path, so two equivalent media types
-    compare equal and hash equally regardless of the order or case they were
-    built with. Prefer the `of` or `parse` factories, which also validate.
+    Immutable and hashable. `__post_init__` normalises `type`/`subtype` to
+    lower-case and `parameters` to sorted, lower-cased-key pairs on *every*
+    construction path — including the raw dataclass constructor, not just the
+    `of`/`parse` factories — so two equivalent media types always compare
+    equal and hash equally regardless of the order or case they were built
+    with, and an un-normalised instance can never be observed.
 
-    Attributes are exposed as read-only properties; assigning to them (or to
-    the frozen backing fields) raises, matching the immutable-model contract.
+    Note: the normalised parts are plain frozen fields rather than private
+    fields behind read-only properties. CPython's `@dataclass(frozen=True,
+    slots=True)` generates a broken `__setattr__`/`__delattr__` pair when the
+    class defines any descriptor beyond its declared slotted fields (a
+    reproducible stdlib issue, not specific to this field's name) — raising a
+    confusing `TypeError` from `super()` instead of `FrozenInstanceError` on
+    assignment. Plain frozen fields sidestep it while keeping the same
+    unbypassable-invariant guarantee; assigning to any field still raises
+    `FrozenInstanceError` (a `AttributeError` subclass) via the standard
+    generated path.
     """
 
-    _type: str
-    _subtype: str
-    _parameters: tuple[tuple[str, str], ...] = ()
+    type: str
+    subtype: str
+    parameters: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         # Normalise regardless of construction path (raw constructor included),
         # so the equality/hash invariant holds for every instance rather than
         # only those built through ``of``/``parse``. The dataclass is frozen,
-        # so mutate the backing fields via ``object.__setattr__``. Parameter
-        # *keys* are case-insensitive per RFC 7231 and are lower-cased, but
-        # *values* are preserved verbatim — multipart boundaries and similar
-        # tokens must round-trip exactly.
-        object.__setattr__(self, "_type", self._type.lower())
-        object.__setattr__(self, "_subtype", self._subtype.lower())
-        normalized = tuple(sorted((key.lower(), value) for key, value in self._parameters))
-        object.__setattr__(self, "_parameters", normalized)
-
-    @property
-    def type(self) -> str:
-        """The lower-cased primary type (e.g. ``application``)."""
-        return self._type
-
-    @property
-    def subtype(self) -> str:
-        """The lower-cased subtype (e.g. ``json``)."""
-        return self._subtype
-
-    @property
-    def parameters(self) -> tuple[tuple[str, str], ...]:
-        """The parameters as sorted ``(lower-cased key, value)`` pairs."""
-        return self._parameters
+        # so mutate the fields via ``object.__setattr__``. Parameter *keys*
+        # are case-insensitive per RFC 7231 and are lower-cased, but *values*
+        # are preserved verbatim — multipart boundaries and similar tokens
+        # must round-trip exactly.
+        object.__setattr__(self, "type", self.type.lower())
+        object.__setattr__(self, "subtype", self.subtype.lower())
+        normalized = tuple(sorted((key.lower(), value) for key, value in self.parameters))
+        object.__setattr__(self, "parameters", normalized)
 
     @property
     def full_type(self) -> str:
         """``type/subtype`` form, parameters excluded."""
-        return f"{self._type}/{self._subtype}"
+        return f"{self.type}/{self.subtype}"
 
     @property
     def charset(self) -> str | None:
@@ -157,7 +149,7 @@ class MediaType:
         unknown charset to ``None`` (rather than raising) lets callers fall
         back to a default encoding instead of failing to decode a body.
         """
-        for key, value in self._parameters:
+        for key, value in self.parameters:
             if key == "charset":
                 try:
                     codecs.lookup(value)
@@ -172,21 +164,21 @@ class MediaType:
         Treats ``*`` in either the type or subtype position as a wildcard.
         Parameters are ignored.
         """
-        type_matches = self._type == "*" or self._type == other._type
-        subtype_matches = self._subtype == "*" or self._subtype == other._subtype
+        type_matches = self.type == "*" or self.type == other.type
+        subtype_matches = self.subtype == "*" or self.subtype == other.subtype
         return type_matches and subtype_matches
 
     def __repr__(self) -> str:
         return (
-            f"MediaType(type={self._type!r}, subtype={self._subtype!r}, "
-            f"parameters={self._parameters!r})"
+            f"MediaType(type={self.type!r}, subtype={self.subtype!r}, "
+            f"parameters={self.parameters!r})"
         )
 
     def __str__(self) -> str:
-        if not self._parameters:
-            return f"{self._type}/{self._subtype}"
-        formatted = ";".join(f"{key}={_quote_if_needed(value)}" for key, value in self._parameters)
-        return f"{self._type}/{self._subtype};{formatted}"
+        if not self.parameters:
+            return f"{self.type}/{self.subtype}"
+        formatted = ";".join(f"{key}={_quote_if_needed(value)}" for key, value in self.parameters)
+        return f"{self.type}/{self.subtype};{formatted}"
 
     @classmethod
     def of(

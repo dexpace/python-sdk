@@ -316,12 +316,12 @@ def _host_header(host: str, port: int, secure: bool) -> str:
 
 
 def _parse_status(code: str) -> Status:
-    """Build a `Status` from the status-line code, preserving in-range codes.
+    """Build a `Status` from the status-line code.
 
-    ``Status`` synthesizes a member for any code in 100..599, so an
-    unregistered-but-valid code (for example ``218`` or ``599``) yields a
-    usable status carried through to the pipeline instead of being discarded.
-    Only a genuinely out-of-range code raises.
+    ``Status`` is total over integers (TRANSPORT-24): any numeric code, in or
+    out of the registered 100..599 band, yields a usable status carried
+    through to the pipeline rather than being discarded. Only a non-numeric
+    status-line token (a malformed status line) raises.
 
     Args:
         code: The numeric status token from the status line.
@@ -330,12 +330,13 @@ def _parse_status(code: str) -> Status:
         The resolved (possibly synthesized) status.
 
     Raises:
-        ServiceResponseError: When ``code`` is outside the valid HTTP range.
+        ServiceResponseError: When ``code`` is not a valid integer token.
     """
     try:
-        return Status(int(code))
+        numeric = int(code)
     except ValueError as err:
         raise ServiceResponseError(f"Invalid status code: {code}", error=err) from err
+    return Status(numeric)
 
 
 def _drain_body(body: RequestBody) -> bytes:

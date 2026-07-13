@@ -5,9 +5,11 @@
 
 Invariants covered:
 
-- Totality over the HTTP range: every integer in 100..599 constructs a
-  ``Status`` without raising and carries its integer value; every integer
-  outside that range raises ``ValueError``.
+- Totality over *any* integer: ``Status(code)`` never raises for an integer
+  code, in or out of the registered 100..599 band — an out-of-band code
+  synthesizes an ``UNKNOWN_<code>`` pseudo-member carrying the raw value
+  rather than being rejected, so vendor/unusual codes flow through the SDK
+  intact. Only a non-integer lookup raises ``ValueError``.
 - Equality is by numeric code: ``Status(code) == code`` and
   ``Status(a) == Status(b)`` iff ``a == b``; construction is idempotent.
 - Band predicates agree with the arithmetic of the code's leading digit.
@@ -29,15 +31,17 @@ _in_range = st.integers(min_value=100, max_value=599)
 
 @given(code=st.integers())
 def test_totality_over_ints(code: int) -> None:
-    """Any int in 100..599 constructs; anything else raises ``ValueError``."""
-    if 100 <= code <= 599:
-        status = Status(code)
-        assert int(status) == code
-        assert status == code
-        assert Status(int(status)) == status  # construction is idempotent
-    else:
-        with pytest.raises(ValueError):
-            Status(code)
+    """Any integer constructs a ``Status`` without raising, in or out of band."""
+    status = Status(code)
+    assert int(status) == code
+    assert status == code
+    assert Status(int(status)) == status  # construction is idempotent
+
+
+def test_non_integer_lookup_raises() -> None:
+    """Only a non-integer lookup is rejected — the totality is over ints."""
+    with pytest.raises(ValueError):
+        Status("200")  # type: ignore[arg-type]
 
 
 @given(code=_in_range)

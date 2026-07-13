@@ -40,7 +40,6 @@ urllib's exception types into the SDK error hierarchy.
 
 from __future__ import annotations
 
-import contextlib
 import http.client
 from collections.abc import Mapping
 from http.client import HTTPResponse
@@ -210,14 +209,10 @@ def _build_urllib_request(request: Request) -> _UrllibRequest:
 
 def _build_response(request: Request, opened: object) -> Response:
     status_code: int = getattr(opened, "status", 200)
-    try:
-        status = Status(status_code)
-    except ValueError as err:
-        # Only a genuinely out-of-range code (outside 100..599) reaches here:
-        # ``Status`` synthesizes a member for any in-range code. Release the
-        # underlying response first so the connection is not leaked.
-        _close_quietly(opened)
-        raise ServiceResponseError(f"Invalid status code: {status_code}", error=err) from err
+    # ``Status`` is total over integers (TRANSPORT-24): a code outside the
+    # registered 100..599 band synthesizes an ``UNKNOWN_<code>`` member rather
+    # than raising, so a vendor/unusual status still surfaces with its body.
+    status = Status(status_code)
     raw_headers = getattr(opened, "headers", None)
     headers = _convert_headers(raw_headers)
     content_length = _body_content_length(headers)
@@ -275,21 +270,6 @@ def _body_content_length(headers: Headers) -> int:
         return max(0, int(raw))
     except ValueError:
         return -1
-
-
-def _close_quietly(opened: object) -> None:
-    """Close ``opened`` if it exposes ``close``, swallowing any error.
-
-    Used on the failure path before raising so a partially constructed
-    response does not leak its underlying connection.
-
-    Args:
-        opened: The urllib response (or ``HTTPError``) to release.
-    """
-    close = getattr(opened, "close", None)
-    if callable(close):
-        with contextlib.suppress(Exception):
-            close()
 
 
 def _convert_headers(raw: object) -> Headers:

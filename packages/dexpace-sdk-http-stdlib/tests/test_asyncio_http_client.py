@@ -427,15 +427,37 @@ async def test_in_range_unregistered_status_is_preserved() -> None:
             await anext(gen)
 
 
-async def test_invalid_status_raises_service_response_error() -> None:
-    # A genuinely out-of-range status (999) is invalid HTTP and must raise.
-    async def bad_status(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+async def test_out_of_range_status_surfaces_with_readable_body() -> None:
+    # TRANSPORT-24: an out-of-range status (999) is total over integers now —
+    # Status synthesizes a member rather than raising, so the response
+    # surfaces intact instead of being discarded.
+    async def weird_status(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         await _read_request_head(reader)
         writer.write(b"HTTP/1.1 999 Nope\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
         await writer.drain()
         writer.close()
 
-    gen = _serve(bad_status)
+    gen = _serve(weird_status)
+    base = await anext(gen)
+    try:
+        async with AsyncioHttpClient(timeout=5.0) as client:
+            response = await client.execute(Request(method=Method.GET, url=Url.parse(f"{base}/")))
+            assert int(response.status) == 999
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await anext(gen)
+
+
+async def test_non_numeric_status_token_raises_service_response_error() -> None:
+    # A malformed status line (non-numeric token) is still a real parse
+    # failure, distinct from Status's totality over valid integers.
+    async def malformed_status(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await _read_request_head(reader)
+        writer.write(b"HTTP/1.1 OK Nope\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    gen = _serve(malformed_status)
     base = await anext(gen)
     try:
         async with AsyncioHttpClient(timeout=5.0) as client:

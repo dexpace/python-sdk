@@ -215,16 +215,10 @@ class _AsyncHttpxStreamAdapter:
 
 
 async def _build_async_response(request: Request, httpx_response: httpx.Response) -> AsyncResponse:
-    try:
-        status = Status(int(httpx_response.status_code))
-    except ValueError as err:
-        # Genuinely invalid status (outside 100..599). Release the underlying
-        # socket back to the pool; httpx async responses reject sync ``close``,
-        # so use ``aclose``.
-        await httpx_response.aclose()
-        raise ServiceResponseError(
-            f"Invalid status code: {httpx_response.status_code}", error=err
-        ) from err
+    # Status is total over integers (TRANSPORT-24): an out-of-range code
+    # (outside 100..599) synthesizes an UNKNOWN_<code> member rather than
+    # raising, so a vendor/unusual status still surfaces with its body.
+    status = Status(int(httpx_response.status_code))
     headers = Headers(httpx_response.headers.multi_items())
     stream = _AsyncHttpxStreamAdapter(httpx_response, _DEFAULT_CHUNK_SIZE)
     content_length = _content_length(httpx_response)

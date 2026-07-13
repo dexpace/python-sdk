@@ -217,15 +217,10 @@ class _HttpxStreamAdapter:
 
 
 def _build_response(request: Request, httpx_response: httpx.Response) -> Response:
-    try:
-        status = Status(int(httpx_response.status_code))
-    except ValueError as err:
-        # Genuinely invalid status (outside 100..599); release the socket
-        # back to the pool before surfacing the error.
-        httpx_response.close()
-        raise ServiceResponseError(
-            f"Invalid status code: {httpx_response.status_code}", error=err
-        ) from err
+    # Status is total over integers (TRANSPORT-24): an out-of-range code
+    # (outside 100..599) synthesizes an UNKNOWN_<code> member rather than
+    # raising, so a vendor/unusual status still surfaces with its body.
+    status = Status(int(httpx_response.status_code))
     headers = Headers(httpx_response.headers.multi_items())
     stream = _HttpxStreamAdapter(httpx_response, _DEFAULT_CHUNK_SIZE)
     content_length = _content_length(httpx_response)

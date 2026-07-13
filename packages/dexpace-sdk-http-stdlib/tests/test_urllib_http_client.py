@@ -296,15 +296,15 @@ def test_in_range_unregistered_status_is_preserved_not_discarded() -> None:
     assert body.bytes() == b"hello"
 
 
-def test_invalid_status_closes_response_before_raising() -> None:
-    # A genuinely out-of-range status code (outside 100..599) makes
-    # Status(code) raise. The underlying response must be released first so
-    # the connection is not leaked.
+def test_out_of_range_status_surfaces_with_readable_body() -> None:
+    # TRANSPORT-24: a genuinely out-of-range status code (outside 100..599)
+    # no longer maps to an error — Status is total over integers, so the
+    # response surfaces intact with its vendor code and body.
     opened = _TrackingResponse(999)
     request = Request(method=Method.GET, url=Url.parse("http://127.0.0.1/"))
-    with pytest.raises(ServiceResponseError):
-        _urllib_mod._build_response(request, opened)
-    assert opened.closed is True
+    response = _urllib_mod._build_response(request, opened)
+    assert int(response.status) == 999
+    assert opened.closed is False
 
 
 def test_protocol_version_is_reported_from_http_response() -> None:

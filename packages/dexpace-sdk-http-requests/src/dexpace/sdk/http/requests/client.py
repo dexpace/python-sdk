@@ -110,17 +110,16 @@ class RequestsHttpClient:
     def execute(self, request: Request) -> Response:
         """Send ``request`` and return the response.
 
-        An in-range HTTP status the server returns is preserved on the
-        response, even when it is not a named member of the registry; only a
-        status outside the valid 100-599 range is treated as a protocol error.
+        Any HTTP status the server returns is preserved on the response, in
+        or out of the registered 100-599 range and whether or not it is a
+        named member of the registry (TRANSPORT-24) — a vendor or unusual
+        status is never treated as a protocol error.
 
         Raises:
             ServiceRequestError: When the request cannot be dispatched
                 (connection refused, DNS failure, generic transport error).
             ServiceRequestTimeoutError: On ``ConnectTimeout``.
             ServiceResponseTimeoutError: On ``ReadTimeout``.
-            ServiceResponseError: When the status code is outside the valid
-                HTTP range (100-599).
         """
         if self._closed:
             raise ServiceRequestError("RequestsHttpClient is closed")
@@ -228,16 +227,11 @@ def _build_response(request: Request, raw: requests.Response) -> Response:
 
     Returns:
         The constructed `Response`, with the body left unread.
-
-    Raises:
-        ServiceResponseError: When the status code is outside the valid HTTP
-            range (100-599). The response handle is released first.
     """
-    try:
-        status = Status(raw.status_code)
-    except ValueError as err:
-        raw.close()
-        raise ServiceResponseError(f"Invalid status code: {raw.status_code}", error=err) from err
+    # Status is total over integers (TRANSPORT-24): an out-of-range code
+    # (outside 100..599) synthesizes an UNKNOWN_<code> member rather than
+    # raising, so a vendor/unusual status still surfaces with its body.
+    status = Status(raw.status_code)
     headers = Headers(_header_pairs(raw))
     content_length = _content_length(headers)
     body = ResponseBody.from_stream(_IterContentStream(raw), content_length=content_length)  # type: ignore[arg-type]

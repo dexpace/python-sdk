@@ -14,7 +14,6 @@ from aiohttp import web
 from dexpace.sdk.core.errors import (
     ServiceRequestError,
     ServiceRequestTimeoutError,
-    ServiceResponseError,
     ServiceResponseTimeoutError,
 )
 from dexpace.sdk.core.http.common import Url
@@ -273,16 +272,17 @@ async def test_apache_218_status_is_preserved() -> None:
     assert response.status.is_success
 
 
-def test_invalid_status_releases_connection_and_raises() -> None:
-    """A genuinely invalid code (outside 100..599) releases then raises."""
+async def test_out_of_range_status_surfaces_with_readable_body() -> None:
+    """TRANSPORT-24: a genuinely out-of-range code (outside 100..599) surfaces."""
     request = Request(method=Method.GET, url=Url.parse("http://example.test/"))
-    fake = _FakeAioResponse(999)  # out of the valid HTTP range
+    fake = _FakeAioResponse(999, headers={"Content-Length": "5"}, body=b"hello")
 
-    with pytest.raises(ServiceResponseError) as exc_info:
-        _wrap_response(request, fake)  # type: ignore[arg-type]
+    response = _wrap_response(request, fake)  # type: ignore[arg-type]
 
-    assert fake.released, "connection leaked: release() was not called"
-    assert "999" in str(exc_info.value)
+    assert not fake.released, "live response must not be discarded"
+    assert int(response.status) == 999
+    assert response.body is not None
+    assert await response.body.bytes() == b"hello"
 
 
 # ----------------------------------------------------------------- post-close

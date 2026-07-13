@@ -38,12 +38,15 @@ EXPECTED_HEADER: tuple[str, str] = (
     "# Licensed under the MIT License. See LICENSE.md in the repository root for details.",
 )
 
-# Directory names pruned during the walk: build/cache artefacts and any
-# dot-directory (``.git``, ``.venv``, ``.mypy_cache``, session scratch, ...).
-# Excluding these keeps the scan to real, tracked source.
+# Directory names pruned during the walk: build/cache artefacts, any
+# dot-directory (``.git``, ``.venv``, ``.mypy_cache``, session scratch, ...),
+# and gitignored local reference checkouts that live inside the repo root but
+# carry no project source (see ``.gitignore``). Excluding these keeps the
+# scan to real, tracked source.
 SKIP_DIR_NAMES: frozenset[str] = frozenset(
     {
         "__pycache__",
+        "azure-sdk-for-python",
         "build",
         "dist",
         "node_modules",

@@ -312,26 +312,19 @@ def test_in_range_unregistered_status_returns_response() -> None:
             assert response.body.bytes() == payload
 
 
-def test_invalid_status_closes_response_and_raises() -> None:
-    """A genuinely invalid status releases the response and raises."""
-    from dexpace.sdk.core.errors import ServiceResponseError
-
-    closed = {"yes": False}
-
-    class _TrackedResponse(httpx.Response):
-        def close(self) -> None:
-            closed["yes"] = True
-            super().close()
+def test_out_of_range_status_surfaces_with_readable_body() -> None:
+    """TRANSPORT-24: an out-of-range status surfaces intact with its body."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return _TrackedResponse(999, content=b"")
+        return httpx.Response(999, content=b"hello")
 
     transport = httpx.MockTransport(handler)
     with HttpxHttpClient(transport=transport) as client:
         request = Request(method=Method.GET, url=Url.parse("http://example.test/"))
-        with pytest.raises(ServiceResponseError):
-            client.execute(request)
-    assert closed["yes"], "Response should be closed when status mapping fails"
+        response = client.execute(request)
+        assert int(response.status) == 999
+        assert response.body is not None
+        assert response.body.bytes() == b"hello"
 
 
 def test_shared_client_is_not_closed_on_close() -> None:

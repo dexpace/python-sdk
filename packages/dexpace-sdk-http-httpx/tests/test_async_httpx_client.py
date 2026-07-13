@@ -358,23 +358,16 @@ async def test_async_in_range_unregistered_status_returns_response() -> None:
             assert await response.body.bytes() == payload
 
 
-async def test_async_invalid_status_closes_response_and_raises() -> None:
-    """A genuinely invalid status releases the response and raises."""
-    from dexpace.sdk.core.errors import ServiceResponseError
-
-    closed = {"yes": False}
-
-    class _TrackedResponse(httpx.Response):
-        async def aclose(self) -> None:
-            closed["yes"] = True
-            await super().aclose()
+async def test_async_out_of_range_status_surfaces_with_readable_body() -> None:
+    """TRANSPORT-24: an out-of-range status surfaces intact with its body."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return _TrackedResponse(999, content=b"")
+        return httpx.Response(999, content=b"hello")
 
     transport = httpx.MockTransport(handler)
     async with AsyncHttpxHttpClient(transport=transport) as client:
         request = Request(method=Method.GET, url=Url.parse("http://example.test/"))
-        with pytest.raises(ServiceResponseError):
-            await client.execute(request)
-    assert closed["yes"], "Response should be closed when status mapping fails"
+        response = await client.execute(request)
+        assert int(response.status) == 999
+        assert response.body is not None
+        assert await response.body.bytes() == b"hello"

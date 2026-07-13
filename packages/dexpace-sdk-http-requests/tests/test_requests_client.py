@@ -280,16 +280,19 @@ def test_in_range_unregistered_status_is_preserved() -> None:
         assert response.body.bytes() == b"this is fine"
 
 
-def test_invalid_status_releases_and_raises() -> None:
-    """An out-of-range status code is released and mapped to an error."""
+def test_out_of_range_status_surfaces_with_readable_body() -> None:
+    """TRANSPORT-24: an out-of-range status code surfaces with its body."""
     closed = {"yes": False}
     session = requests.Session()
-    session.mount("http://", _FixedStatusAdapter(999, b"", closed))
+    session.mount("http://", _FixedStatusAdapter(999, b"hello", closed))
     client = RequestsHttpClient(session=session)
     request = Request(method=Method.GET, url=Url.parse("http://example.test/"))
-    with client, pytest.raises(ServiceResponseError):
-        client.execute(request)
-    assert closed["yes"], "Response should be closed when status mapping fails"
+    with client:
+        response = client.execute(request)
+        # No error: the live response is preserved, not discarded.
+        assert int(response.status) == 999
+        assert response.body is not None
+        assert response.body.bytes() == b"hello"
 
 
 class _BodyFailureAdapter(requests.adapters.BaseAdapter):
