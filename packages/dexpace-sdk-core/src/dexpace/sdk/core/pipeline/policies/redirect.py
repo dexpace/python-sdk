@@ -179,14 +179,25 @@ class RedirectPolicy(Policy):
     ) -> Request | None:
         """Construct the reissued request for one redirect hop.
 
-        Returns ``None`` when the redirect should not be followed (method
-        not in ``allowed_methods`` for 301/302/307/308, or ``follow_303``
-        is ``False`` for 303).
+        Returns ``None`` when the redirect should not be followed — a
+        malformed ``Location`` that cannot be resolved to an absolute URL, a
+        method not in ``allowed_methods`` for 301/302/307/308, or
+        ``follow_303`` being ``False`` for 303. The caller treats ``None`` as
+        "stop and hand back the current response unfollowed", leaving that
+        response open.
 
         Raises:
             RuntimeError: 307/308 with a non-replayable body.
         """
-        next_url = self._resolve_location(request.url, location)
+        try:
+            next_url = self._resolve_location(request.url, location)
+        except ValueError:
+            # A malformed Location header (bad scheme/host, un-parseable
+            # authority, …) has no resolvable target. Rather than let the parse
+            # error escape and leak the in-hand 3xx response, signal "do not
+            # follow" so the loop hands that response back unfollowed and open —
+            # the same disposition as loop detection / max-hops exhaustion.
+            return None
         cross_origin = _origin(request.url) != _origin(next_url)
         if status == 303:
             if not self.follow_303:

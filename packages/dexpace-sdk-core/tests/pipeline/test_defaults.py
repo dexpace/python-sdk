@@ -10,10 +10,12 @@ from typing import TYPE_CHECKING
 from dexpace.sdk.core.http.auth.credentials import KeyCredential
 from dexpace.sdk.core.http.auth.policies import KeyCredentialPolicy
 from dexpace.sdk.core.pipeline import Pipeline, Stage, StagedPipelineBuilder
+from dexpace.sdk.core.pipeline._async_transport_runner import _AsyncTransportRunner
 from dexpace.sdk.core.pipeline._transport_runner import _TransportRunner
 from dexpace.sdk.core.pipeline.async_pipeline import AsyncPipeline
 from dexpace.sdk.core.pipeline.async_staged_builder import AsyncStagedPipelineBuilder
 from dexpace.sdk.core.pipeline.defaults import default_async_pipeline, default_pipeline
+from dexpace.sdk.core.pipeline.policies.async_redirect import AsyncRedirectPolicy
 from dexpace.sdk.core.pipeline.policies.logging_policy import LoggingPolicy
 from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
 from dexpace.sdk.core.pipeline.policies.retry import RetryPolicy
@@ -24,6 +26,7 @@ if TYPE_CHECKING:
     from dexpace.sdk.core.http.request.request import Request
     from dexpace.sdk.core.http.response.async_response import AsyncResponse
     from dexpace.sdk.core.http.response.response import Response
+    from dexpace.sdk.core.pipeline.async_policy import AsyncPolicy
     from dexpace.sdk.core.pipeline.policy import Policy
 
 
@@ -41,6 +44,15 @@ def _stages_of(pipeline: Pipeline) -> list[Stage]:
     out: list[Stage] = []
     node: Policy | None = pipeline._chain
     while node is not None and not isinstance(node, _TransportRunner):
+        out.append(node.STAGE)
+        node = getattr(node, "next", None)
+    return out
+
+
+def _async_stages_of(pipeline: AsyncPipeline) -> list[Stage]:
+    out: list[Stage] = []
+    node: AsyncPolicy | None = pipeline._chain
+    while node is not None and not isinstance(node, _AsyncTransportRunner):
         out.append(node.STAGE)
         node = getattr(node, "next", None)
     return out
@@ -135,5 +147,24 @@ def test_default_async_pipeline_wires_operation_tracing() -> None:
     # Mirrors the sync default: the per-operation lifecycle policy occupies the
     # outermost OPERATION pillar, so async callers get the same
     # operation_started / operation_succeeded / operation_failed bracket around
-    # the attempt-level events the retry/redirect policies already emit.
+    # the attempt-level events the retry policy emits.
     assert isinstance(builder._pillars[Stage.OPERATION], AsyncOperationTracingPolicy)
+
+
+def test_default_async_pipeline_omits_redirect_by_default() -> None:
+    # Gate: the async redirect twin is not certified against the full redirect
+    # security battery (see test_async_redirect_battery.py and docs/deviations.md),
+    # so the async default must not silently follow redirects. The REDIRECT
+    # pillar stays empty unless the caller opts in.
+    builder = default_async_pipeline(_AsyncStubTransport())
+    assert Stage.REDIRECT not in builder._pillars
+    assert Stage.REDIRECT not in _async_stages_of(builder.build())
+
+
+def test_default_async_pipeline_opt_in_redirect_wires_at_redirect_stage() -> None:
+    # Opt-in path stays fully functional: an explicit AsyncRedirectPolicy is
+    # wired into the REDIRECT pillar exactly as the sync default wires its own.
+    redirect = AsyncRedirectPolicy(max_hops=3)
+    builder = default_async_pipeline(_AsyncStubTransport(), redirect=redirect)
+    assert builder._pillars[Stage.REDIRECT] is redirect
+    assert Stage.REDIRECT in _async_stages_of(builder.build())

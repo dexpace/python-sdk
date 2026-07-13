@@ -111,16 +111,51 @@ def default_async_pipeline(
     the whole operation from the outermost stage so the per-operation
     ``HttpTracer`` lifecycle (``operation_started`` / ``operation_succeeded`` /
     ``operation_failed``) fires once and reflects the final outcome — completing
-    the attempt-level events the async retry and redirect policies already emit
-    through the same per-operation tracer. The per-attempt OpenTelemetry span
-    policy (`TracingPolicy`) and `LoggingPolicy` ship sync-only, so the async
-    stack omits those two.
+    the attempt-level events the async retry policy already emits through the
+    same per-operation tracer. The per-attempt OpenTelemetry span policy
+    (`TracingPolicy`) and `LoggingPolicy` ship sync-only, so the async stack
+    omits those two.
+
+    No redirect policy by default. Unlike the sync `default_pipeline`, this
+    stack does NOT wire `AsyncRedirectPolicy` unless the caller passes one
+    explicitly. The async twin has not been certified against the full redirect
+    security battery: cross-origin credential handling is judged against the
+    previous hop rather than the seed origin and strips only ``Authorization``
+    (not ``Cookie`` / ``Proxy-Authorization``); an HTTPS→HTTP downgrade is
+    followed rather than default-denied; and ``Location`` resolution round-trips
+    through a parse/re-encode that does not preserve percent-encoding
+    wire-exactly. Silently following redirects on the async path without those
+    guarantees is the failure mode this omission avoids. The certification lands
+    in a later milestone; until it does, an async caller who accepts the current
+    limitations can opt in by passing ``redirect=AsyncRedirectPolicy(...)``,
+    which wires it into the REDIRECT stage exactly as the sync default does.
+
+    Args:
+        client: Terminal async HTTP transport.
+        redirect: Opt-in `AsyncRedirectPolicy`. ``None`` (the default) wires no
+            redirect policy — see the note above. Pass an instance to follow
+            redirects on the async path.
+        idempotency: Override for `AsyncIdempotencyPolicy`. ``None`` uses
+            defaults.
+        retry: Override for `AsyncRetryPolicy`. ``None`` uses defaults.
+        set_date: Override for `AsyncSetDatePolicy`. ``None`` uses defaults.
+        client_identity: Override for `AsyncClientIdentityPolicy`. ``None``
+            uses defaults.
+        auth: Optional async authentication policy. No default — requests pass
+            without authentication when this is ``None``.
+
+    Returns:
+        An `AsyncStagedPipelineBuilder` ready for further customisation or
+        immediate ``.build()``.
     """
     builder = AsyncStagedPipelineBuilder(client)
     # Sorts to Stage.OPERATION (outermost), bracketing every hop / attempt so
     # the per-operation lifecycle fires once on the final outcome.
     builder.append(AsyncOperationTracingPolicy())
-    builder.append(redirect or AsyncRedirectPolicy())
+    # Gated: the async redirect twin is only wired when the caller opts in.
+    # See the note above — it is not certified against the full redirect battery.
+    if redirect is not None:
+        builder.append(redirect)
     builder.append(idempotency or AsyncIdempotencyPolicy())
     builder.append(retry or AsyncRetryPolicy())
     builder.append(set_date or AsyncSetDatePolicy())
