@@ -22,6 +22,14 @@
           }
         }
       },
+      "dexpace.sdk.core.config.build_descriptor": {
+        "BuildDescriptor": {
+          "bases": [],
+          "methods": {
+            "resolve": "resolve(cls, distribution: str) -> Self"
+          }
+        }
+      },
       "dexpace.sdk.core.config.configuration": {
         "Configuration": {
           "bases": [],
@@ -30,7 +38,9 @@
             "get": "get(self, name: str, default: str | None) -> str | None",
             "get_bool": "get_bool(self, name: str, default: bool) -> bool",
             "get_duration": "get_duration(self, name: str, default_seconds: float) -> float",
-            "get_int": "get_int(self, name: str, default: int) -> int"
+            "get_int": "get_int(self, name: str, default: int) -> int",
+            "get_raw": "get_raw(self, name: str, default: str | None) -> str | None",
+            "with_override": "with_override(self, name: str, value: str) -> Configuration"
           }
         },
         "ConfigurationBuilder": {
@@ -38,9 +48,12 @@
           "methods": {
             "build": "build(self) -> Configuration",
             "env": "env(self, source: EnvSource) -> Self",
+            "props": "props(self, source: PropertySource) -> Self",
             "put": "put(self, name: str, value: str) -> Self"
           }
-        }
+        },
+        "default_configuration": "default_configuration() -> Configuration",
+        "set_default_configuration": "set_default_configuration(config: Configuration) -> None"
       },
       "dexpace.sdk.core.errors.base": {
         "SdkError": {
@@ -1439,6 +1452,14 @@
             "sleep": "async sleep(self, duration: float) -> None"
           }
         },
+        "CancellationToken": {
+          "bases": [],
+          "methods": {
+            "cancel": "cancel(self) -> None",
+            "cancelled": "cancelled(self) -> bool",
+            "sleep": "sleep(self, duration: float) -> bool"
+          }
+        },
         "Clock": {
           "bases": [
             "Protocol"
@@ -1449,6 +1470,10 @@
             "sleep": "sleep(self, duration: float) -> None"
           }
         }
+      },
+      "dexpace.sdk.core.util.http_date": {
+        "format_http_date": "format_http_date(value: datetime) -> str",
+        "parse_http_date": "parse_http_date(value: str) -> datetime | None"
       },
       "dexpace.sdk.core.util.proxy": {
         "ProxyOptions": {
@@ -1473,8 +1498,11 @@
         "asyncio_sleep"
       ],
       "dexpace.sdk.core.config": [
+        "BuildDescriptor",
         "Configuration",
-        "ConfigurationBuilder"
+        "ConfigurationBuilder",
+        "default_configuration",
+        "set_default_configuration"
       ],
       "dexpace.sdk.core.errors": [
         "ClientAuthenticationError",
@@ -1706,10 +1734,13 @@
       "dexpace.sdk.core.util": [
         "ASYNC_SYSTEM_CLOCK",
         "AsyncClock",
+        "CancellationToken",
         "Clock",
         "ProxyOptions",
         "ProxyType",
-        "SYSTEM_CLOCK"
+        "SYSTEM_CLOCK",
+        "format_http_date",
+        "parse_http_date"
       ]
     }
   },
