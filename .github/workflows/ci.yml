@@ -45,3 +45,35 @@ jobs:
 
       - name: Run ruff format --check
         run: uv run ruff format --check
+
+  packaging:
+    name: packaging invariants
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Check namespace layout
+        run: uv run --no-project python tools/check_namespace_packages.py
+
+      - name: Check MIT headers
+        run: uv run --no-project python tools/check_mit_headers.py
+
+      - name: Build core + stdlib wheels
+        run: |
+          uv build --package dexpace-sdk-core --wheel -o dist
+          uv build --package dexpace-sdk-http-stdlib --wheel -o dist
+
+      - name: Smoke-import wheels in a fresh venv
+        run: |
+          uv venv /tmp/wheel-smoke
+          uv pip install --python /tmp/wheel-smoke \
+            dist/dexpace_sdk_core-*.whl \
+            dist/dexpace_sdk_http_stdlib-*.whl
+          /tmp/wheel-smoke/bin/python tools/smoke_wheel_import.py
