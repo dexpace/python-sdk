@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from dexpace.sdk.core.config.configuration import Configuration
@@ -169,10 +171,15 @@ def test_repr_omits_mask_when_no_creds() -> None:
 
 
 def test_from_configuration_https_proxy_url() -> None:
-    """A full HTTPS_PROXY URL parses into all ``ProxyOptions`` fields."""
+    """A full HTTPS_PROXY URL parses into all ``ProxyOptions`` fields.
+
+    Credentials survive because the proxy connection itself is ``https``
+    (encrypted); see ``TestFromConfigurationCredentials`` for the plaintext
+    contrast where they are dropped.
+    """
     config = (
         Configuration.builder()
-        .put(Configuration.HTTPS_PROXY, "http://user:pw@proxy.corp:8080")
+        .put(Configuration.HTTPS_PROXY, "https://user:pw@proxy.corp:8080")
         .build()
     )
     options = ProxyOptions.from_configuration(config)
@@ -281,23 +288,33 @@ class TestFromConfigurationScheme:
         assert any(record.levelname == "WARNING" for record in caplog.records)
 
 
-class TestFromConfigurationPortDefaults:
-    """A missing port defaults by scheme instead of dropping the proxy (L4)."""
+class TestFromConfigurationPortUnspecified:
+    """A missing port stays ``None`` — never a fabricated per-scheme default.
 
-    def test_http_without_port_defaults_to_80(self) -> None:
+    Keeping the proxy (rather than dropping a port-less URL) is required, but
+    the model must not invent a port: the transport decides its own default at
+    connection time. The port comes from the URL or is ``None``, nothing else.
+    """
+
+    def test_http_without_port_stays_none(self) -> None:
         options = ProxyOptions.from_configuration(_config("http://proxy.corp"))
         assert options is not None
-        assert options.port == 80
+        assert options.port is None
 
-    def test_https_without_port_defaults_to_443(self) -> None:
+    def test_https_without_port_stays_none(self) -> None:
         options = ProxyOptions.from_configuration(_config("https://proxy.corp"))
         assert options is not None
-        assert options.port == 443
+        assert options.port is None
 
-    def test_socks_without_port_defaults_to_1080(self) -> None:
+    def test_socks_without_port_stays_none(self) -> None:
         options = ProxyOptions.from_configuration(_config("socks5://proxy.corp"))
         assert options is not None
-        assert options.port == 1080
+        assert options.port is None
+
+    def test_explicit_in_range_port_is_kept(self) -> None:
+        options = ProxyOptions.from_configuration(_config("http://proxy.corp:3128"))
+        assert options is not None
+        assert options.port == 3128
 
 
 class TestFromConfigurationSchemeless:
@@ -310,22 +327,47 @@ class TestFromConfigurationSchemeless:
         assert options.host == "proxy.corp"
         assert options.port == 8080
 
-    def test_schemeless_host_only_defaults_port(self) -> None:
+    def test_schemeless_host_only_leaves_port_none(self) -> None:
         options = ProxyOptions.from_configuration(_config("proxy.corp"))
         assert options is not None
         assert options.host == "proxy.corp"
-        assert options.port == 80
+        assert options.port is None
 
 
 class TestFromConfigurationCredentials:
-    """Percent-encoded proxy credentials are ``unquote()``-decoded (L4)."""
+    """Credentials attach only over an ``https`` proxy, and are decoded."""
 
-    def test_percent_encoded_credentials_decoded(self) -> None:
-        # user "u@s" and password "p:w" percent-encode their reserved chars.
-        options = ProxyOptions.from_configuration(_config("http://u%40s:p%3Aw@proxy.corp:8080"))
+    def test_percent_encoded_credentials_decoded_over_https(self) -> None:
+        # user "u@s" and password "p:w" percent-encode their reserved chars;
+        # the https proxy scheme keeps them (encrypted proxy connection).
+        options = ProxyOptions.from_configuration(_config("https://u%40s:p%3Aw@proxy.corp:8080"))
         assert options is not None
         assert options.username == "u@s"
         assert options.password == "p:w"
+
+    def test_credentials_dropped_over_http_proxy(self) -> None:
+        # A plaintext (http) proxy connection must never carry a credential:
+        # Proxy-Authorization would travel in the clear, so it is dropped.
+        options = ProxyOptions.from_configuration(_config("http://user:pw@proxy.corp:8080"))
+        assert options is not None
+        assert options.host == "proxy.corp"
+        assert options.username is None
+        assert options.password is None
+
+    def test_credentials_dropped_over_schemeless_proxy(self) -> None:
+        # A scheme-less proxy is assumed plaintext HTTP, so credentials drop.
+        options = ProxyOptions.from_configuration(_config("user:pw@proxy.corp:8080"))
+        assert options is not None
+        assert options.host == "proxy.corp"
+        assert options.username is None
+        assert options.password is None
+
+    def test_credentials_dropped_over_socks_proxy(self) -> None:
+        # SOCKS proxy auth is likewise unencrypted; drop the credential.
+        options = ProxyOptions.from_configuration(_config("socks5://user:pw@proxy.corp:1080"))
+        assert options is not None
+        assert options.username is None
+        assert options.password is None
 
 
 class TestFromConfigurationVisibility:
@@ -362,3 +404,220 @@ class TestBypassGlobWithPort:
             non_proxy_hosts=("*.example.com:443",),
         )
         assert options.bypasses_proxy("api.example.org") is False
+
+
+_SECRET = "hunter2-super-secret"
+
+
+class TestStringFormsMaskCredentials:
+    """Every string rendering of a proxy masks its credentials (never leaks)."""
+
+    def _with_creds(self) -> ProxyOptions:
+        return ProxyOptions(
+            type=ProxyType.HTTP,
+            host="proxy.corp",
+            port=8080,
+            username="alice",
+            password=_SECRET,
+        )
+
+    def test_repr_masks_password(self) -> None:
+        rendered = repr(self._with_creds())
+        assert "***" in rendered
+        assert _SECRET not in rendered
+        assert "alice" not in rendered
+
+    def test_str_masks_password(self) -> None:
+        # ``str`` must mask too — it is a distinct string form from ``repr``.
+        rendered = str(self._with_creds())
+        assert "***" in rendered
+        assert _SECRET not in rendered
+        assert "alice" not in rendered
+
+    def test_format_masks_password(self) -> None:
+        # f-string / ``format`` route through ``__str__``/``__format__``.
+        rendered = f"{self._with_creds()}"
+        assert _SECRET not in rendered
+
+    def test_no_string_form_leaks_the_literal_secret(self) -> None:
+        # Grep every string rendering for the literal secret: zero hits.
+        options = self._with_creds()
+        for rendered in (repr(options), str(options), f"{options}", format(options)):
+            assert _SECRET not in rendered
+
+
+class TestBypassAllShortCircuit:
+    """A single bare ``*`` bypass entry short-circuits to bypass-everything."""
+
+    def test_bare_star_bypasses_every_host(self) -> None:
+        options = ProxyOptions(
+            type=ProxyType.HTTP,
+            host="proxy.corp",
+            port=8080,
+            non_proxy_hosts=("*",),
+        )
+        assert options.bypasses_proxy("example.com") is True
+        assert options.bypasses_proxy("anything.internal") is True
+        assert options.bypasses_proxy("10.0.0.1") is True
+        assert options.bypasses_proxy("") is True
+
+    def test_bare_star_short_circuits_without_running_matchers(self) -> None:
+        # "Don't process ``*`` as a literal glob needing host matching": the
+        # bare-``*`` entry is not compiled into a per-host matcher at all.
+        options = ProxyOptions(
+            type=ProxyType.HTTP,
+            host="proxy.corp",
+            port=8080,
+            non_proxy_hosts=("*",),
+        )
+        assert options._bypass_all is True
+        assert options._bypass_matchers == ()
+
+    def test_star_mixed_with_other_entries_still_bypasses_all(self) -> None:
+        options = ProxyOptions(
+            type=ProxyType.HTTP,
+            host="proxy.corp",
+            port=8080,
+            non_proxy_hosts=("example.com", "*", "*.internal"),
+        )
+        assert options._bypass_all is True
+        assert options.bypasses_proxy("totally.unrelated.host") is True
+
+
+class TestSameLayerHostAndPort:
+    """Host and port always come from the SAME configuration layer, never mixed."""
+
+    def test_higher_layer_supplies_both_host_and_port(self) -> None:
+        # The env layer offers one endpoint and the (higher-priority) override
+        # layer another. The winning layer supplies BOTH host and port — you
+        # never observe the override host paired with the env port or vice
+        # versa, the classic mix-and-match footgun.
+        env = {"HTTPS_PROXY": "http://env-host:1111"}
+        config = (
+            Configuration.builder()
+            .env(env.get)
+            .put(Configuration.HTTPS_PROXY, "http://override-host:2222")
+            .build()
+        )
+        options = ProxyOptions.from_configuration(config)
+        assert options is not None
+        assert options.host == "override-host"
+        assert options.port == 2222
+
+    def test_single_url_ties_host_and_port_together(self) -> None:
+        # Both parts derive from one resolved URL string, so a port-less URL
+        # yields the URL's host and a ``None`` port — never a port borrowed
+        # from some other source.
+        config = _config("https://only-host")
+        options = ProxyOptions.from_configuration(config)
+        assert options is not None
+        assert options.host == "only-host"
+        assert options.port is None
+
+
+_PROXY_ENV_KEYS = frozenset({"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"})
+
+
+def _forbid_proxy_env_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Booby-trap ``os.environ.get`` so any proxy-variable read raises.
+
+    Only the ``get`` accessor is shadowed (item assignment and the rest of the
+    mapping keep working, so the test harness is unaffected). Unrelated reads
+    delegate to the real environment; a read of any proxy variable raises,
+    proving the code under test never resolves proxy settings from
+    ``os.environ`` implicitly.
+    """
+    real_get = os.environ.get
+
+    def guarded_get(key: str, default: str | None = None) -> str | None:
+        if key in _PROXY_ENV_KEYS:
+            raise AssertionError(f"proxy env var {key!r} must not be read implicitly")
+        return real_get(key, default)
+
+    monkeypatch.setattr(os.environ, "get", guarded_get)
+
+
+class TestOptInEnvironmentResolution:
+    """Env resolution is opt-in and hermetic — never an implicit os.environ read."""
+
+    def test_plain_construction_never_reads_proxy_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # With proxy-env reads booby-trapped, build and exercise the model
+        # directly. Constructing and matching must not touch proxy env vars.
+        _forbid_proxy_env_reads(monkeypatch)
+        options = ProxyOptions(
+            type=ProxyType.HTTP,
+            host="proxy.corp",
+            port=8080,
+            non_proxy_hosts=("*.internal", "example.com"),
+            username="u",
+            password="p",
+        )
+        assert options.bypasses_proxy("api.internal") is True
+        assert options.bypasses_proxy("elsewhere.org") is False
+
+    def test_from_environment_uses_injected_seam_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Opt-in env resolution reads ONLY the injected seam; the real
+        # os.environ is booby-trapped to prove it is never consulted, and no
+        # real environment variable is mutated by the test.
+        _forbid_proxy_env_reads(monkeypatch)
+        fake_env = {"HTTPS_PROXY": "http://seam-host:8080", "NO_PROXY": "example.com"}
+        options = ProxyOptions.from_environment(env=fake_env.get)
+        assert options is not None
+        assert options.host == "seam-host"
+        assert options.port == 8080
+        assert options.non_proxy_hosts == ("example.com",)
+
+    def test_from_environment_returns_none_when_seam_is_empty(self) -> None:
+        options = ProxyOptions.from_environment(env=lambda _name: None)
+        assert options is None
+
+    def test_from_environment_default_reads_process_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The default seam IS os.environ.get, so the explicit opt-in call (and
+        # only it) reflects the real process environment when no seam is given.
+        monkeypatch.setenv("HTTPS_PROXY", "http://env-default:8080")
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        options = ProxyOptions.from_environment()
+        assert options is not None
+        assert options.host == "env-default"
+        assert options.port == 8080
+
+
+class TestResolutionNeverThrows:
+    """Malformed proxy configuration degrades to ``None`` — it never raises."""
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "http://",  # no host
+            "http://proxy.corp:99999",  # port out of range
+            "ftp://proxy.corp:8080",  # unsupported scheme
+            "://::::",  # garbage
+            "http://[unterminated",  # malformed IPv6 authority
+            "   ",  # whitespace only
+            "not a url at all",  # a host may never contain whitespace
+        ],
+    )
+    def test_malformed_value_degrades_to_none(self, value: str) -> None:
+        # No exception escapes for any malformed value; it degrades to None.
+        assert ProxyOptions.from_configuration(_config(value)) is None
+
+
+class TestLoggingRedactsCredentials:
+    """The WARNING log path for an unusable proxy never leaks credentials."""
+
+    def test_invalid_port_url_redacts_userinfo(self, caplog: pytest.LogCaptureFixture) -> None:
+        secret_url = f"http://alice:{_SECRET}@proxy.corp:99999"
+        with caplog.at_level("WARNING", logger="dexpace.sdk.core.util.proxy"):
+            options = ProxyOptions.from_configuration(_config(secret_url))
+        assert options is None
+        blob = "\n".join(record.getMessage() for record in caplog.records)
+        assert blob  # a WARNING was emitted
+        assert _SECRET not in blob
+        assert "alice" not in blob
+        assert "***@proxy.corp" in blob

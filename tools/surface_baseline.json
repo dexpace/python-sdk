@@ -1414,7 +1414,8 @@
           "bases": [],
           "methods": {
             "bypasses_proxy": "bypasses_proxy(self, host: str) -> bool",
-            "from_configuration": "from_configuration(cls, config: Configuration) -> Self | None"
+            "from_configuration": "from_configuration(cls, config: Configuration) -> Self | None",
+            "from_environment": "from_environment(cls, env: EnvSource) -> Self | None"
           }
         },
         "ProxyType": {

@@ -9,27 +9,43 @@ entries are compiled exactly once at construction time so per-request
 matching is a plain comparison.
 
 Bypass entries follow the conventional ``NO_PROXY`` suffix semantics used by
-curl, requests, and Go: a bare entry such as ``example.com`` bypasses the
-host itself and any dot-delimited subdomain (``api.example.com``); a leading
-dot (``.example.com``) is treated identically. A trailing ``:port`` on either
-the entry or the candidate host is ignored, so matching is host-only. Entries
-containing a glob metacharacter (``*`` / ``?`` / ``[``) keep their ``fnmatch``
-behaviour so existing ``*.example.com`` style patterns continue to work.
+curl, requests, and Go. Precedence and escaping rules:
 
-The ``ProxyOptions.from_configuration`` factory bridges the proxy value
-type to the layered ``Configuration`` lookup: it reads ``HTTPS_PROXY``
-(preferred) or ``HTTP_PROXY`` as proxy URLs and ``NO_PROXY`` as a
-comma-separated bypass list. The URL scheme selects the transport flavour, a
-missing port defaults by scheme, scheme-less ``host:port`` forms are accepted,
-and percent-encoded credentials are decoded. Bad proxy configuration degrades
-to ``None`` rather than raising — but because a silently-unused proxy is an
-outage-grade misconfiguration, an unusable value is logged at WARNING.
+- A single bare ``*`` short-circuits to "bypass everything" — every candidate
+  host is bypassed and no per-host glob matching runs.
+- An entry containing a glob metacharacter (``*`` / ``?`` / ``[``) keeps
+  ``fnmatch`` semantics, so ``*.example.com`` style patterns work. To match a
+  *literal* metacharacter, wrap it in a character class — ``[*]`` matches a
+  literal ``*`` — which is ``fnmatch``'s escape mechanism.
+- Every other (bare) entry such as ``example.com`` bypasses the host itself
+  and any dot-delimited subdomain (``api.example.com``); a leading dot
+  (``.example.com``) is treated identically.
+- A trailing ``:port`` on either the entry or the candidate host is ignored,
+  so matching is host-only and case-insensitive over the full host string.
+
+The ``ProxyOptions.from_configuration`` factory bridges the proxy value type
+to the layered ``Configuration`` lookup: it reads ``HTTPS_PROXY`` (preferred)
+or ``HTTP_PROXY`` as proxy URLs and ``NO_PROXY`` as a comma-separated bypass
+list. The URL scheme selects the transport flavour, scheme-less ``host:port``
+forms are accepted, and percent-encoded credentials are decoded. Host and port
+are always taken from the *same* resolved URL (never mixed across layers), a
+missing port stays ``None`` rather than being fabricated, and credentials are
+attached only over an ``https`` proxy connection. Bad proxy configuration
+degrades to ``None`` rather than raising — but because a silently-unused proxy
+is an outage-grade misconfiguration, an unusable value is logged at WARNING
+(with any credentials redacted from the logged URL).
+
+Environment resolution is opt-in: the plain constructor and matching methods
+never read ``os.environ``. Callers that want env-based resolution ask for it
+explicitly through ``from_environment`` (or ``from_configuration`` with an
+env-backed ``Configuration``); the env seam is injectable for hermetic tests.
 """
 
 from __future__ import annotations
 
 import fnmatch
 import logging
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -37,7 +53,7 @@ from enum import StrEnum
 from typing import Self
 from urllib.parse import SplitResult, unquote, urlsplit
 
-from ..config.configuration import Configuration
+from ..config.configuration import Configuration, EnvSource
 
 __all__ = ["ProxyOptions", "ProxyType"]
 
@@ -47,15 +63,29 @@ _LOG = logging.getLogger(__name__)
 # Glob metacharacters that switch an entry into ``fnmatch`` mode.
 _GLOB_CHARS: frozenset[str] = frozenset("*?[")
 
-# Default proxy port per URL scheme when the proxy URL omits one. SOCKS
-# proxies conventionally listen on 1080.
-_DEFAULT_PORTS: dict[str, int] = {
-    "http": 80,
-    "https": 443,
-    "socks4": 1080,
-    "socks5": 1080,
-    "socks5h": 1080,
-}
+# Matches the ``userinfo`` (``user:pass``) component of a URL — either after a
+# ``//`` authority marker or at the start of a scheme-less ``user:pass@host``
+# form — so it can be redacted before a URL is written to a log line.
+_USERINFO_RE = re.compile(r"(?:^|//)([^/@]*)@")
+
+
+def _redact_userinfo(url: str) -> str:
+    """Mask any ``user:pass@`` credentials in a URL so logs never leak them.
+
+    Handles ``scheme://user:pass@host``, ``//user:pass@host``, and scheme-less
+    ``user:pass@host:port`` forms alike. A URL without userinfo is returned
+    unchanged. This is a best-effort log-safety redaction, not a URL parser.
+
+    Args:
+        url: A proxy URL, possibly carrying credentials.
+
+    Returns:
+        The URL with any userinfo component replaced by ``***``.
+    """
+    match = _USERINFO_RE.search(url)
+    if match is None:
+        return url
+    return url[: match.start(1)] + "***" + url[match.end(1) :]
 
 
 def _strip_port(host: str) -> str:
@@ -159,42 +189,79 @@ _SCHEME_TO_TYPE: dict[str, ProxyType] = {
 }
 
 
-def _resolve_endpoint(proxy_url: str) -> tuple[SplitResult, ProxyType, str, int] | None:
+def _resolve_endpoint(proxy_url: str) -> tuple[SplitResult, ProxyType, str, int | None] | None:
     """Resolve a proxy URL into its parsed parts, type, host, and port.
 
-    Applies scheme→type mapping, scheme-by-default port resolution, and
-    scheme-less ``host:port`` handling. Any value that cannot yield a usable
-    endpoint is logged at WARNING (a silently-disabled proxy is outage-grade)
-    and yields ``None``.
+    Applies scheme->type mapping and scheme-less ``host:port`` handling. The
+    port is taken verbatim from the URL: an explicit in-range port, or ``None``
+    when the URL omits one — never a fabricated per-scheme default. Any value
+    that cannot yield a usable endpoint is logged at WARNING (a silently-
+    disabled proxy is outage-grade) with credentials redacted, and yields
+    ``None``.
 
     Args:
         proxy_url: The raw proxy URL string.
 
     Returns:
-        A ``(SplitResult, ProxyType, host, port)`` tuple, or ``None`` if the
-        URL is unusable.
+        A ``(SplitResult, ProxyType, host, port)`` tuple where ``port`` is an
+        ``int`` or ``None``, or ``None`` if the URL is unusable.
     """
+    safe = _redact_userinfo(proxy_url)
     try:
         split = _split_proxy_url(proxy_url)
     except ValueError:
-        _LOG.warning("ignoring proxy URL %r: failed to parse", proxy_url)
+        _LOG.warning("ignoring proxy URL %s: failed to parse", safe)
         return None
     scheme = split.scheme.lower()
     proxy_type = _SCHEME_TO_TYPE["http"] if scheme == "" else _SCHEME_TO_TYPE.get(scheme)
     if proxy_type is None:
-        _LOG.warning("ignoring proxy URL %r: unsupported scheme %r", proxy_url, scheme)
+        _LOG.warning("ignoring proxy URL %s: unsupported scheme %r", safe, scheme)
         return None
-    if not split.hostname:
-        _LOG.warning("ignoring proxy URL %r: missing hostname", proxy_url)
+    if not split.hostname or any(char.isspace() for char in split.hostname):
+        _LOG.warning("ignoring proxy URL %s: missing or invalid hostname", safe)
         return None
     try:
         port = split.port
     except ValueError:
-        _LOG.warning("ignoring proxy URL %r: invalid port", proxy_url)
+        _LOG.warning("ignoring proxy URL %s: invalid port", safe)
         return None
-    if port is None:
-        port = _DEFAULT_PORTS.get(scheme, 80)
     return split, proxy_type, split.hostname, port
+
+
+def _extract_credentials(split: SplitResult) -> tuple[str | None, str | None]:
+    """Return decoded proxy credentials, but only over an ``https`` proxy.
+
+    A proxy credential is attached only when the proxy URL scheme is
+    ``https``. Sending a Proxy-Authorization credential over a plaintext
+    proxy connection (``http``, scheme-less, or SOCKS) would expose it on the
+    wire, so those schemes drop the credential rather than leak it. Present
+    credentials are percent-decoded.
+
+    Args:
+        split: The parsed proxy URL.
+
+    Returns:
+        A ``(username, password)`` tuple; either or both may be ``None``.
+    """
+    if split.scheme.lower() != "https":
+        return None, None
+    username = unquote(split.username) if split.username is not None else None
+    password = unquote(split.password) if split.password is not None else None
+    return username, password
+
+
+def _parse_no_proxy(raw: str | None) -> tuple[str, ...]:
+    """Split a ``NO_PROXY`` value into stripped, non-empty bypass entries.
+
+    Args:
+        raw: The raw comma-separated ``NO_PROXY`` value, or ``None``.
+
+    Returns:
+        The bypass entries in order; empty when ``raw`` is absent or blank.
+    """
+    if raw is None or not raw.strip():
+        return ()
+    return tuple(entry.strip() for entry in raw.split(",") if entry.strip())
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,47 +271,64 @@ class ProxyOptions:
     Attributes:
         type: Proxy transport flavour (HTTP / SOCKS4 / SOCKS5).
         host: Proxy host. Must be non-empty.
-        port: Proxy port in the range ``0..65535``.
-        non_proxy_hosts: Bypass entries. A bare entry (``example.com`` or
-            ``.example.com``) matches the host and its subdomains by suffix;
-            an entry with a glob metacharacter (``*.example.com``) keeps
-            ``fnmatch`` semantics. A trailing ``:port`` on a bare entry is
-            ignored. Compiled once in ``__post_init__``.
-        username: Optional username for proxy auth. Masked in ``repr``.
-        password: Optional password for proxy auth. Masked in ``repr``.
+        port: Proxy port in the range ``0..65535``, or ``None`` when
+            unspecified (the transport applies its own default) — the model
+            never fabricates one.
+        non_proxy_hosts: Bypass entries. A single bare ``*`` bypasses every
+            host; a bare entry (``example.com`` or ``.example.com``) matches
+            the host and its subdomains by suffix; an entry with a glob
+            metacharacter (``*.example.com``) keeps ``fnmatch`` semantics. A
+            trailing ``:port`` on a bare entry is ignored. Compiled once in
+            ``__post_init__``.
+        username: Optional username for proxy auth. Masked in every string
+            form.
+        password: Optional password for proxy auth. Masked in every string
+            form.
     """
 
     type: ProxyType
     host: str
-    port: int
+    port: int | None = None
     non_proxy_hosts: tuple[str, ...] = ()
     username: str | None = None
     password: str | None = None
-    # Compiled bypass matchers. Excluded from ``repr`` / equality / hashing so
-    # two ``ProxyOptions`` with the same logical fields compare equal even
-    # though their compiled predicates are distinct objects.
+    # Compiled bypass matchers and the bare-``*`` short-circuit flag. Excluded
+    # from ``repr`` / equality / hashing so two ``ProxyOptions`` with the same
+    # logical fields compare equal even though their compiled predicates are
+    # distinct objects.
     _bypass_matchers: tuple[Callable[[str], bool], ...] = field(
         init=False, repr=False, compare=False, hash=False
     )
+    _bypass_all: bool = field(init=False, repr=False, compare=False, hash=False)
 
     def __post_init__(self) -> None:
         """Validate inputs and pre-compile bypass matchers.
 
+        A single bare ``*`` entry sets the bypass-all short-circuit; the
+        remaining entries are compiled into per-host matchers exactly once.
+
         Raises:
-            ValueError: If ``host`` is empty or ``port`` is outside 0..65535.
+            ValueError: If ``host`` is empty or ``port`` is a non-``None``
+                value outside 0..65535.
         """
         if not self.host:
             raise ValueError("host must not be empty")
-        if not (0 <= self.port <= 65535):
+        if self.port is not None and not (0 <= self.port <= 65535):
             raise ValueError(f"port must be in 0..65535, got {self.port}")
-        compiled = tuple(_compile_bypass(pattern) for pattern in self.non_proxy_hosts)
+        bypass_all = any(entry.strip() == "*" for entry in self.non_proxy_hosts)
+        object.__setattr__(self, "_bypass_all", bypass_all)
+        compiled = tuple(
+            _compile_bypass(pattern) for pattern in self.non_proxy_hosts if pattern.strip() != "*"
+        )
         object.__setattr__(self, "_bypass_matchers", compiled)
 
     def bypasses_proxy(self, host: str) -> bool:
         """Return ``True`` when ``host`` matches any bypass entry.
 
-        Matching is case-insensitive — hostnames on the wire are
-        case-insensitive per RFC 3986. Bare entries use suffix semantics
+        A single bare ``*`` in ``non_proxy_hosts`` short-circuits to ``True``
+        for every host without running per-host matching. Otherwise matching
+        is case-insensitive over the full host string — hostnames on the wire
+        are case-insensitive per RFC 3986. Bare entries use suffix semantics
         (``example.com`` bypasses ``api.example.com``); glob entries use
         ``fnmatch``. A trailing ``:port`` on the candidate is stripped before
         matching, so port-qualified hosts compare on their host part alone.
@@ -254,9 +338,12 @@ class ProxyOptions:
                 (stripped) and optional IPv6 brackets. No scheme.
 
         Returns:
-            ``True`` if at least one bypass entry matches; ``False``
-            otherwise (including when there are no bypass entries).
+            ``True`` if the bypass-all short-circuit is set or at least one
+            bypass entry matches; ``False`` otherwise (including when there
+            are no bypass entries).
         """
+        if self._bypass_all:
+            return True
         candidate = _strip_port(host)
         return any(matcher(candidate) for matcher in self._bypass_matchers)
 
@@ -277,6 +364,39 @@ class ProxyOptions:
             f"username={username}, password={password})"
         )
 
+    def __str__(self) -> str:
+        """Render the proxy options with credentials masked.
+
+        Delegates to ``__repr__`` so ``str(options)`` and ``f"{options}"``
+        carry the same credential masking — no string form ever leaks the
+        proxy password.
+
+        Returns:
+            The credential-masked ``ProxyOptions(...)`` rendering.
+        """
+        return self.__repr__()
+
+    @classmethod
+    def from_environment(cls, env: EnvSource = os.environ.get) -> Self | None:
+        """Resolve proxy settings from environment variables (opt-in).
+
+        Environment resolution is opt-in: the plain constructor and matching
+        methods never read ``os.environ`` implicitly. Callers ask for env-based
+        resolution explicitly here. The ``env`` seam is injectable so tests can
+        exercise resolution hermetically without mutating the real process
+        environment.
+
+        Args:
+            env: Callable mapping a variable name to its value or ``None``.
+                Defaults to ``os.environ.get``; pass a fake mapping's ``get``
+                in tests.
+
+        Returns:
+            A populated ``ProxyOptions``, or ``None`` when no proxy is
+            configured or the value is unusable.
+        """
+        return cls.from_configuration(Configuration(env=env))
+
     @classmethod
     def from_configuration(cls, config: Configuration) -> Self | None:
         """Build a ``ProxyOptions`` from layered configuration env vars.
@@ -291,13 +411,17 @@ class ProxyOptions:
           map to ``HTTP``, ``socks4`` to ``SOCKS4``, ``socks5``/``socks5h`` to
           ``SOCKS5``. An *unsupported* scheme is rejected (logged at WARNING),
           never silently downgraded to HTTP.
-        - A missing port defaults by scheme (``http`` 80, ``https`` 443, SOCKS
-          1080) instead of dropping the proxy.
+        - A missing port stays ``None`` instead of being fabricated by scheme;
+          host and port always come from the same resolved URL.
         - A scheme-less ``proxy:8080`` is parsed as host:port (assumed HTTP).
-        - Percent-encoded credentials are ``unquote()``-decoded.
+        - Credentials are attached only over an ``https`` proxy and are
+          ``unquote()``-decoded; over a plaintext (``http`` / scheme-less /
+          SOCKS) proxy they are dropped rather than sent in the clear.
 
         Because a silently-unused proxy is an outage-grade misconfiguration, a
-        genuinely unusable proxy value is logged at WARNING (not DEBUG).
+        genuinely unusable proxy value is logged at WARNING (with any
+        credentials redacted). Resolution never raises: a malformed value
+        degrades to ``None``.
 
         Args:
             config: Layered configuration to read from.
@@ -317,22 +441,17 @@ class ProxyOptions:
         if endpoint is None:
             return None
         split, proxy_type, host, port = endpoint
-        non_proxy_hosts: tuple[str, ...] = ()
-        if no_proxy_raw is not None and no_proxy_raw.strip():
-            non_proxy_hosts = tuple(
-                entry.strip() for entry in no_proxy_raw.split(",") if entry.strip()
-            )
-        username = unquote(split.username) if split.username is not None else None
-        password = unquote(split.password) if split.password is not None else None
+        username, password = _extract_credentials(split)
         try:
             return cls(
                 type=proxy_type,
                 host=host,
                 port=port,
-                non_proxy_hosts=non_proxy_hosts,
+                non_proxy_hosts=_parse_no_proxy(no_proxy_raw),
                 username=username,
                 password=password,
             )
         except ValueError:
-            _LOG.warning("ignoring proxy URL %r: failed ProxyOptions validation", proxy_url)
+            safe = _redact_userinfo(proxy_url)
+            _LOG.warning("ignoring proxy URL %s: failed ProxyOptions validation", safe)
             return None
