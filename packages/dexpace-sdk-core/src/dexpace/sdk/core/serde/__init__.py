@@ -29,6 +29,7 @@ from .tristate import (
     of_optional,
     present,
 )
+from .type_ref import TypeRef
 
 __all__ = [
     "ABSENT",
@@ -47,6 +48,7 @@ __all__ = [
     "Serde",
     "Serializer",
     "Tristate",
+    "TypeRef",
     "discriminated",
     "field_alias",
     "fold",

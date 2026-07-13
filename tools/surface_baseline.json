@@ -1305,7 +1305,7 @@
         "Codec": {
           "bases": [],
           "methods": {
-            "decode": "decode(self, data: object, target: type[T]) -> T",
+            "decode": "decode(self, data: object, target: type[T] | TypeRef[T]) -> T",
             "encode": "encode(self, value: object) -> object"
           }
         },
@@ -1386,6 +1386,15 @@
         "is_present": "is_present(state: Tristate[T]) -> TypeGuard[Present[T]]",
         "of_optional": "of_optional(value: T | None) -> _Null | Present[T]",
         "present": "present(value: T) -> Present[T]"
+      },
+      "dexpace.sdk.core.serde.type_ref": {
+        "TypeRef": {
+          "bases": [],
+          "methods": {
+            "args": "args(self) -> tuple[object, ...]",
+            "origin": "origin(self) -> object | None"
+          }
+        }
       },
       "dexpace.sdk.core.util.clock": {
         "AsyncClock": {
@@ -1649,6 +1658,7 @@
         "Serde",
         "Serializer",
         "Tristate",
+        "TypeRef",
         "discriminated",
         "field_alias",
         "fold",
