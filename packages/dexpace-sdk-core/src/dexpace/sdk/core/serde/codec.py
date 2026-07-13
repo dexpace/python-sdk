@@ -31,6 +31,7 @@ from typing import Annotated, Final, Union, cast, get_args, get_origin, get_type
 
 from ..errors import DeserializationError, SerializationError
 from .tristate import ABSENT, NULL, Present, Tristate
+from .type_ref import TypeRef
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -248,15 +249,18 @@ class Codec:
         """
         self._tolerate_unknown = tolerate_unknown
 
-    def decode[T](self, data: object, target: type[T]) -> T:
+    def decode[T](self, data: object, target: type[T] | TypeRef[T]) -> T:
         """Decode a plain document into an instance of ``target``.
 
         Args:
             data: A plain document (``dict`` / ``list`` / scalar) as produced by
                 ``Serde.deserializer``.
-            target: The type to reconstruct — a dataclass, a discriminated base,
-                ``list[X]`` / ``dict[str, X]``, a datetime/UUID/enum, or a
-                scalar.
+            target: The type to reconstruct, given as a runtime type witness — a
+                dataclass, a discriminated base, ``list[X]`` / ``dict[str, X]``,
+                a datetime/UUID/enum, or a scalar. A subscripted generic such as
+                ``list[X]`` may be passed directly; wrap it in a ``TypeRef`` to
+                have the witness validated (and any PEP 695 alias resolved)
+                eagerly before decoding.
 
         Returns:
             A fully constructed instance of ``target``.
@@ -265,7 +269,8 @@ class Codec:
             CodecError: On any structural mismatch or conversion failure, with a
                 wire-name path pointing at the offending location.
         """
-        return cast("T", _decode_value(data, target, (), self._tolerate_unknown, 0))
+        witness: object = target.witness if isinstance(target, TypeRef) else target
+        return cast("T", _decode_value(data, witness, (), self._tolerate_unknown, 0))
 
     def encode(self, value: object) -> object:
         """Encode a typed value into a plain document.
