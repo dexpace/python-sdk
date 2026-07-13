@@ -9,6 +9,7 @@ import asyncio
 import threading
 import time
 from collections.abc import AsyncIterator, Iterator
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -339,6 +340,27 @@ def test_bearer_token_policy_serializes_concurrent_refresh() -> None:
             t.start()
         for t in threads:
             t.join()
+
+    assert cred.calls == 1
+
+
+def test_bearer_token_policy_single_flight_under_thread_pool() -> None:
+    """The sync pillar collapses N concurrent misses into one fetch (pool)."""
+
+    client = _CapturingClient()
+    cred = _SlowCredential()
+    policy = BearerTokenPolicy(cred, "scope-a")
+    trace_ids = [f"{i:032x}" for i in range(200, 208)]
+
+    with Pipeline(client, policies=[policy]) as p:
+
+        def _send(trace: str) -> None:
+            p.run(_request(), DispatchContext(_instr(trace)))
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(_send, t) for t in trace_ids]
+            for future in futures:
+                future.result(timeout=5)
 
     assert cred.calls == 1
 
