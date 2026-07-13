@@ -40,6 +40,9 @@ testpaths = [
 ]
 addopts = "-ra --strict-markers"
 asyncio_mode = "auto"
+markers = [
+    "req(requirement_id): mark a test as covering a spec requirement id (e.g. req(\"RETRY-19\")); consumed by tools/traceability_audit.py",
+]
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning:pytest_asyncio.*",
