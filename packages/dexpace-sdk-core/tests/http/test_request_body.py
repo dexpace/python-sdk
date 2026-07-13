@@ -159,6 +159,23 @@ class TestFileRequestBody:
         with pytest.raises(ValueError):
             FileRequestBody(tmp_path / "x", count=0)
 
+    def test_concurrent_replays_are_independent(self, tmp_path: Path) -> None:
+        # Each iter_bytes opens its own file handle, so two interleaved
+        # iterators must not share a read cursor — both read the full content.
+        path = tmp_path / "payload.bin"
+        path.write_bytes(b"0123456789")
+        body = FileRequestBody(path)
+        it_a = body.iter_bytes(3)
+        it_b = body.iter_bytes(3)
+        # Interleave the two iterators; independent handles mean neither steals
+        # bytes from the other.
+        got_a = next(it_a)
+        got_b = next(it_b)
+        assert got_a == got_b == b"012"
+        rest_a = got_a + b"".join(it_a)
+        rest_b = got_b + b"".join(it_b)
+        assert rest_a == rest_b == b"0123456789"
+
 
 def _make_file_body(tmp_path: Path) -> RequestBody:
     path = tmp_path / "payload.bin"

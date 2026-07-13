@@ -31,6 +31,34 @@ def _check_chunk_size(chunk_size: int) -> None:
         raise ValueError(f"chunk_size must be positive, got {chunk_size}")
 
 
+def _form_urlencode(fields: Mapping[str, str], encoding: str) -> str:
+    """Encode form fields as ``application/x-www-form-urlencoded`` (strict).
+
+    Every key and value is percent-encoded with an empty ``safe`` set, so
+    spaces become ``%20`` (never ``+``) and every reserved character —
+    ``&``, ``=``, ``+``, ``/``, ``?``, ``#``, ``@``, ``:`` and friends — is
+    escaped. This deliberately avoids ``urllib.parse.urlencode`` /
+    ``quote_plus``, whose ``+``-for-space convention is ambiguous with a
+    literal ``+`` and round-trips inconsistently across decoders.
+
+    Note:
+        Minimal in-module strict codec. If a shared query-codec helper lands
+        (the ``QueryParams`` serialiser already uses ``quote_via=quote``),
+        reconcile this against it rather than keeping two encoders.
+
+    Args:
+        fields: Form fields keyed by name.
+        encoding: Text encoding applied before percent-encoding.
+
+    Returns:
+        The encoded body as a ``str`` (no leading ``?``).
+    """
+    return "&".join(
+        f"{quote(k, safe='', encoding=encoding)}={quote(v, safe='', encoding=encoding)}"
+        for k, v in fields.items()
+    )
+
+
 class RequestBody(ABC):
     """Payload of an HTTP request.
 
@@ -174,10 +202,7 @@ class RequestBody(ABC):
         Returns:
             A replayable form body carrying the standard media type.
         """
-        encoded = "&".join(
-            f"{quote(k, safe='', encoding=encoding)}={quote(v, safe='', encoding=encoding)}"
-            for k, v in fields.items()
-        )
+        encoded = _form_urlencode(fields, encoding)
         return _BytesBody(
             encoded.encode(encoding),
             common_media_types.APPLICATION_FORM_URLENCODED,

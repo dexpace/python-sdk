@@ -506,6 +506,16 @@
           }
         }
       },
+      "dexpace.sdk.core.http.request._multipart_framing": {
+        "closing_delimiter": "closing_delimiter(boundary: str) -> bytes",
+        "content_length": "content_length(fields: Sequence[MultipartField], boundary: str) -> int",
+        "escape_quoted": "escape_quoted(value: str) -> str",
+        "iter_frames": "iter_frames(fields: Sequence[MultipartField], boundary: str, chunk_size: int) -> Iterator[bytes]",
+        "iter_value_bytes": "iter_value_bytes(value: bytes | str | RequestBody, chunk_size: int) -> Iterator[bytes]",
+        "part_header_block": "part_header_block(part: MultipartField, boundary: str) -> bytes",
+        "render_frames": "render_frames(fields: Sequence[MultipartField], boundary: str, *, max_bytes: int | None, chunk_size: int) -> bytes",
+        "value_length": "value_length(value: bytes | str | RequestBody) -> int"
+      },
       "dexpace.sdk.core.http.request.async_request_body": {
         "AsyncRequestBody": {
           "bases": [
@@ -589,7 +599,8 @@
         "MultipartField": {
           "bases": [],
           "methods": {
-            "with_utf8_filename": "with_utf8_filename(cls, *, name: str, value: bytes | str, filename: str, media_type: MediaType | None, headers: Sequence[tuple[str, str]], ascii_fallback: str) -> Self"
+            "is_replayable": "is_replayable(self) -> bool",
+            "with_utf8_filename": "with_utf8_filename(cls, *, name: str, value: bytes | str | RequestBody, filename: str, media_type: MediaType | None, headers: Sequence[tuple[str, str]], ascii_fallback: str) -> Self"
           }
         },
         "MultipartRequestBody": {
@@ -599,6 +610,7 @@
           "methods": {
             "boundary": "boundary(self) -> str",
             "content_length": "content_length(self) -> int",
+            "fields": "fields(self) -> tuple[MultipartField, ...]",
             "is_replayable": "is_replayable(self) -> bool",
             "iter_bytes": "iter_bytes(self, chunk_size: int) -> Iterator[bytes]",
             "media_type": "media_type(self) -> MediaType | None",

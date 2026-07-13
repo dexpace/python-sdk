@@ -8,12 +8,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterable, AsyncIterator, Mapping
 from typing import Protocol, runtime_checkable
-from urllib.parse import quote
 
 from .._shielded import _shielded_cleanup
 from ..common import common_media_types
 from ..common.media_type import MediaType
-from .request_body import _check_chunk_size
+from .request_body import _check_chunk_size, _form_urlencode
 
 
 @runtime_checkable
@@ -105,10 +104,7 @@ class AsyncRequestBody(ABC):
         fields: Mapping[str, str],
         encoding: str = "utf-8",
     ) -> AsyncRequestBody:
-        encoded = "&".join(
-            f"{quote(k, safe='', encoding=encoding)}={quote(v, safe='', encoding=encoding)}"
-            for k, v in fields.items()
-        )
+        encoded = _form_urlencode(fields, encoding)
         return _AsyncBytesBody(
             encoded.encode(encoding),
             common_media_types.APPLICATION_FORM_URLENCODED,
