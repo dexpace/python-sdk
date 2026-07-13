@@ -23,6 +23,7 @@ from dexpace.sdk.core.instrumentation import (
 )
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import Pipeline
+from dexpace.sdk.core.pipeline.policies.retry import RetryPolicy
 from dexpace.sdk.core.pipeline.policies.set_date import SetDatePolicy
 
 from ..conftest import FakeClock
@@ -97,6 +98,52 @@ def test_restamps_on_each_attempt() -> None:
         p.run(_request(), DispatchContext(_instr("0" * 16 + "4")))
         clock.advance(3600)  # one hour later
         p.run(_request(), DispatchContext(_instr("0" * 16 + "5")))
+    first = client.calls[0].headers.get("Date")
+    second = client.calls[1].headers.get("Date")
+    assert first is not None and second is not None
+    assert first != second
+    assert _RFC7231.match(first) is not None
+    assert _RFC7231.match(second) is not None
+
+
+class _AdvancingClient(HttpClient):
+    """Records requests and moves the injected clock forward after each send.
+
+    Modelling the real world where wall-clock time advances between retry
+    attempts, this lets a single retried call produce a distinct ``Date`` per
+    attempt when `SetDatePolicy` sits inside the retry wrapper.
+    """
+
+    def __init__(self, clock: FakeClock, *fail_with: Status) -> None:
+        self.calls: list[Request] = []
+        self._clock = clock
+        self._fail = list(fail_with)
+
+    def execute(self, request: Request) -> Response:
+        self.calls.append(request)
+        status = self._fail.pop(0) if self._fail else Status.OK
+        self._clock.advance(3600)  # an hour passes before the next attempt
+        return Response(request=request, protocol=Protocol.HTTP_1_1, status=status)
+
+
+def test_date_refreshed_on_each_retry_attempt() -> None:
+    """One retried call re-stamps a fresh ``Date`` on each attempt.
+
+    The policy sits at `Stage.POST_RETRY` (inside the retry wrapper), so a
+    ``503`` that triggers a retry re-enters the policy and reads the clock
+    again. Were it outside the wrapper, the retry would re-send the same
+    already-stamped request and both attempts would carry an identical
+    (stale) ``Date``.
+    """
+    clock = FakeClock(start=1_700_000_000.0)
+    client = _AdvancingClient(clock, Status.SERVICE_UNAVAILABLE)
+    # RetryPolicy (Stage.RETRY) wraps SetDatePolicy (Stage.POST_RETRY): pass in
+    # outer-to-inner order. backoff_factor=0 keeps the (already zero) first
+    # retry delay from ever touching a real sleep.
+    policies = [RetryPolicy(backoff_factor=0), SetDatePolicy(clock=clock)]
+    with Pipeline(client, policies=policies) as p:
+        p.run(_request(), DispatchContext(_instr("0" * 16 + "6")))
+    assert len(client.calls) == 2  # one 503 + one 200
     first = client.calls[0].headers.get("Date")
     second = client.calls[1].headers.get("Date")
     assert first is not None and second is not None
