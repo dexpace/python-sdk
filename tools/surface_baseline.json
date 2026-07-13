@@ -1052,6 +1052,7 @@
           "bases": [],
           "methods": {
             "append": "append(self, policy: AsyncPolicy, *, force: bool) -> Self",
+            "batch": "batch(self) -> Iterator[Self]",
             "build": "build(self) -> AsyncPipeline",
             "from_pipeline": "from_pipeline(cls, pipeline: AsyncPipeline) -> Self",
             "insert_after": "insert_after(self, target: type[AsyncPolicy], new: AsyncPolicy) -> Self",
@@ -1277,6 +1278,7 @@
           "bases": [],
           "methods": {
             "append": "append(self, policy: Policy, *, force: bool) -> Self",
+            "batch": "batch(self) -> Iterator[Self]",
             "build": "build(self) -> Pipeline",
             "from_pipeline": "from_pipeline(cls, pipeline: Pipeline) -> Self",
             "insert_after": "insert_after(self, target: type[Policy], new: Policy) -> Self",

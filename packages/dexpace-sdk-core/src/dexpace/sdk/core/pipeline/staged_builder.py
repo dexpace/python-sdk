@@ -8,9 +8,14 @@ constructor. Policies declare their ``STAGE``; the builder slots them into
 stage buckets and at ``build()`` time flattens to a list in stage order.
 
 Pillar stages (`OPERATION`, `REDIRECT`, `RETRY`, `AUTH`, `LOGGING`, `SERDE`)
-admit at most one policy. A second `append` of a pillar raises by default — use
-``replace(target, new)`` for explicit swaps or ``append(p, force=True)``
-for the rare legitimate use case (test fixtures, runtime composition).
+admit at most one policy — the singleton guarantee is enforced on *every*
+mutation path (append, prepend, replace, insert, bulk reload), not just
+``append``. A second occupant raises a descriptive error naming the stage and
+the incumbent policy type; use ``replace(target, new)`` for explicit swaps or
+``append(p, force=True)`` for the rare legitimate use case (test fixtures,
+runtime composition). Shipped singletons own their stage and cannot be
+relocated to a different one. Group several edits with ``batch()`` for
+all-or-nothing application.
 """
 
 from __future__ import annotations
@@ -23,6 +28,8 @@ from .policy import Policy
 from .stage import Stage
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from ..client.http_client import HttpClient
 
 
@@ -90,33 +97,47 @@ class StagedPipelineBuilder:
 
         Args:
             target: Type whose first matching instance is replaced.
-            new: Replacement policy. Must declare a ``STAGE`` — typically
-                the same stage as ``target`` but not enforced.
+            new: Replacement policy. Must declare a ``STAGE``. When ``target``
+                occupies a pillar (singleton) stage, ``new`` must declare that
+                same stage; for non-pillar targets a cross-stage swap is
+                allowed and re-buckets ``new`` by its declared stage.
 
         Returns:
             ``self`` for chaining.
 
         Raises:
-            ValueError: If no instance of ``target`` exists in the builder.
+            ValueError: If no instance of ``target`` exists in the builder, or
+                if ``target`` occupies a pillar (singleton) stage and ``new``
+                declares a different stage — a shipped singleton owns its stage
+                and may not be relocated.
         """
         pillar_stage = next(
             (stage for stage, pillar in self._pillars.items() if isinstance(pillar, target)),
             None,
         )
         if pillar_stage is not None:
-            # Install new at its declared stage; remove the old pillar. The
-            # lookup above finished iterating before we mutate ``_pillars``.
+            if pillar_stage != new.STAGE:
+                raise ValueError(
+                    f"Cannot relocate the {pillar_stage.name} singleton: "
+                    f"replacement {type(new).__name__} declares stage "
+                    f"{new.STAGE.name}. A shipped singleton owns its stage; "
+                    f"pass a replacement declared at {pillar_stage.name}."
+                )
+            # Same-stage swap. The lookup above finished iterating before we
+            # mutate ``_pillars``; ``force`` overwrites the vacated slot.
             del self._pillars[pillar_stage]
             self.append(new, force=True)
             return self
-        for stage, bucket in self._buckets.items():
+        for stage, bucket in list(self._buckets.items()):
             for i, p in enumerate(bucket):
                 if isinstance(p, target):
                     if stage == new.STAGE:
                         bucket[i] = new
                     else:
-                        del bucket[i]
+                        # Place ``new`` first so a rejected pillar occupancy
+                        # leaves the incumbent intact — no half-applied swap.
                         self.append(new)
+                        del bucket[i]
                     return self
         raise ValueError(f"No instance of {target.__name__} in the builder.")
 
@@ -140,6 +161,27 @@ class StagedPipelineBuilder:
     def build(self) -> Pipeline:
         """Flatten the builder's contents into a `Pipeline`."""
         return Pipeline(self._client, policies=self._flatten())
+
+    @contextlib.contextmanager
+    def batch(self) -> Iterator[Self]:
+        """Apply a group of edits as an all-or-nothing transaction.
+
+        Yields ``self`` so edits chain naturally inside the ``with`` block. If
+        any edit raises, the builder rolls back to its pre-batch state, so a
+        failing batch leaves no partial mutation visible and any pipeline built
+        beforehand is untouched.
+
+        Yields:
+            This builder, for chaining edits inside the ``with`` block.
+        """
+        saved_pillars = dict(self._pillars)
+        saved_buckets = {stage: list(bucket) for stage, bucket in self._buckets.items()}
+        try:
+            yield self
+        except Exception:
+            self._pillars = saved_pillars
+            self._buckets = saved_buckets
+            raise
 
     @classmethod
     def from_pipeline(cls, pipeline: Pipeline) -> Self:
@@ -223,13 +265,35 @@ class StagedPipelineBuilder:
         return out
 
     def _reload(self, policies: list[Policy]) -> None:
-        self._pillars.clear()
-        self._buckets.clear()
+        """Rebuild the stage buckets from a flat policy list, atomically.
+
+        Validates single-occupancy of every pillar stage across the whole list
+        before touching any builder state, so a list that would double-fill a
+        pillar raises without leaving the builder half-reloaded.
+
+        Args:
+            policies: The full, ordered policy list to re-bucket.
+
+        Raises:
+            ValueError: If two policies claim the same pillar stage. The error
+                names the stage and the incumbent policy type.
+        """
+        pillars: dict[Stage, Policy] = {}
+        buckets: dict[Stage, list[Policy]] = {}
         for p in policies:
-            if p.STAGE.is_pillar:
-                self._pillars[p.STAGE] = p
+            stage = p.STAGE
+            if not stage.is_pillar:
+                buckets.setdefault(stage, []).append(p)
+            elif stage in pillars:
+                raise ValueError(
+                    f"Pillar stage {stage.name} is already filled by "
+                    f"{type(pillars[stage]).__name__}; it cannot also admit "
+                    f"{type(p).__name__}."
+                )
             else:
-                self._buckets.setdefault(p.STAGE, []).append(p)
+                pillars[stage] = p
+        self._pillars = pillars
+        self._buckets = buckets
 
 
 def _detach(policy: Policy) -> None:
