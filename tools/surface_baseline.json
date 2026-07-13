@@ -381,7 +381,10 @@
             "full_type": "full_type(self) -> str",
             "includes": "includes(self, other: MediaType) -> bool",
             "of": "of(cls, type: str, subtype: str, parameters: Mapping[str, str] | None) -> Self",
-            "parse": "parse(cls, value: str) -> Self"
+            "parameters": "parameters(self) -> tuple[tuple[str, str], ...]",
+            "parse": "parse(cls, value: str) -> Self",
+            "subtype": "subtype(self) -> str",
+            "type": "type(self) -> str"
           }
         }
       },

@@ -99,21 +99,54 @@ def _quote_if_needed(s: str) -> str:
 class MediaType:
     """An HTTP media type (RFC 7231 §3.1.1.1).
 
-    Immutable and hashable. ``parameters`` is stored as a tuple of sorted
-    ``(key, value)`` pairs so two equivalent media types compare equal and hash
-    equally regardless of construction order. Construct via `of` or
-    `parse` rather than the dataclass constructor directly so the type,
-    subtype, and parameter keys are normalised to lower case.
+    Immutable and hashable. The normalised parts are held in unexported
+    fields and read through the `type`, `subtype`, and `parameters`
+    properties, so the invariant — lower-case type/subtype, parameters sorted
+    with lower-cased keys — cannot be bypassed by holding raw state. `__post_init__`
+    normalises on every construction path, so two equivalent media types
+    compare equal and hash equally regardless of the order or case they were
+    built with. Prefer the `of` or `parse` factories, which also validate.
+
+    Attributes are exposed as read-only properties; assigning to them (or to
+    the frozen backing fields) raises, matching the immutable-model contract.
     """
 
-    type: str
-    subtype: str
-    parameters: tuple[tuple[str, str], ...] = ()
+    _type: str
+    _subtype: str
+    _parameters: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        # Normalise regardless of construction path (raw constructor included),
+        # so the equality/hash invariant holds for every instance rather than
+        # only those built through ``of``/``parse``. The dataclass is frozen,
+        # so mutate the backing fields via ``object.__setattr__``. Parameter
+        # *keys* are case-insensitive per RFC 7231 and are lower-cased, but
+        # *values* are preserved verbatim — multipart boundaries and similar
+        # tokens must round-trip exactly.
+        object.__setattr__(self, "_type", self._type.lower())
+        object.__setattr__(self, "_subtype", self._subtype.lower())
+        normalized = tuple(sorted((key.lower(), value) for key, value in self._parameters))
+        object.__setattr__(self, "_parameters", normalized)
+
+    @property
+    def type(self) -> str:
+        """The lower-cased primary type (e.g. ``application``)."""
+        return self._type
+
+    @property
+    def subtype(self) -> str:
+        """The lower-cased subtype (e.g. ``json``)."""
+        return self._subtype
+
+    @property
+    def parameters(self) -> tuple[tuple[str, str], ...]:
+        """The parameters as sorted ``(lower-cased key, value)`` pairs."""
+        return self._parameters
 
     @property
     def full_type(self) -> str:
         """``type/subtype`` form, parameters excluded."""
-        return f"{self.type}/{self.subtype}"
+        return f"{self._type}/{self._subtype}"
 
     @property
     def charset(self) -> str | None:
@@ -124,7 +157,7 @@ class MediaType:
         unknown charset to ``None`` (rather than raising) lets callers fall
         back to a default encoding instead of failing to decode a body.
         """
-        for key, value in self.parameters:
+        for key, value in self._parameters:
             if key == "charset":
                 try:
                     codecs.lookup(value)
@@ -139,15 +172,21 @@ class MediaType:
         Treats ``*`` in either the type or subtype position as a wildcard.
         Parameters are ignored.
         """
-        type_matches = self.type == "*" or self.type == other.type
-        subtype_matches = self.subtype == "*" or self.subtype == other.subtype
+        type_matches = self._type == "*" or self._type == other._type
+        subtype_matches = self._subtype == "*" or self._subtype == other._subtype
         return type_matches and subtype_matches
 
+    def __repr__(self) -> str:
+        return (
+            f"MediaType(type={self._type!r}, subtype={self._subtype!r}, "
+            f"parameters={self._parameters!r})"
+        )
+
     def __str__(self) -> str:
-        if not self.parameters:
-            return f"{self.type}/{self.subtype}"
-        formatted = ";".join(f"{key}={_quote_if_needed(value)}" for key, value in self.parameters)
-        return f"{self.type}/{self.subtype};{formatted}"
+        if not self._parameters:
+            return f"{self._type}/{self._subtype}"
+        formatted = ";".join(f"{key}={_quote_if_needed(value)}" for key, value in self._parameters)
+        return f"{self._type}/{self._subtype};{formatted}"
 
     @classmethod
     def of(
@@ -168,15 +207,12 @@ class MediaType:
             raise ValueError("type must not be blank")
         if not subtype or not subtype.strip():
             raise ValueError("subtype must not be blank")
-        normalized_type = type.lower()
-        normalized_subtype = subtype.lower()
-        if normalized_type == "*" and normalized_subtype != "*":
-            raise ValueError(f"Invalid media type: type=*, subtype={normalized_subtype}")
-        # Parameter *keys* are case-insensitive per RFC 7231, but *values*
-        # are not — multipart boundaries, for example, must round-trip
-        # exactly. Only the key is lower-cased here.
-        params = tuple(sorted((k.lower(), v) for k, v in parameters.items())) if parameters else ()
-        return cls(normalized_type, normalized_subtype, params)
+        # ``__post_init__`` lower-cases and sorts; validate the wildcard rule
+        # against the same normalised form it will produce.
+        if type.lower() == "*" and subtype.lower() != "*":
+            raise ValueError(f"Invalid media type: type=*, subtype={subtype.lower()}")
+        params = tuple(parameters.items()) if parameters else ()
+        return cls(type, subtype, params)
 
     @classmethod
     def parse(cls, value: str) -> Self:
