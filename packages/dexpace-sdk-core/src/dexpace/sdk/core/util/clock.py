@@ -17,6 +17,8 @@ dependency on the concrete implementation.
 from __future__ import annotations
 
 import asyncio
+import math
+import threading
 import time
 from typing import Protocol, runtime_checkable
 
@@ -24,6 +26,7 @@ __all__ = [
     "ASYNC_SYSTEM_CLOCK",
     "SYSTEM_CLOCK",
     "AsyncClock",
+    "CancellationToken",
     "Clock",
 ]
 
@@ -128,3 +131,57 @@ SYSTEM_CLOCK: Clock = _SystemClock()
 
 ASYNC_SYSTEM_CLOCK: AsyncClock = _AsyncSystemClock()
 """Process-wide default `AsyncClock` backed by `asyncio`."""
+
+
+class CancellationToken:
+    """Cooperative cancellation handle enabling an interruptible sleep.
+
+    Backed by a single shared `threading.Event`. A thread blocked in `sleep`
+    wakes immediately when another thread (or a scheduled callback) calls
+    `cancel`, so a long wait can be aborted cooperatively rather than running
+    to completion. Cancellation is one-way and permanent — once cancelled, the
+    token stays cancelled.
+
+    Contrast with `Clock.sleep`, which treats a non-positive duration as a
+    lenient no-op: the interruptible `sleep` here rejects negative (and NaN)
+    durations, because a negative wait in cancellation-aware code signals a
+    programming error rather than "don't wait".
+    """
+
+    __slots__ = ("_event",)
+
+    def __init__(self) -> None:
+        """Initialise an un-cancelled token."""
+        self._event = threading.Event()
+
+    @property
+    def cancelled(self) -> bool:
+        """Return whether `cancel` has been called."""
+        return self._event.is_set()
+
+    def cancel(self) -> None:
+        """Cancel the token, waking any in-progress `sleep` immediately.
+
+        Idempotent — cancelling an already-cancelled token is a no-op.
+        """
+        self._event.set()
+
+    def sleep(self, duration: float) -> bool:
+        """Block up to ``duration`` seconds, returning early if cancelled.
+
+        Args:
+            duration: Seconds to wait. Zero returns immediately. A positive
+                infinity waits until cancelled. Negative or NaN durations are
+                rejected.
+
+        Returns:
+            ``True`` if the full duration elapsed without cancellation;
+            ``False`` if the token was (or became) cancelled first.
+
+        Raises:
+            ValueError: If ``duration`` is negative or NaN.
+        """
+        if math.isnan(duration) or duration < 0:
+            raise ValueError(f"sleep duration must be non-negative, got {duration!r}")
+        cancelled = self._event.wait(duration)
+        return not cancelled

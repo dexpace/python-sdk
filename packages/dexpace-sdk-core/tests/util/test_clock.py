@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from itertools import pairwise
 
@@ -14,6 +15,7 @@ from dexpace.sdk.core.util import (
     ASYNC_SYSTEM_CLOCK,
     SYSTEM_CLOCK,
     AsyncClock,
+    CancellationToken,
     Clock,
 )
 from dexpace.sdk.core.util.clock import _AsyncSystemClock, _SystemClock
@@ -146,3 +148,73 @@ def test_fake_clock_sleep_advances_both_wall_and_monotonic() -> None:
     clock.sleep(5.0)
     assert clock.now() == pytest.approx(5.0)
     assert clock.monotonic() == pytest.approx(5.0)
+
+
+# ---------------------------------------------------------------------------
+# CancellationToken — interruptible sleep
+
+
+def test_cancellation_token_starts_uncancelled() -> None:
+    token = CancellationToken()
+    assert token.cancelled is False
+
+
+def test_cancellation_token_cancel_sets_flag() -> None:
+    token = CancellationToken()
+    token.cancel()
+    assert token.cancelled is True
+
+
+def test_cancellation_token_cancel_is_idempotent() -> None:
+    token = CancellationToken()
+    token.cancel()
+    token.cancel()
+    assert token.cancelled is True
+
+
+def test_sleep_completes_when_not_cancelled() -> None:
+    """A short sleep runs to completion and reports ``True``."""
+    token = CancellationToken()
+    start = time.monotonic()
+    completed = token.sleep(0.05)
+    elapsed = time.monotonic() - start
+    assert completed is True
+    assert elapsed >= 0.04
+
+
+def test_sleep_returns_immediately_when_already_cancelled() -> None:
+    token = CancellationToken()
+    token.cancel()
+    start = time.monotonic()
+    completed = token.sleep(10.0)
+    elapsed = time.monotonic() - start
+    assert completed is False
+    assert elapsed < 0.05
+
+
+def test_sleep_wakes_early_when_cancelled_from_another_thread() -> None:
+    token = CancellationToken()
+    threading.Timer(0.02, token.cancel).start()
+    start = time.monotonic()
+    completed = token.sleep(10.0)
+    elapsed = time.monotonic() - start
+    assert completed is False
+    # Cancelled well before the 10s budget would have elapsed.
+    assert elapsed < 1.0
+
+
+def test_sleep_zero_is_noop_and_completes() -> None:
+    token = CancellationToken()
+    assert token.sleep(0.0) is True
+
+
+def test_sleep_rejects_negative_duration() -> None:
+    token = CancellationToken()
+    with pytest.raises(ValueError):
+        token.sleep(-1.0)
+
+
+def test_sleep_rejects_nan_duration() -> None:
+    token = CancellationToken()
+    with pytest.raises(ValueError):
+        token.sleep(float("nan"))
