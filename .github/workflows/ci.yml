@@ -68,6 +68,9 @@ jobs:
       - name: Check MIT headers
         run: uv run --no-project python tools/check_mit_headers.py
 
+      - name: Check runtime dependency budget
+        run: uv run --no-project python tools/check_dependency_audit.py
+
       - name: Build core + stdlib wheels
         run: |
           uv build --package dexpace-sdk-core --wheel -o dist
@@ -80,3 +83,25 @@ jobs:
             dist/dexpace_sdk_core-*.whl \
             dist/dexpace_sdk_http_stdlib-*.whl
           /tmp/wheel-smoke/bin/python tools/smoke_wheel_import.py
+
+  coverage:
+    name: coverage gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Sync workspace
+        run: uv sync
+
+      # Blocking aggregate line+branch coverage gate. The 80% floor lives in
+      # [tool.coverage.report].fail_under in pyproject.toml; pytest-cov exits
+      # non-zero when the total drops below it.
+      - name: Run coverage gate
+        run: uv run pytest -q --cov --cov-report=term-missing

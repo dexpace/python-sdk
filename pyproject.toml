@@ -46,8 +46,33 @@ markers = [
     "req(requirement_id): mark a test as covering a spec requirement id (e.g. req(\"RETRY-19\")); consumed by tools/traceability_audit.py",
 ]
 filterwarnings = [
+    # First-party suites run warnings-as-errors. The bare "error" entry already
+    # promotes every category (DeprecationWarning included); the explicit
+    # "error::DeprecationWarning" line pins that NFR contract literally, so the
+    # gate keeps catching deprecations even if "error" is ever narrowed.
     "error",
+    "error::DeprecationWarning",
+    # Scoped waiver: pytest-asyncio raises its own DeprecationWarnings from
+    # inside the plugin. Ignore only those (listed last so it wins over the
+    # error filters above) — first-party deprecations still fail the run.
     "ignore::DeprecationWarning:pytest_asyncio.*",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["dexpace.sdk"]
+
+[tool.coverage.report]
+# Aggregate line+branch coverage gate, enforced as blocking in CI (the
+# `coverage` job in .github/workflows/ci.yml). The tree currently measures
+# ~94%; 80% is the contractual floor that holds the line against regressions,
+# not a target to code down to.
+fail_under = 80
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
 ]
 
 [tool.ruff]
