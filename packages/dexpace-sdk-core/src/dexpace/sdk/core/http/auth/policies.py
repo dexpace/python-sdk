@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import threading
 from typing import TYPE_CHECKING, Any
 
 from ...errors import ClientAuthenticationError, ServiceRequestError
@@ -24,7 +22,12 @@ from .credentials import (
     KeyCredential,
     TokenCredential,
 )
-from .token_cache import InMemoryTokenCache, TokenCache
+from .token_cache import (
+    InMemoryTokenCache,
+    TokenCache,
+    _AsyncSingleFlight,
+    _SyncSingleFlight,
+)
 
 if TYPE_CHECKING:
     from ...pipeline.context import PipelineContext
@@ -105,8 +108,8 @@ class BearerTokenPolicy(Policy):
     """Acquire and apply an OAuth bearer token.
 
     Caches a single token in memory by default; pass a shared ``TokenCache``
-    to share tokens across credentials. Refreshes when ``needs_refresh``
-    returns True, or after a 401 response with ``WWW-Authenticate``. Enforces
+    to share tokens across credentials. Refreshes proactively as the token
+    nears expiry, or after a 401 response with ``WWW-Authenticate``. Enforces
     HTTPS unless ``enforce_https=False`` is passed in ``ctx.options``.
 
     The token is acquired and stamped only while the request stays on the
@@ -116,9 +119,14 @@ class BearerTokenPolicy(Policy):
     stamp a token — so the bearer token never reaches a foreign host. The
     HTTPS-enforcement check applies only on that same-origin stamping path.
 
-    Concurrent refreshes are serialized via a ``threading.Lock`` using a
-    double-checked pattern so the credential's ``get_token_info`` is invoked
-    at most once per refresh window even under heavy concurrent send pressure.
+    Token serving is delegated to a `_SyncSingleFlight` coordinator: reads of
+    the published token are wait-free, and concurrent refreshes are collapsed
+    under a ``threading.Lock`` (double-checked) so the credential's
+    ``get_token_info`` runs at most once per refresh window even under heavy
+    concurrent send pressure. A token is refreshed once it comes within 30
+    seconds of expiry; a provider that returns ``None`` or an already-expired
+    token raises rather than caching a bad token, and a throwing provider
+    propagates without being cached so the next request retries it.
 
     The ``on_challenge`` hook is a no-op by default; subclasses override it
     to handle CAE/claims challenges. Alternatively, callers can pass a
@@ -133,10 +141,9 @@ class BearerTokenPolicy(Policy):
         "_audience",
         "_cache",
         "_challenge_handler",
-        "_clock",
         "_credential",
-        "_lock",
         "_scopes",
+        "_single_flight",
     )
 
     def __init__(
@@ -154,8 +161,8 @@ class BearerTokenPolicy(Policy):
         self._scopes = scopes
         self._cache: TokenCache = cache or InMemoryTokenCache()
         self._audience = audience
-        self._clock: Clock = clock if clock is not None else SYSTEM_CLOCK
-        self._lock = threading.Lock()
+        resolved_clock: Clock = clock if clock is not None else SYSTEM_CLOCK
+        self._single_flight = _SyncSingleFlight(self._cache, scopes, audience, resolved_clock)
         self._challenge_handler = challenge_handler
 
     def send(self, request: Request, ctx: PipelineContext) -> Response:
@@ -260,26 +267,28 @@ class BearerTokenPolicy(Policy):
             raise ServiceRequestError(
                 "Bearer token authentication is not permitted for non-HTTPS URLs."
             )
-        token = self._cache.get(self._scopes, self._audience)
-        if force_refresh or token is None or token.needs_refresh(clock=self._clock):
-            with self._lock:
-                # Double-checked: another thread may have refreshed while we waited.
-                token = self._cache.get(self._scopes, self._audience)
-                if force_refresh or token is None or token.needs_refresh(clock=self._clock):
-                    options = _token_options(ctx.options)
-                    token = self._credential.get_token_info(*self._scopes, options=options)
-                    self._cache.set(self._scopes, token, self._audience)
-        assert token is not None  # Narrowed by the refresh branch above.
+        options = _token_options(ctx.options)
+
+        def _provider() -> AccessTokenInfo:
+            return self._credential.get_token_info(*self._scopes, options=options)
+
+        token = self._single_flight.get_token(_provider, force=force_refresh)
         return request.with_header("Authorization", f"{token.token_type} {token.token}")
 
 
 class AsyncBearerTokenPolicy(AsyncPolicy):
     """Async twin of ``BearerTokenPolicy``.
 
-    Concurrent refreshes are serialized via an ``asyncio.Lock`` using a
-    double-checked pattern; the underlying ``AsyncTokenCredential`` is
-    invoked at most once per refresh window even when many tasks call
-    ``send`` concurrently.
+    Token serving is delegated to an `_AsyncSingleFlight` coordinator that
+    implements a three-zone refresh strategy: a fresh token is served
+    immediately; a token inside the 30-second refresh margin is served while a
+    non-fatal background refresh is kicked off; and an expired (or absent)
+    token blocks the caller on a single shared fetch. That fetch is guarded by
+    an ``asyncio.Lock`` and awaited through ``asyncio.shield`` so the
+    ``AsyncTokenCredential`` runs at most once per refresh window and one
+    waiter's cancellation cannot abort the fetch the others depend on. A
+    provider that returns ``None`` or an already-expired token raises, and a
+    throwing provider propagates without being cached.
 
     Like the sync policy, an optional ``challenge_handler`` plugs in a
     scheme-aware handler (e.g. ``DigestChallengeHandler``); it is consulted
@@ -301,10 +310,9 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         "_audience",
         "_cache",
         "_challenge_handler",
-        "_clock",
         "_credential",
-        "_lock",
         "_scopes",
+        "_single_flight",
     )
 
     def __init__(
@@ -322,11 +330,11 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         self._scopes = scopes
         self._cache: TokenCache = cache or InMemoryTokenCache()
         self._audience = audience
-        # ``AsyncClock`` is forwarded to the sync ``needs_refresh`` helper:
-        # only ``now()`` is consulted there (which is sync on both Clock
-        # variants), so the protocol mismatch on ``sleep`` is irrelevant.
-        self._clock: AsyncClock = clock if clock is not None else ASYNC_SYSTEM_CLOCK
-        self._lock = asyncio.Lock()
+        # Only ``clock.now()`` is consulted by the coordinator (a sync read on
+        # both Clock variants), so an ``AsyncClock`` slots in without its
+        # awaitable ``sleep`` ever being needed.
+        resolved_clock: AsyncClock = clock if clock is not None else ASYNC_SYSTEM_CLOCK
+        self._single_flight = _AsyncSingleFlight(self._cache, scopes, audience, resolved_clock)
         self._challenge_handler = challenge_handler
 
     async def send(self, request: Request, ctx: PipelineContext) -> AsyncResponse:
@@ -427,16 +435,12 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
             raise ServiceRequestError(
                 "Bearer token authentication is not permitted for non-HTTPS URLs."
             )
-        token = self._cache.get(self._scopes, self._audience)
-        if force_refresh or token is None or token.needs_refresh(clock=self._clock):
-            async with self._lock:
-                # Double-checked: another task may have refreshed while we waited.
-                token = self._cache.get(self._scopes, self._audience)
-                if force_refresh or token is None or token.needs_refresh(clock=self._clock):
-                    options = _token_options(ctx.options)
-                    token = await self._credential.get_token_info(*self._scopes, options=options)
-                    self._cache.set(self._scopes, token, self._audience)
-        assert token is not None  # Narrowed by the refresh branch above.
+        options = _token_options(ctx.options)
+
+        async def _provider() -> AccessTokenInfo:
+            return await self._credential.get_token_info(*self._scopes, options=options)
+
+        token = await self._single_flight.get_token(_provider, force=force_refresh)
         return request.with_header("Authorization", f"{token.token_type} {token.token}")
 
 
