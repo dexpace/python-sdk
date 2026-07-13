@@ -12,9 +12,11 @@ import pytest
 
 from dexpace.sdk.core.http.common import Protocol, Url
 from dexpace.sdk.core.http.context import (
+    CallContext,
     ContextStore,
     DispatchContext,
     ExchangeContext,
+    RequestContext,
 )
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.response import Response, Status
@@ -250,3 +252,127 @@ def test_context_store_stress_no_lost_or_corrupted_entries() -> None:
     assert len(all_keys) == len(set(all_keys)) == workers * per_worker
     # Every entry was evicted ⇒ no leak under the shared trace id.
     assert ContextStore.contexts_for_trace(trace_id) == []
+
+
+# --- Promotion-chain conformance certification (PY-M3-01) --------------------
+
+_CONTEXT_CLASSES: tuple[type[CallContext], ...] = (
+    CallContext,
+    DispatchContext,
+    RequestContext,
+    ExchangeContext,
+)
+
+
+def test_all_links_are_call_contexts() -> None:
+    """Every link in the chain is a `CallContext` subclass."""
+    assert issubclass(DispatchContext, CallContext)
+    assert issubclass(RequestContext, CallContext)
+    assert issubclass(ExchangeContext, CallContext)
+
+
+def test_all_links_are_context_managers() -> None:
+    """Each concrete context implements the context-manager protocol."""
+    for cls in (DispatchContext, RequestContext, ExchangeContext):
+        assert hasattr(cls, "__enter__")
+        assert hasattr(cls, "__exit__")
+
+
+def test_every_link_carries_instrumentation_context() -> None:
+    """Each concrete context exposes an `InstrumentationContext`."""
+    instr = _instrumentation("0" * 16 + "7")
+    dispatch = DispatchContext(instrumentation_context=instr)
+    request_ctx = dispatch.to_request_context(_request())
+    try:
+        exchange = request_ctx.to_exchange_context(_response(request_ctx.request))
+        for ctx in (dispatch, request_ctx, exchange):
+            assert isinstance(ctx.instrumentation_context, InstrumentationContext)
+    finally:
+        request_ctx.close()
+
+
+def test_promotion_shares_one_bundle_not_three_copies() -> None:
+    """Promotion reuses the same payload object; it never copies it.
+
+    The `InstrumentationContext` is the single shared bundle threaded through
+    ``DispatchContext`` -> ``RequestContext`` -> ``ExchangeContext``, and the
+    per-hop ``Request`` object is likewise shared by reference — proving each
+    promotion promotes one bundle rather than materialising an independent copy.
+    """
+    instr = _instrumentation("0" * 16 + "8")
+    req = _request()
+    dispatch = DispatchContext(instrumentation_context=instr)
+    request_ctx = dispatch.to_request_context(req)
+    try:
+        exchange = request_ctx.to_exchange_context(_response(req))
+        # The instrumentation bundle is the *same object* end to end.
+        assert dispatch.instrumentation_context is instr
+        assert request_ctx.instrumentation_context is instr
+        assert exchange.instrumentation_context is instr
+        # The request reference is shared, not deep-copied, across promotion.
+        assert request_ctx.request is req
+        assert exchange.request is req
+    finally:
+        request_ctx.close()
+
+
+def test_registration_happens_at_promotion_not_construction() -> None:
+    """Constructing a `DispatchContext` does not touch the store.
+
+    Registration is a side effect of promotion, so a freshly built dispatch
+    context is absent from the store until ``to_request_context`` runs. Each
+    call draws its own counter-suffixed key (CTX-4), so presence is checked via
+    ``contexts_for_trace`` / the promoted context's own ``store_key`` rather
+    than a bare trace-id lookup.
+    """
+    instr = _instrumentation("0" * 16 + "9")
+    trace_id = instr.trace_id.value
+    dispatch = DispatchContext(instrumentation_context=instr)
+    assert dispatch.store_key is None
+    assert ContextStore.contexts_for_trace(trace_id) == []
+    try:
+        request_ctx = dispatch.to_request_context(_request())
+        assert request_ctx.store_key is not None
+        assert ContextStore.get(request_ctx.store_key) is request_ctx
+    finally:
+        request_ctx.close()
+
+
+def test_with_block_evicts_context_on_exit() -> None:
+    """A ``with`` block registers, exposes, then evicts the context on exit."""
+    instr = _instrumentation("0" * 16 + "a")
+    dispatch = DispatchContext(instrumentation_context=instr)
+    request_ctx = dispatch.to_request_context(_request())
+    key = request_ctx.store_key
+    assert key is not None
+    assert ContextStore.get(key) is request_ctx
+    with request_ctx as entered:
+        assert entered is request_ctx
+        assert ContextStore.get(key) is request_ctx
+    assert ContextStore.get(key) is None
+
+
+def test_with_block_evicts_even_when_body_raises() -> None:
+    """The context is evicted on exit even if the ``with`` body raises."""
+    instr = _instrumentation("0" * 16 + "b")
+    dispatch = DispatchContext(instrumentation_context=instr)
+    request_ctx = dispatch.to_request_context(_request())
+    key = request_ctx.store_key
+    assert key is not None
+    with pytest.raises(RuntimeError, match="boom"), request_ctx:
+        assert ContextStore.get(key) is request_ctx
+        raise RuntimeError("boom")
+    assert ContextStore.get(key) is None
+
+
+def test_no_context_class_relies_on_del() -> None:
+    """No context class defines ``__del__``.
+
+    GC finalisers must never be the eviction mechanism; eviction is explicit
+    via ``close`` / the ``with`` block. This audits the class namespaces (not
+    just instances) so an inherited or dataclass-synthesised finaliser would
+    still be caught.
+    """
+    for cls in _CONTEXT_CLASSES:
+        assert "__del__" not in cls.__dict__, f"{cls.__name__} must not define __del__"
+        assert getattr(cls, "__del__", None) is None
