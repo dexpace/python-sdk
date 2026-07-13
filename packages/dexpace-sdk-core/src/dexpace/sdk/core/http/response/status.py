@@ -14,14 +14,16 @@ class Status(IntEnum):
     Inheriting from `int` so callers can compare against integers and
     range-check directly: ``response.status == 200`` or ``200 <= status < 300``.
 
-    Lookup is lenient: `Status(code)` for any integer in the HTTP range
-    100..599 that is not a named member returns a synthesized pseudo-member
-    named ``UNKNOWN_<code>`` carrying the raw integer value. This lets
-    responses with unregistered-but-valid codes (for example ``218`` from
-    Apache or ``599`` from a proxy) flow through the SDK with their band
-    classification (`is_success`, `is_redirect`, ...) and integer comparisons
-    intact, instead of being discarded. Integers outside 100..599 (for
-    example ``42`` or ``1000``) remain invalid and raise `ValueError`.
+    Lookup is total over integers: `Status(code)` for *any* integer that is
+    not a named member returns a synthesized pseudo-member named
+    ``UNKNOWN_<code>`` carrying the raw integer value, and never raises. This
+    lets responses with unregistered or outright unusual codes — a vendor
+    ``499`` from nginx, a ``520``..``526`` from Cloudflare, or a code outside
+    the 100..599 band from a broken proxy — flow through the SDK with their
+    band classification (`is_success`, `is_redirect`, ...) and integer
+    comparisons intact, instead of being discarded before a policy can react.
+    Equality is by code (`int` semantics): ``Status(499) == 499``. Only a
+    non-integer lookup (for example ``Status("200")``) raises `ValueError`.
     """
 
     # 1xx Informational
@@ -98,17 +100,22 @@ class Status(IntEnum):
 
     @classmethod
     def _missing_(cls, value: object) -> Status | None:
-        """Synthesize a pseudo-member for an unregistered valid HTTP code.
+        """Synthesize a pseudo-member for any unregistered HTTP code.
+
+        Keeping the lookup total over integers means a broken or vendor-only
+        code never costs the SDK a live response: it is surfaced as a
+        ``Status`` carrying the raw int, band-classifiable and comparable,
+        rather than raising and forcing the caller to discard the exchange.
 
         Args:
             value: The lookup value passed to `Status(value)`.
 
         Returns:
-            A pseudo-member carrying `value` when it is an integer in the
-            HTTP range 100..599 with no named member, or `None` to let the
-            enum machinery raise `ValueError` for any other input.
+            A pseudo-member carrying `value` when it is an integer with no
+            named member, or `None` to let the enum machinery raise
+            `ValueError` for a non-integer input.
         """
-        if isinstance(value, int) and 100 <= value <= 599:
+        if isinstance(value, int):
             pseudo = int.__new__(cls, value)
             pseudo._name_ = f"UNKNOWN_{value}"
             pseudo._value_ = value
