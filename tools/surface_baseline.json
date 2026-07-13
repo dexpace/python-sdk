@@ -135,6 +135,12 @@
       "dexpace.sdk.core.errors.serialization": {
         "DeserializationError": {
           "bases": [
+            "SerdeError"
+          ],
+          "methods": {}
+        },
+        "SerdeError": {
+          "bases": [
             "SdkError",
             "ValueError"
           ],
@@ -142,8 +148,7 @@
         },
         "SerializationError": {
           "bases": [
-            "SdkError",
-            "ValueError"
+            "SerdeError"
           ],
           "methods": {}
         }
@@ -1332,6 +1337,7 @@
           "bases": [],
           "methods": {
             "deserializer": "deserializer(self) -> JsonDeserializer",
+            "media_type": "media_type(self) -> MediaType",
             "serializer": "serializer(self) -> JsonSerializer"
           }
         },
@@ -1339,6 +1345,7 @@
           "bases": [],
           "methods": {
             "serialize": "serialize(self, value: Any) -> str",
+            "serialize_into": "serialize_into(self, value: Any, buffer: bytearray | memoryview, offset: int) -> int",
             "serialize_to_bytes": "serialize_to_bytes(self, value: Any) -> bytes",
             "serialize_to_stream": "serialize_to_stream(self, value: Any, stream: BinaryIO) -> None"
           }
@@ -1361,6 +1368,7 @@
           ],
           "methods": {
             "deserializer": "deserializer(self) -> Deserializer",
+            "media_type": "media_type(self) -> MediaType",
             "serializer": "serializer(self) -> Serializer"
           }
         },
@@ -1447,6 +1455,7 @@
         "ResourceNotModifiedError",
         "ResponseNotReadError",
         "SdkError",
+        "SerdeError",
         "SerializationError",
         "ServiceRequestError",
         "ServiceRequestTimeoutError",
