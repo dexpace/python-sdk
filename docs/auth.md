@@ -33,10 +33,17 @@ All concrete credentials redact secrets in their `__repr__`.
 - Calls `AccessTokenInfo.needs_refresh()` before each request; refreshes
   proactively when `refresh_on` has passed or `expires_on - leeway`
   (default 300 s) has been reached.
-- On any 401 response, invalidates the cached token. If the response
-  also carries a `WWW-Authenticate` header, then calls
-  `on_challenge(request, response)`. Override `on_challenge` in a
-  subclass to handle CAE / claims-challenge flows.
+- On a 401 response, invalidates the cached token — but only when that
+  token still matches the `Authorization` header this request carried, so
+  a stale rejection cannot discard a token a concurrent refresh already
+  replaced. A 401 without a `WWW-Authenticate` header is then surfaced
+  unchanged. When the header is present, `on_challenge(request, response)`
+  is consulted; override it in a subclass to handle CAE / claims-challenge
+  flows. If it authorizes a retry, the request is re-issued at most once
+  with a refreshed token — but a single-use (non-replayable) body is
+  surfaced un-replayed rather than corrupting a half-consumed stream. The
+  replayed response is returned regardless of its status; there is no
+  challenge loop. Both the sync and async policies enforce this identically.
 
 ## Token cache
 

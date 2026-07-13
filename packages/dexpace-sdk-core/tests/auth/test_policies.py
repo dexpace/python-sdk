@@ -14,7 +14,7 @@ import pytest
 
 from dexpace.sdk.core.client.async_http_client import AsyncHttpClient
 from dexpace.sdk.core.client.http_client import HttpClient
-from dexpace.sdk.core.errors import ClientAuthenticationError, ServiceRequestError
+from dexpace.sdk.core.errors import ServiceRequestError
 from dexpace.sdk.core.http.auth import (
     AccessTokenInfo,
     AsyncBearerTokenPolicy,
@@ -24,12 +24,13 @@ from dexpace.sdk.core.http.auth import (
     BasicChallengeHandler,
     BearerTokenPolicy,
     DigestChallengeHandler,
+    InMemoryTokenCache,
     KeyCredential,
     KeyCredentialPolicy,
 )
 from dexpace.sdk.core.http.common import Protocol, Url
 from dexpace.sdk.core.http.context import DispatchContext
-from dexpace.sdk.core.http.request import Method, Request
+from dexpace.sdk.core.http.request import Method, Request, RequestBody
 from dexpace.sdk.core.http.response import AsyncResponse, Response, Status
 from dexpace.sdk.core.http.response.async_response_body import AsyncResponseBody
 from dexpace.sdk.core.http.response.response_body import ResponseBody
@@ -235,16 +236,21 @@ def test_bearer_token_policy_enforces_https() -> None:
         )
 
 
-def test_bearer_token_policy_raises_on_401_without_challenge() -> None:
+def test_bearer_token_policy_surfaces_401_without_challenge() -> None:
+    """A 401 without ``WWW-Authenticate`` is surfaced unchanged, hook untouched."""
     client = _CapturingClient(status=Status.UNAUTHORIZED)
     cred = _StaticCredential()
     policy = BearerTokenPolicy(cred, "scope-a")
-    with Pipeline(client, policies=[policy]) as p, pytest.raises(ClientAuthenticationError):
-        p.run(_request(), DispatchContext(_instr("0" * 16 + "8")))
+    with Pipeline(client, policies=[policy]) as p:
+        response = p.run(_request(), DispatchContext(_instr("0" * 16 + "8")))
+    assert response.status is Status.UNAUTHORIZED
+    # No challenge header: no re-issue, no extra token acquisition.
+    assert len(client.calls) == 1
+    assert cred.calls == 1
 
 
 def test_bearer_token_policy_on_challenge_hook() -> None:
-    """Subclass that handles the challenge by re-requesting once."""
+    """Subclass that authorizes one replay; the still-401 result is surfaced."""
 
     client = _CapturingClient(status=Status.UNAUTHORIZED, www_auth=True)
     cred = _StaticCredential()
@@ -254,10 +260,11 @@ def test_bearer_token_policy_on_challenge_hook() -> None:
             return True
 
     policy = _Retrying(cred, "scope-a")
-    with Pipeline(client, policies=[policy]) as p, pytest.raises(ClientAuthenticationError):
-        # Server keeps responding 401; eventually the policy gives up.
-        p.run(_request(), DispatchContext(_instr("0" * 16 + "9")))
-    # Two attempts: initial + one re-issue after challenge.
+    with Pipeline(client, policies=[policy]) as p:
+        # Server keeps responding 401; after one replay the response surfaces.
+        response = p.run(_request(), DispatchContext(_instr("0" * 16 + "9")))
+    assert response.status is Status.UNAUTHORIZED
+    # Two attempts: initial + one re-issue after challenge, then no loop.
     assert len(client.calls) == 2
 
 
@@ -513,9 +520,10 @@ def test_challenge_handler_can_handle_false_falls_through() -> None:
             return False
 
     policy = _Spy(cred, "scope-a", challenge_handler=handler)
-    with Pipeline(client, policies=[policy]) as p, pytest.raises(ClientAuthenticationError):
-        p.run(_request(), DispatchContext(_instr("0" * 16 + "d")))
+    with Pipeline(client, policies=[policy]) as p:
+        response = p.run(_request(), DispatchContext(_instr("0" * 16 + "d")))
 
+    assert response.status is Status.UNAUTHORIZED
     assert handler.can_handle_calls == 1
     assert handler.handle_calls == 0
     assert on_challenge_calls == 1
@@ -712,9 +720,9 @@ async def test_async_challenge_handler_can_handle_false_falls_through() -> None:
 
     policy = _Spy(cred, "scope-a", challenge_handler=handler)
     async with AsyncPipeline(client, policies=[policy]) as p:
-        with pytest.raises(ClientAuthenticationError):
-            await p.run(_request(), DispatchContext(_instr("0" * 15 + "14")))
+        response = await p.run(_request(), DispatchContext(_instr("0" * 15 + "14")))
 
+    assert response.status is Status.UNAUTHORIZED
     assert handler.can_handle_calls == 1
     assert handler.handle_calls == 0
     assert on_challenge_calls == 1
@@ -881,3 +889,211 @@ async def test_async_on_challenge_closes_discarded_401_response() -> None:
 
     assert client.bodies[0].closed, "discarded 401 response leaked: body was not closed"
     assert not client.bodies[1].closed, "final response handed to caller must stay open"
+
+
+# --------------------------------------------------------------------------- #
+# Replay is gated on body replayability — identically on both pillars          #
+# --------------------------------------------------------------------------- #
+
+
+class _AlwaysRetry(BearerTokenPolicy):
+    """Bearer policy whose hook always authorizes a single replay."""
+
+    def on_challenge(self, request: Request, response: Response) -> bool:
+        del request, response
+        return True
+
+
+class _AsyncAlwaysRetry(AsyncBearerTokenPolicy):
+    """Async twin of ``_AlwaysRetry``."""
+
+    async def on_challenge(self, request: Request, response: AsyncResponse) -> bool:
+        del request, response
+        return True
+
+
+def test_bearer_replays_replayable_body_after_challenge() -> None:
+    """A replayable body is re-issued once when the hook authorizes it."""
+    client = _ScriptedClient([(Status.UNAUTHORIZED, 'Bearer realm="x"'), (Status.OK, None)])
+    policy = _AlwaysRetry(_StaticCredential(), "scope-a")
+    with Pipeline(client, policies=[policy]) as p:
+        response = p.run(_request(), DispatchContext(_instr("0" * 15 + "40")))
+    assert response.status is Status.OK
+    assert len(client.calls) == 2
+
+
+def test_bearer_surfaces_401_for_nonreplayable_body() -> None:
+    """A single-use body surfaces the 401 un-replayed instead of resending it."""
+    client = _ScriptedClient([(Status.UNAUTHORIZED, 'Bearer realm="x"')])
+    body = RequestBody.from_iter(iter([b"hello", b"world"]))
+    request = Request(method=Method.POST, url=Url.parse("https://api.example.com/"), body=body)
+    policy = _AlwaysRetry(_StaticCredential(), "scope-a")
+    with Pipeline(client, policies=[policy]) as p:
+        response = p.run(request, DispatchContext(_instr("0" * 15 + "41")))
+    assert response.status is Status.UNAUTHORIZED
+    # No replay: the single-use body was never re-sent, so it stays intact.
+    assert len(client.calls) == 1
+    assert not body.is_replayable()
+
+
+async def test_async_bearer_replays_replayable_body_after_challenge() -> None:
+    """Async twin: a replayable body is re-issued once on challenge."""
+    client = _ScriptedAsyncClient(
+        [(Status.UNAUTHORIZED, "WWW-Authenticate", 'Bearer realm="x"'), (Status.OK, None, None)]
+    )
+    policy = _AsyncAlwaysRetry(_StaticAsyncCredential(), "scope-a")
+    async with AsyncPipeline(client, policies=[policy]) as p:
+        response = await p.run(_request(), DispatchContext(_instr("0" * 15 + "42")))
+    assert response.status is Status.OK
+    assert len(client.calls) == 2
+
+
+async def test_async_bearer_surfaces_401_for_nonreplayable_body() -> None:
+    """Async twin: a single-use body surfaces the 401 un-replayed."""
+    client = _ScriptedAsyncClient([(Status.UNAUTHORIZED, "WWW-Authenticate", 'Bearer realm="x"')])
+    body = RequestBody.from_iter(iter([b"hello", b"world"]))
+    request = Request(method=Method.POST, url=Url.parse("https://api.example.com/"), body=body)
+    policy = _AsyncAlwaysRetry(_StaticAsyncCredential(), "scope-a")
+    async with AsyncPipeline(client, policies=[policy]) as p:
+        response = await p.run(request, DispatchContext(_instr("0" * 15 + "43")))
+    assert response.status is Status.UNAUTHORIZED
+    assert len(client.calls) == 1
+    assert not body.is_replayable()
+
+
+async def test_async_bearer_surfaces_401_without_challenge() -> None:
+    """Async twin: a 401 without ``WWW-Authenticate`` is surfaced unchanged."""
+    client = _CapturingAsyncClient(status=Status.UNAUTHORIZED)
+    cred = _StaticAsyncCredential()
+    policy = AsyncBearerTokenPolicy(cred, "scope-a")
+    async with AsyncPipeline(client, policies=[policy]) as p:
+        response = await p.run(_request(), DispatchContext(_instr("0" * 15 + "44")))
+    assert response.status is Status.UNAUTHORIZED
+    assert len(client.calls) == 1
+    assert cred.calls == 1
+
+
+# --------------------------------------------------------------------------- #
+# A throwing challenge hook closes the 401 before the exception propagates      #
+# --------------------------------------------------------------------------- #
+
+
+def test_sync_on_challenge_throw_closes_401_before_propagating() -> None:
+    """A raising sync hook releases the open 401 before re-raising."""
+    client = _BodyScriptedClient([(Status.UNAUTHORIZED, 'Bearer realm="x"')])
+
+    class _Boom(BearerTokenPolicy):
+        def on_challenge(self, request: Request, response: Response) -> bool:
+            del request, response
+            raise RuntimeError("boom")
+
+    policy = _Boom(_StaticCredential(), "scope-a")
+    with (
+        Pipeline(client, policies=[policy]) as p,
+        pytest.raises(RuntimeError, match="boom"),
+    ):
+        p.run(_request(), DispatchContext(_instr("0" * 15 + "50")))
+    assert client.bodies[0].closed, "throwing on_challenge leaked the 401 body"
+
+
+async def test_async_on_challenge_coroutine_throw_closes_401() -> None:
+    """A raising async coroutine hook releases the open 401 before re-raising."""
+    client = _AsyncBodyScriptedClient([(Status.UNAUTHORIZED, 'Bearer realm="x"')])
+
+    class _Boom(AsyncBearerTokenPolicy):
+        async def on_challenge(self, request: Request, response: AsyncResponse) -> bool:
+            del request, response
+            raise RuntimeError("boom")
+
+    policy = _Boom(_StaticAsyncCredential(), "scope-a")
+    async with AsyncPipeline(client, policies=[policy]) as p:
+        with pytest.raises(RuntimeError, match="boom"):
+            await p.run(_request(), DispatchContext(_instr("0" * 15 + "51")))
+    assert client.bodies[0].closed, "throwing async on_challenge leaked the 401 body"
+
+
+async def test_async_on_challenge_synchronous_throw_closes_401() -> None:
+    """A hook that throws synchronously (before a coroutine exists) still closes."""
+    client = _AsyncBodyScriptedClient([(Status.UNAUTHORIZED, 'Bearer realm="x"')])
+
+    class _Boom(AsyncBearerTokenPolicy):
+        def on_challenge(  # type: ignore[override]
+            self, request: Request, response: AsyncResponse
+        ) -> bool:
+            # Raises when *called*, before any awaitable is produced — the
+            # third hook-failure shape the async gate must guard against.
+            del request, response
+            raise RuntimeError("boom")
+
+    policy = _Boom(_StaticAsyncCredential(), "scope-a")
+    async with AsyncPipeline(client, policies=[policy]) as p:
+        with pytest.raises(RuntimeError, match="boom"):
+            await p.run(_request(), DispatchContext(_instr("0" * 15 + "52")))
+    assert client.bodies[0].closed, "synchronous on_challenge throw leaked the 401 body"
+
+
+# --------------------------------------------------------------------------- #
+# Eviction matches the stamped token, sparing a concurrently-refreshed one      #
+# --------------------------------------------------------------------------- #
+
+
+def test_bearer_eviction_matches_stamped_token_only() -> None:
+    """A stale 401 must not evict a token a concurrent refresh already replaced."""
+    cache = InMemoryTokenCache()
+    fresh = AccessTokenInfo(token="fresh", expires_on=int(time.time()) + 3600)
+
+    class _SwappingClient(HttpClient):
+        def __init__(self) -> None:
+            self.calls: list[Request] = []
+
+        def execute(self, request: Request) -> Response:
+            from dexpace.sdk.core.http.common import Headers
+
+            self.calls.append(request)
+            # A concurrent refresh lands before this stale 401 is handled: the
+            # cache now holds a different, still-valid token.
+            cache.set(("scope-a",), fresh)
+            return Response(
+                request=request,
+                protocol=Protocol.HTTP_1_1,
+                status=Status.UNAUTHORIZED,
+                headers=Headers([]),
+            )
+
+    policy = BearerTokenPolicy(_StaticCredential(token="stale"), "scope-a", cache=cache)
+    with Pipeline(_SwappingClient(), policies=[policy]) as p:
+        p.run(_request(), DispatchContext(_instr("0" * 15 + "45")))
+    # The stale 401 carried "Bearer stale"; eviction keyed on the stamped
+    # header must leave the newer "Bearer fresh" token untouched.
+    surviving = cache.get(("scope-a",))
+    assert surviving is not None
+    assert surviving.token == "fresh"
+
+
+async def test_async_bearer_eviction_matches_stamped_token_only() -> None:
+    """Async twin: a stale 401 leaves a concurrently-refreshed token intact."""
+    cache = InMemoryTokenCache()
+    fresh = AccessTokenInfo(token="fresh", expires_on=int(time.time()) + 3600)
+
+    class _SwappingAsyncClient(AsyncHttpClient):
+        def __init__(self) -> None:
+            self.calls: list[Request] = []
+
+        async def execute(self, request: Request) -> AsyncResponse:
+            from dexpace.sdk.core.http.common import Headers
+
+            self.calls.append(request)
+            cache.set(("scope-a",), fresh)
+            return AsyncResponse(
+                request=request,
+                protocol=Protocol.HTTP_1_1,
+                status=Status.UNAUTHORIZED,
+                headers=Headers([]),
+            )
+
+    policy = AsyncBearerTokenPolicy(_StaticAsyncCredential(token="stale"), "scope-a", cache=cache)
+    async with AsyncPipeline(_SwappingAsyncClient(), policies=[policy]) as p:
+        await p.run(_request(), DispatchContext(_instr("0" * 15 + "46")))
+    surviving = cache.get(("scope-a",))
+    assert surviving is not None
+    assert surviving.token == "fresh"
