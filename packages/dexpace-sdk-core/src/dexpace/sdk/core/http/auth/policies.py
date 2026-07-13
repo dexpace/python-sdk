@@ -44,7 +44,9 @@ class KeyCredentialPolicy(Policy):
     origin recorded on the first pass through the policy. When a downstream
     redirect reissues the request against a different origin (scheme, host,
     or effective port), the credential is withheld so it never reaches a
-    foreign host.
+    foreign host. On the same-origin stamping path the key is refused for a
+    non-HTTPS URL (opt out per call with ``enforce_https=False``) so it is
+    never read or written onto a plaintext request.
 
     Attributes:
         header_name: Header to write.
@@ -72,8 +74,15 @@ class KeyCredentialPolicy(Policy):
     def send(self, request: Request, ctx: PipelineContext) -> Response:
         if _crosses_recorded_origin(request, ctx):
             return self.next.send(request, ctx)
+        _enforce_https(request, ctx)
         value = f"{self.prefix}{self._credential.key}"
         return self.next.send(request.with_header(self.header_name, value), ctx)
+
+    def __repr__(self) -> str:
+        return (
+            f"KeyCredentialPolicy(credential={self._credential!r}, "
+            f"header_name={self.header_name!r}, prefix={self.prefix!r})"
+        )
 
 
 class BasicAuthPolicy(Policy):
@@ -83,7 +92,9 @@ class BasicAuthPolicy(Policy):
     recorded on the first pass through the policy. When a downstream redirect
     reissues the request against a different origin (scheme, host, or
     effective port), the credential is withheld so it never reaches a foreign
-    host.
+    host. On the same-origin stamping path the payload is refused for a
+    non-HTTPS URL (opt out per call with ``enforce_https=False``) so it is
+    never read or written onto a plaintext request.
     """
 
     STAGE = Stage.AUTH
@@ -97,8 +108,12 @@ class BasicAuthPolicy(Policy):
     def send(self, request: Request, ctx: PipelineContext) -> Response:
         if _crosses_recorded_origin(request, ctx):
             return self.next.send(request, ctx)
+        _enforce_https(request, ctx)
         value = f"Basic {self._credential.encoded}"
         return self.next.send(request.with_header("Authorization", value), ctx)
+
+    def __repr__(self) -> str:
+        return f"BasicAuthPolicy(credential={self._credential!r})"
 
 
 class BearerTokenPolicy(Policy):
@@ -244,6 +259,9 @@ class BearerTokenPolicy(Policy):
         del request, response
         return False
 
+    def __repr__(self) -> str:
+        return _bearer_repr(self)
+
     def _authorize(
         self,
         request: Request,
@@ -256,10 +274,7 @@ class BearerTokenPolicy(Policy):
         # and skip the HTTPS enforcement that only governs the stamping path.
         if _crosses_recorded_origin(request, ctx):
             return request
-        if ctx.options.get("enforce_https", True) and not _is_https(request.url):
-            raise ServiceRequestError(
-                "Bearer token authentication is not permitted for non-HTTPS URLs."
-            )
+        _enforce_https(request, ctx)
         token = self._cache.get(self._scopes, self._audience)
         if force_refresh or token is None or token.needs_refresh(clock=self._clock):
             with self._lock:
@@ -411,6 +426,9 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         del request, response
         return False
 
+    def __repr__(self) -> str:
+        return _bearer_repr(self)
+
     async def _authorize(
         self,
         request: Request,
@@ -423,10 +441,7 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         # and skip the HTTPS enforcement that only governs the stamping path.
         if _crosses_recorded_origin(request, ctx):
             return request
-        if ctx.options.get("enforce_https", True) and not _is_https(request.url):
-            raise ServiceRequestError(
-                "Bearer token authentication is not permitted for non-HTTPS URLs."
-            )
+        _enforce_https(request, ctx)
         token = self._cache.get(self._scopes, self._audience)
         if force_refresh or token is None or token.needs_refresh(clock=self._clock):
             async with self._lock:
@@ -468,6 +483,37 @@ def _crosses_recorded_origin(request: Request, ctx: PipelineContext) -> bool:
 def _is_https(url: Url) -> bool:
     """Return True if ``url``'s scheme is ``https`` (case-insensitive)."""
     return url.scheme.lower() == "https"
+
+
+def _enforce_https(request: Request, ctx: PipelineContext) -> None:
+    """Refuse to credential a non-HTTPS request unless enforcement is disabled.
+
+    Every credentialed policy calls this on its same-origin stamping path,
+    before the secret is fetched or read, so a credential is never prepared
+    for a plaintext-HTTP request. Enforcement is on by default; pass
+    ``enforce_https=False`` in the per-call options to opt out.
+
+    Args:
+        request: The request an auth policy is about to credential.
+        ctx: The per-operation pipeline context.
+
+    Raises:
+        ServiceRequestError: When the URL is not HTTPS and enforcement is on.
+    """
+    if ctx.options.get("enforce_https", True) and not _is_https(request.url):
+        raise ServiceRequestError("Credential authentication is not permitted for non-HTTPS URLs.")
+
+
+def _bearer_repr(policy: BearerTokenPolicy | AsyncBearerTokenPolicy) -> str:
+    """Render a bearer policy without exposing the lazily fetched token.
+
+    The token is never held at construction; only the non-secret scopes,
+    audience, and credential type name are shown.
+    """
+    return (
+        f"{type(policy).__name__}(credential={type(policy._credential).__name__}, "
+        f"scopes={policy._scopes!r}, audience={policy._audience!r})"
+    )
 
 
 def _token_options(call_options: dict[str, Any]) -> TokenRequestOptions | None:

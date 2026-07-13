@@ -13,7 +13,9 @@ policies, and a pluggable token cache.
 | `TokenCredential`        | Sync Protocol for OAuth-style providers (`get_token_info`).        |
 | `AsyncTokenCredential`   | Async Protocol for OAuth-style providers.                          |
 
-All concrete credentials redact secrets in their `__repr__`.
+All concrete credentials redact secrets in their `__repr__` and reject
+empty inputs at construction, so a blank secret fails fast rather than at
+first use.
 
 ## Policies
 
@@ -23,6 +25,12 @@ All concrete credentials redact secrets in their `__repr__`.
 | `BasicAuthPolicy`            | Stamp `Authorization: Basic <…>`.                         |
 | `BearerTokenPolicy`          | Acquire + cache + apply OAuth bearer tokens (sync).       |
 | `AsyncBearerTokenPolicy`     | Async twin.                                               |
+
+Every credentialed policy enforces HTTPS on its stamping path by default:
+the credential is never fetched, read, or written onto a plaintext-HTTP
+request. Opt out per call with `ctx.options["enforce_https"] = False`. The
+guard runs only while the request stays on its original origin — a redirect
+to a foreign origin drops the credential entirely instead.
 
 `BearerTokenPolicy`:
 
