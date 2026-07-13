@@ -62,3 +62,26 @@ def test_protocol_h2_aliases() -> None:
 def test_protocol_unknown_raises() -> None:
     with pytest.raises(ValueError):
         Protocol.parse("ftp/1.0")
+
+
+# --- Protocol parse battery (HTTP-33) ---------------------------------------
+
+
+@pytest.mark.parametrize("proto", list(Protocol))
+def test_protocol_str_round_trips_for_every_member(proto: Protocol) -> None:
+    assert Protocol.parse(str(proto)) is proto
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("http/1.0", Protocol.HTTP_1_0),
+        ("HTTP/1.1", Protocol.HTTP_1_1),
+        ("h2", Protocol.HTTP_2),
+        ("HTTP/2.0", Protocol.HTTP_2),
+        ("H2_PRIOR_KNOWLEDGE", Protocol.H2_PRIOR_KNOWLEDGE),
+        ("QUIC", Protocol.QUIC),
+    ],
+)
+def test_protocol_parse_is_case_insensitive(text: str, expected: Protocol) -> None:
+    assert Protocol.parse(text) is expected
