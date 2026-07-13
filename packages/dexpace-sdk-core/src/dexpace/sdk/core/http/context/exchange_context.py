@@ -42,6 +42,7 @@ class ExchangeContext(CallContext):
     instrumentation_context: InstrumentationContext
     request: Request
     response: Response | AsyncResponse
+    store_key: str | None = None
 
 
 __all__ = ["ExchangeContext"]

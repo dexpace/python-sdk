@@ -23,25 +23,37 @@ class DispatchContext(CallContext):
     Carries only the `InstrumentationContext`. Once a `Request`
     has been built, `to_request_context` promotes this into a
     `RequestContext`. The promotion produces a new immutable instance
-    and re-registers it with `ContextStore` under the same trace id so
+    and registers it with `ContextStore` under a process-unique key so
     downstream observers see the latest snapshot.
+
+    A dispatch context is not itself registered, so its `store_key` stays
+    ``None`` until it is promoted.
     """
 
     instrumentation_context: InstrumentationContext
+    store_key: str | None = None
 
     def to_request_context(self, request: Request) -> RequestContext:
         """Promote into a `RequestContext` bound to ``request``.
 
-        Stores the new context in `ContextStore` keyed by trace id.
+        Mints a process-unique key (``{trace_id}:{span_id}:{n}``) and stores
+        the new context in `ContextStore` under it, so two concurrent calls
+        that share a trace id do not collide.
         """
         from .context_store import ContextStore
         from .request_context import RequestContext
 
-        promoted = RequestContext(
-            instrumentation_context=self.instrumentation_context,
-            request=request,
+        instrumentation = self.instrumentation_context
+        key = ContextStore.new_key(
+            instrumentation.trace_id.value,
+            instrumentation.span_id.value,
         )
-        ContextStore.set(promoted.instrumentation_context.trace_id.value, promoted)
+        promoted = RequestContext(
+            instrumentation_context=instrumentation,
+            request=request,
+            store_key=key,
+        )
+        ContextStore.set(key, promoted)
         return promoted
 
     @classmethod

@@ -4,8 +4,8 @@
 """Pipeline must evict its ``ContextStore`` entry once a call completes.
 
 The promotion chain registers the call's context in the process-wide
-``ContextStore`` keyed by trace id. Without eviction the store grows without
-bound across calls with distinct trace ids. ``Pipeline.run`` /
+``ContextStore`` under a process-unique per-call key. Without eviction the store
+grows without bound across calls. ``Pipeline.run`` /
 ``AsyncPipeline.run`` evict the entry after the chain has fully unwound — i.e.
 after every in-chain observer has read the latest snapshot.
 """
@@ -85,7 +85,7 @@ def test_run_evicts_context_store_entry() -> None:
     instr = _instr("0" * 16 + "1")
     with Pipeline(_StubClient()) as pipe:
         pipe.run(_request(), DispatchContext(instr))
-    assert ContextStore.get(instr.trace_id.value) is None
+    assert ContextStore.contexts_for_trace(instr.trace_id.value) == []
     assert ContextStore._contexts == {}
 
 
@@ -93,7 +93,7 @@ def test_run_evicts_even_when_chain_raises() -> None:
     instr = _instr("0" * 16 + "2")
     with Pipeline(_FailingClient()) as pipe, pytest.raises(ServiceRequestError):
         pipe.run(_request(), DispatchContext(instr))
-    assert ContextStore.get(instr.trace_id.value) is None
+    assert ContextStore.contexts_for_trace(instr.trace_id.value) == []
 
 
 def test_in_chain_observer_still_sees_exchange_context() -> None:
@@ -104,7 +104,8 @@ def test_in_chain_observer_still_sees_exchange_context() -> None:
     class _Observer(Policy):
         def send(self, request: Request, ctx: PipelineContext) -> Response:
             response = self.next.send(request, ctx)
-            seen.append(ContextStore.get(instr.trace_id.value))
+            live = ContextStore.contexts_for_trace(instr.trace_id.value)
+            seen.append(live[0] if live else None)
             return response
 
     with Pipeline(_StubClient(), policies=[_Observer()]) as pipe:
@@ -113,7 +114,7 @@ def test_in_chain_observer_still_sees_exchange_context() -> None:
     assert len(seen) == 1
     assert isinstance(seen[0], ExchangeContext)
     # Once run() returns, the entry is gone.
-    assert ContextStore.get(instr.trace_id.value) is None
+    assert ContextStore.contexts_for_trace(instr.trace_id.value) == []
 
 
 def test_async_run_evicts_context_store_entry() -> None:
@@ -124,7 +125,7 @@ def test_async_run_evicts_context_store_entry() -> None:
             await pipe.run(_request(), DispatchContext(instr))
 
     asyncio.run(run())
-    assert ContextStore.get(instr.trace_id.value) is None
+    assert ContextStore.contexts_for_trace(instr.trace_id.value) == []
     assert ContextStore._contexts == {}
 
 
@@ -137,7 +138,7 @@ def test_async_run_evicts_even_when_chain_raises() -> None:
 
     with pytest.raises(ServiceRequestError):
         asyncio.run(run())
-    assert ContextStore.get(instr.trace_id.value) is None
+    assert ContextStore.contexts_for_trace(instr.trace_id.value) == []
 
 
 def test_async_in_chain_observer_still_sees_exchange_context() -> None:
@@ -147,7 +148,8 @@ def test_async_in_chain_observer_still_sees_exchange_context() -> None:
     class _Observer(AsyncPolicy):
         async def send(self, request: Request, ctx: PipelineContext) -> AsyncResponse:
             response = await self.next.send(request, ctx)
-            seen.append(ContextStore.get(instr.trace_id.value))
+            live = ContextStore.contexts_for_trace(instr.trace_id.value)
+            seen.append(live[0] if live else None)
             return response
 
     async def run() -> None:
@@ -157,4 +159,4 @@ def test_async_in_chain_observer_still_sees_exchange_context() -> None:
     asyncio.run(run())
     assert len(seen) == 1
     assert isinstance(seen[0], ExchangeContext)
-    assert ContextStore.get(instr.trace_id.value) is None
+    assert ContextStore.contexts_for_trace(instr.trace_id.value) == []
