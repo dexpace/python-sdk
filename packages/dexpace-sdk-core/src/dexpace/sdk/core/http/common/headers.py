@@ -12,9 +12,19 @@ from typing import Final, Self
 from .http_header_name import HttpHeaderName
 
 # RFC 7230 token: 1*tchar where tchar is the set of ASCII characters allowed
-# in header field names. We match against the lower-cased name because header
-# names are case-insensitive and stored in lower form.
-_TOKEN: Final[re.Pattern[str]] = re.compile(r"^[!#$%&'*+\-.^_`|~0-9a-z]+$")
+# in header field names. We match against the *original* (pre-fold) name so
+# non-ASCII input is rejected outright rather than silently ASCII-folded — e.g.
+# U+212A KELVIN SIGN lower-cases to "k" and U+0130 (dotted capital I) folds to
+# "i" plus a combining mark, both of which would otherwise slip past a
+# lower-cased token check. Matching the original keeps case-folding ASCII-only
+# and locale-invariant (see ``_normalize``).
+_TOKEN: Final[re.Pattern[str]] = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+
+# Any character outside RFC 7230 ``field-content`` (HTAB, SP, and VCHAR
+# 0x21-0x7E). Used only on the outbound-strict path: it also matches obs-text
+# (0x80-0xFF), which received (inbound) messages must tolerate but generated
+# (outbound) ones must not emit.
+_NON_FIELD_CONTENT: Final[re.Pattern[str]] = re.compile(r"[^\t\x20-\x7e]")
 
 # Headers whose values should be redacted in repr() to avoid accidental
 # credential leakage through logging or exception formatting.
@@ -42,6 +52,17 @@ class Headers:
     requirement that some headers (``Set-Cookie``, ``WWW-Authenticate``,
     ``Via``) may legitimately repeat.
 
+    Validation has two strictness levels, both of which always reject the
+    CR / LF / NUL bytes that enable header injection:
+
+    * The default constructor is **inbound-lenient**: it tolerates obs-text
+      (bytes 0x80-0xFF), so response headers decoded as Latin-1 by a transport
+      round-trip unchanged, per RFC 7230's rule that received messages accept
+      obs-text.
+    * `outbound` is **outbound-strict**: it additionally rejects obs-text and
+      other non-``field-content`` bytes, so generated request headers never
+      emit characters RFC 7230 forbids on the wire.
+
     Instances are immutable and freely shareable across threads.
     """
 
@@ -51,20 +72,31 @@ class Headers:
     _hash: int | None
 
     def __init__(self, entries: _Entries | None = None) -> None:
-        data: dict[str, tuple[str, ...]] = {}
-        if entries is not None:
-            items: Iterable[tuple[_Name, _HeaderValue]] = (
-                entries.items() if isinstance(entries, Mapping) else entries
-            )
-            for name, value in items:
-                key = _normalize(name)
-                existing = data.get(key, ())
-                new_values: tuple[str, ...] = (value,) if isinstance(value, str) else tuple(value)
-                for v in new_values:
-                    _check_value(key, v)
-                data[key] = (*existing, *new_values)
-        object.__setattr__(self, "_data", tuple(data.items()))
+        object.__setattr__(self, "_data", _build(entries, strict=False))
         object.__setattr__(self, "_hash", None)
+
+    @classmethod
+    def outbound(cls, entries: _Entries | None = None) -> Self:
+        """Build headers for an outbound request under strict RFC 7230 rules.
+
+        Identical to the default constructor except that header values are
+        additionally rejected if they contain obs-text (bytes 0x80-0xFF) or any
+        other character outside ``field-content`` (HTAB, SP, and visible ASCII).
+        Use this when assembling headers the SDK will *send*, so a spec-clean
+        request never carries bytes forbidden on the wire.
+
+        Args:
+            entries: Initial headers as a mapping or an iterable of
+                ``(name, value | values)`` pairs.
+
+        Returns:
+            A new `Headers` populated from ``entries``.
+
+        Raises:
+            ValueError: If a name is not a valid token, or a value contains
+                CR / LF / NUL, obs-text, or other non-``field-content`` bytes.
+        """
+        return _construct(cls, _build(entries, strict=True))
 
     def __setattr__(self, name: str, value: object) -> None:
         raise AttributeError(f"{type(self).__name__} is immutable")
@@ -217,23 +249,50 @@ class Headers:
         return _EMPTY
 
 
+def _build(entries: _Entries | None, *, strict: bool) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    # Shared construction path for the lenient (``__init__``) and strict
+    # (``outbound``) entry points; ``strict`` selects the value-validation rule.
+    data: dict[str, tuple[str, ...]] = {}
+    if entries is not None:
+        items: Iterable[tuple[_Name, _HeaderValue]] = (
+            entries.items() if isinstance(entries, Mapping) else entries
+        )
+        for name, value in items:
+            key = _normalize(name)
+            new_values: tuple[str, ...] = (value,) if isinstance(value, str) else tuple(value)
+            for v in new_values:
+                _check_value(key, v, strict=strict)
+            data[key] = (*data.get(key, ()), *new_values)
+    return tuple(data.items())
+
+
 def _normalize(name: _Name) -> str:
-    # HttpHeaderName already holds the lower-case form; for raw strings we
-    # canonicalise here. RFC 7230: header names are ASCII so `.lower()` is
-    # sufficient and casefold() is unnecessary overhead on the hot path.
+    # HttpHeaderName already holds the trusted lower-case form, so skip the
+    # token check and the ``.lower()`` call entirely on that hot path.
     if isinstance(name, HttpHeaderName):
         return name.value
-    lowered = name.lower()
-    if not _TOKEN.match(lowered):
+    # Validate the *original* name: the token set is ASCII-only, so a non-ASCII
+    # name fails here instead of being ASCII-folded by ``.lower()`` (see
+    # ``_TOKEN``). Lower-casing a proven-ASCII string is locale-invariant — it
+    # never triggers the Turkish dotless-i or Kelvin-sign special-casing traps.
+    if not _TOKEN.match(name):
         raise ValueError(f"invalid header name: {name!r}")
-    return lowered
+    return name.lower()
 
 
-def _check_value(key: str, value: str) -> None:
-    # Reject CR, LF, and NUL to prevent header injection / response splitting.
-    # ``key`` is the already-normalised name, used only for the error message.
+def _check_value(key: str, value: str, *, strict: bool = False) -> None:
+    # Reject CR, LF, and NUL on every path to prevent header injection /
+    # response splitting. ``key`` is the already-normalised name, echoed via
+    # ``!r`` so any control characters in it are escaped; the value is never
+    # echoed, so a rejected secret cannot leak through the message.
     if "\r" in value or "\n" in value or "\0" in value:
         raise ValueError(f"invalid header value for {key!r}: contains control characters")
+    # Outbound-strict additionally forbids obs-text and other non-field-content
+    # bytes, which received (inbound) headers must instead tolerate.
+    if strict and _NON_FIELD_CONTENT.search(value):
+        raise ValueError(
+            f"invalid header value for {key!r}: contains obs-text or non-ASCII control characters"
+        )
 
 
 def _construct[H: Headers](
