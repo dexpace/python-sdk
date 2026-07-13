@@ -29,6 +29,7 @@ class RequestContext(CallContext):
 
     instrumentation_context: InstrumentationContext
     request: Request
+    store_key: str | None = None
 
     def to_exchange_context(
         self,
@@ -47,8 +48,8 @@ class RequestContext(CallContext):
             response: The response that arrived for this call.
 
         Returns:
-            The new `ExchangeContext`, also stored in `ContextStore` keyed by
-            trace id.
+            The new `ExchangeContext`, also stored in `ContextStore` under this
+            call's key so it overwrites the request tier in place.
         """
         from .context_store import ContextStore
         from .exchange_context import ExchangeContext
@@ -57,8 +58,10 @@ class RequestContext(CallContext):
             instrumentation_context=self.instrumentation_context,
             request=response.request,
             response=response,
+            store_key=self.store_key,
         )
-        ContextStore.set(promoted.instrumentation_context.trace_id.value, promoted)
+        if self.store_key is not None:
+            ContextStore.set(self.store_key, promoted)
         return promoted
 
 

@@ -157,10 +157,12 @@ def test_context_store_evicts_entry_on_close() -> None:
     request_ctx = dispatch.to_request_context(
         Request(method=Method.GET, url=Url.parse("https://example.com/"))
     )
-    assert ContextStore.get(trace_id) is request_ctx
+    key = request_ctx.store_key
+    assert key is not None
+    assert ContextStore.get(key) is request_ctx
 
     request_ctx.close()
-    assert ContextStore.get(trace_id) is None
+    assert ContextStore.get(key) is None
 
 
 def test_context_manager_exit_evicts_from_store() -> None:
@@ -170,9 +172,11 @@ def test_context_manager_exit_evicts_from_store() -> None:
     request_ctx = dispatch.to_request_context(
         Request(method=Method.GET, url=Url.parse("https://example.com/"))
     )
+    key = request_ctx.store_key
+    assert key is not None
     with request_ctx:
-        assert ContextStore.get(trace_id) is request_ctx
-    assert ContextStore.get(trace_id) is None
+        assert ContextStore.get(key) is request_ctx
+    assert ContextStore.get(key) is None
 
 
 # ----- retry honours Retry-After ------------------------------------------

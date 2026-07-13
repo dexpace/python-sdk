@@ -12,8 +12,11 @@ A call moves through three immutable context shapes as it executes:
 3. `ExchangeContext` — adds the `Response`; produced by
    `RequestContext.to_exchange_context` once a response has arrived.
 
-Each promotion is registered with `ContextStore` under the call's trace
-id so downstream observers see the latest snapshot for a call by trace id.
+Each promotion is registered with `ContextStore` under a process-unique
+key (`{trace_id}:{span_id}:{n}`) so downstream observers see the latest
+snapshot for a call, and concurrent calls that share a trace id stay
+distinct. The trace id remains the leading key segment, so a prefix scan
+still finds every live context for a trace id.
 """
 
 from __future__ import annotations

@@ -121,7 +121,8 @@ def test_async_transport_runner_promotes_context() -> None:
     class _Observer(AsyncPolicy):
         async def send(self, request: Request, ctx: PipelineContext) -> AsyncResponse:
             response = await self.next.send(request, ctx)
-            seen.append(ContextStore.get(instr.trace_id.value))
+            live = ContextStore.contexts_for_trace(instr.trace_id.value)
+            seen.append(live[0] if live else None)
             return response
 
     async def run() -> None:
@@ -132,4 +133,4 @@ def test_async_transport_runner_promotes_context() -> None:
     # The exchange context was the latest snapshot while the call was live.
     assert isinstance(seen[0], ExchangeContext)
     # Eviction-on-completion clears the entry afterwards.
-    assert ContextStore.get(instr.trace_id.value) is None
+    assert ContextStore.contexts_for_trace(instr.trace_id.value) == []

@@ -127,8 +127,8 @@ class Pipeline:
         finally:
             # Evict the call's ``ContextStore`` entry once the chain has fully
             # unwound — in-chain observers have already read the latest tier.
-            # The exchange context shares this trace id, so a single close
-            # clears both tiers and prevents unbounded growth across calls.
+            # The exchange context shares this call's store key, so a single
+            # close clears both tiers and prevents unbounded growth across calls.
             request_ctx.close()
 
 
