@@ -8,8 +8,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from types import TracebackType
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Final, Self
 
+from .._once_guard import _OnceGuard
 from .._shielded import _shielded_cleanup as _shielded_cleanup
 from ..common.media_type import MediaType
 from .response_body import _check_chunk_size
@@ -18,6 +19,8 @@ if TYPE_CHECKING:
     from ..request.async_request_body import SupportsAsyncRead
 
 _bytes = bytes
+
+_CONSUMED_MSG: Final[str] = "AsyncResponseBody has already been consumed"
 
 
 class AsyncResponseBody(ABC):
@@ -92,14 +95,19 @@ class AsyncResponseBody(ABC):
 
 
 class _AsyncBytesResponseBody(AsyncResponseBody):
-    """In-memory ``AsyncResponseBody``."""
+    """In-memory ``AsyncResponseBody``.
 
-    __slots__ = ("_closed", "_consumed", "_data", "_media_type")
+    Single-use: the lock-protected once-guard is claimed eagerly at
+    ``aiter_bytes`` call time, so a second call raises ``RuntimeError`` even
+    when the first returned iterator was never advanced.
+    """
+
+    __slots__ = ("_closed", "_data", "_media_type", "_once")
 
     def __init__(self, data: _bytes, media_type: MediaType | None) -> None:
         self._data = data
         self._media_type = media_type
-        self._consumed = False
+        self._once = _OnceGuard()
         self._closed = False
 
     def media_type(self) -> MediaType | None:
@@ -108,11 +116,12 @@ class _AsyncBytesResponseBody(AsyncResponseBody):
     def content_length(self) -> int:
         return len(self._data)
 
-    async def aiter_bytes(self, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
+    def aiter_bytes(self, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
         _check_chunk_size(chunk_size)
-        if self._consumed:
-            raise RuntimeError("AsyncResponseBody has already been consumed")
-        self._consumed = True
+        self._once.claim(_CONSUMED_MSG)
+        return self._aiter(chunk_size)
+
+    async def _aiter(self, chunk_size: int) -> AsyncIterator[bytes]:
         view = memoryview(self._data)
         for start in range(0, len(view), chunk_size):
             yield bytes(view[start : start + chunk_size])
@@ -138,7 +147,7 @@ class _AsyncStreamResponseBody(AsyncResponseBody):
         cleanup never swallows it.
     """
 
-    __slots__ = ("_closed", "_consumed", "_length", "_media_type", "_stream")
+    __slots__ = ("_closed", "_length", "_media_type", "_once", "_stream")
 
     def __init__(
         self,
@@ -149,7 +158,7 @@ class _AsyncStreamResponseBody(AsyncResponseBody):
         self._stream = stream
         self._media_type = media_type
         self._length = length
-        self._consumed = False
+        self._once = _OnceGuard()
         self._closed = False
 
     def media_type(self) -> MediaType | None:
@@ -158,11 +167,12 @@ class _AsyncStreamResponseBody(AsyncResponseBody):
     def content_length(self) -> int:
         return self._length
 
-    async def aiter_bytes(self, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
+    def aiter_bytes(self, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
         _check_chunk_size(chunk_size)
-        if self._consumed:
-            raise RuntimeError("AsyncResponseBody has already been consumed")
-        self._consumed = True
+        self._once.claim(_CONSUMED_MSG)
+        return self._aiter(chunk_size)
+
+    async def _aiter(self, chunk_size: int) -> AsyncIterator[bytes]:
         try:
             while True:
                 chunk = await self._stream.read(chunk_size)

@@ -8,14 +8,28 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO
+from typing import TYPE_CHECKING, BinaryIO, Final
 from urllib.parse import quote
 
+from .._once_guard import _OnceGuard
 from ..common import common_media_types
 from ..common.media_type import MediaType
 
 if TYPE_CHECKING:
     from .multipart import MultipartField
+
+_STREAM_SINGLE_USE_MSG: Final[str] = (
+    "RequestBody.iter_bytes() was already called — this single-use body backed "
+    "by a stream is exhausted (consuming it also exhausts the caller's "
+    "underlying stream). Call to_replayable() BEFORE the first iter_bytes() if "
+    "the body may need to be sent more than once (for example, on retry)."
+)
+_ITER_SINGLE_USE_MSG: Final[str] = (
+    "RequestBody.iter_bytes() was already called — this single-use body backed "
+    "by an iterable is exhausted. Call to_replayable() BEFORE the first "
+    "iter_bytes() if the body may need to be sent more than once (for example, "
+    "on retry)."
+)
 
 
 def _check_chunk_size(chunk_size: int) -> None:
@@ -192,12 +206,14 @@ class RequestBody(ABC):
     ) -> RequestBody:
         """Build a single-use body backed by a ``BinaryIO`` stream.
 
-        ``iter_bytes`` consumes and closes ``stream`` on first call; a second
-        call raises ``RuntimeError``. Call ``to_replayable`` BEFORE
-        ``iter_bytes`` to obtain a buffered copy for retries.
+        ``iter_bytes`` consumes and closes ``stream`` on first call, exhausting
+        the caller's underlying stream in the process; a second call raises
+        ``RuntimeError``. Call ``to_replayable`` BEFORE ``iter_bytes`` to obtain
+        a buffered copy for retries.
 
         Args:
-            stream: Source stream. Ownership transfers to the body.
+            stream: Source stream. Ownership transfers to the body; iterating
+                the body drains and closes it.
             media_type: Optional content type.
             content_length: Byte count if known, else ``-1``.
 
@@ -319,9 +335,15 @@ class _BytesBody(RequestBody):
 
 
 class _StreamBody(RequestBody):
-    """Single-use body backed by a ``BinaryIO``."""
+    """Single-use body backed by a ``BinaryIO``.
 
-    __slots__ = ("_consumed", "_length", "_media_type", "_stream")
+    Consumption exhausts the caller's underlying stream and closes it. The
+    single-use guarantee is enforced by a lock-protected once-guard claimed
+    eagerly at ``iter_bytes`` call time, so a second call raises even if the
+    first returned iterator was never advanced.
+    """
+
+    __slots__ = ("_length", "_media_type", "_once", "_stream")
 
     def __init__(
         self,
@@ -332,7 +354,7 @@ class _StreamBody(RequestBody):
         self._stream = stream
         self._media_type = media_type
         self._length = length
-        self._consumed = False
+        self._once = _OnceGuard()
 
     def media_type(self) -> MediaType | None:
         return self._media_type
@@ -342,13 +364,7 @@ class _StreamBody(RequestBody):
 
     def iter_bytes(self, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
         _check_chunk_size(chunk_size)
-        if self._consumed:
-            raise RuntimeError(
-                "RequestBody.iter_bytes was already called — the underlying "
-                "stream is exhausted. Call to_replayable() BEFORE iter_bytes "
-                "if retries may be needed."
-            )
-        self._consumed = True
+        self._once.claim(_STREAM_SINGLE_USE_MSG)
         return self._iter(chunk_size)
 
     def _iter(self, chunk_size: int) -> Iterator[bytes]:
@@ -363,9 +379,14 @@ class _StreamBody(RequestBody):
 
 
 class _IterBody(RequestBody):
-    """Single-use body backed by an iterable of ``bytes`` chunks."""
+    """Single-use body backed by an iterable of ``bytes`` chunks.
 
-    __slots__ = ("_chunks", "_consumed", "_length", "_media_type")
+    The single-use guarantee is enforced by a lock-protected once-guard
+    claimed eagerly at ``iter_bytes`` call time, so a second call raises even
+    if the first returned iterator was never advanced.
+    """
+
+    __slots__ = ("_chunks", "_length", "_media_type", "_once")
 
     def __init__(
         self,
@@ -376,7 +397,7 @@ class _IterBody(RequestBody):
         self._chunks = chunks
         self._media_type = media_type
         self._length = length
-        self._consumed = False
+        self._once = _OnceGuard()
 
     def media_type(self) -> MediaType | None:
         return self._media_type
@@ -387,13 +408,7 @@ class _IterBody(RequestBody):
     def iter_bytes(self, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
         _check_chunk_size(chunk_size)
         del chunk_size  # caller-supplied chunk size is ignored; iterator chooses its own
-        if self._consumed:
-            raise RuntimeError(
-                "RequestBody.iter_bytes was already called — the underlying "
-                "iterable is exhausted. Call to_replayable() BEFORE iter_bytes "
-                "if retries may be needed."
-            )
-        self._consumed = True
+        self._once.claim(_ITER_SINGLE_USE_MSG)
         return self._iter()
 
     def _iter(self) -> Iterator[bytes]:

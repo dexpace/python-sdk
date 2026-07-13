@@ -8,13 +8,16 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from types import TracebackType
-from typing import BinaryIO, Self
+from typing import BinaryIO, Final, Self
 
+from .._once_guard import _OnceGuard
 from ..common.media_type import MediaType
 
 # Module-level alias so the in-class ``bytes()`` method does not shadow the
 # built-in ``bytes`` type when annotating other methods.
 _bytes = bytes
+
+_CONSUMED_MSG: Final[str] = "ResponseBody has already been consumed"
 
 
 def _check_chunk_size(chunk_size: int) -> None:
@@ -153,14 +156,19 @@ class ResponseBody(ABC):
 
 
 class _BytesResponseBody(ResponseBody):
-    """In-memory ``ResponseBody``."""
+    """In-memory ``ResponseBody``.
 
-    __slots__ = ("_closed", "_consumed", "_data", "_media_type")
+    Single-use: the lock-protected once-guard is claimed eagerly at
+    ``iter_bytes`` call time, so a second call raises ``RuntimeError`` even
+    when the first returned iterator was never advanced.
+    """
+
+    __slots__ = ("_closed", "_data", "_media_type", "_once")
 
     def __init__(self, data: _bytes, media_type: MediaType | None) -> None:
         self._data = data
         self._media_type = media_type
-        self._consumed = False
+        self._once = _OnceGuard()
         self._closed = False
 
     def media_type(self) -> MediaType | None:
@@ -171,9 +179,10 @@ class _BytesResponseBody(ResponseBody):
 
     def iter_bytes(self, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
         _check_chunk_size(chunk_size)
-        if self._consumed:
-            raise RuntimeError("ResponseBody has already been consumed")
-        self._consumed = True
+        self._once.claim(_CONSUMED_MSG)
+        return self._iter(chunk_size)
+
+    def _iter(self, chunk_size: int) -> Iterator[bytes]:
         view = memoryview(self._data)
         for start in range(0, len(view), chunk_size):
             yield bytes(view[start : start + chunk_size])
@@ -184,9 +193,14 @@ class _BytesResponseBody(ResponseBody):
 
 
 class _StreamResponseBody(ResponseBody):
-    """Stream-backed single-use ``ResponseBody``."""
+    """Stream-backed single-use ``ResponseBody``.
 
-    __slots__ = ("_closed", "_consumed", "_length", "_media_type", "_stream")
+    Single-use: the lock-protected once-guard is claimed eagerly at
+    ``iter_bytes`` call time, so a second call raises ``RuntimeError`` even
+    when the first returned iterator was never advanced.
+    """
+
+    __slots__ = ("_closed", "_length", "_media_type", "_once", "_stream")
 
     def __init__(
         self,
@@ -197,7 +211,7 @@ class _StreamResponseBody(ResponseBody):
         self._stream = stream
         self._media_type = media_type
         self._length = length
-        self._consumed = False
+        self._once = _OnceGuard()
         self._closed = False
 
     def media_type(self) -> MediaType | None:
@@ -208,9 +222,10 @@ class _StreamResponseBody(ResponseBody):
 
     def iter_bytes(self, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
         _check_chunk_size(chunk_size)
-        if self._consumed:
-            raise RuntimeError("ResponseBody has already been consumed")
-        self._consumed = True
+        self._once.claim(_CONSUMED_MSG)
+        return self._iter(chunk_size)
+
+    def _iter(self, chunk_size: int) -> Iterator[bytes]:
         try:
             while True:
                 chunk = self._stream.read(chunk_size)
