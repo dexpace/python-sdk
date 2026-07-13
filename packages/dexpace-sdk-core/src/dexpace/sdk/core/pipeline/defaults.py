@@ -115,6 +115,15 @@ def default_async_pipeline(
     through the same per-operation tracer. The per-attempt OpenTelemetry span
     policy (`TracingPolicy`) and `LoggingPolicy` ship sync-only, so the async
     stack omits those two.
+
+    Known gap — async wire logging: there is no async twin of `LoggingPolicy`
+    yet, so an async pipeline emits no per-request / per-response log lines and
+    no request-body preview. Correlation ids still propagate across ``await``
+    boundaries (`AsyncOperationTracingPolicy` binds them), so an async caller's
+    own log records remain correlated; only the built-in wire log is absent.
+    An async logging policy is planned; until it lands, wrap the transport or
+    add a custom `AsyncPolicy` if you need request/response logging on the
+    async path.
     """
     builder = AsyncStagedPipelineBuilder(client)
     # Sorts to Stage.OPERATION (outermost), bracketing every hop / attempt so

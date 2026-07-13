@@ -15,7 +15,12 @@ from dexpace.sdk.core.client.http_client import HttpClient
 from dexpace.sdk.core.errors import ServiceRequestError
 from dexpace.sdk.core.http.common import Protocol, Url
 from dexpace.sdk.core.http.context import DispatchContext
-from dexpace.sdk.core.http.request import Method, Request
+from dexpace.sdk.core.http.request import (
+    LoggableRequestBody,
+    Method,
+    Request,
+    RequestBody,
+)
 from dexpace.sdk.core.http.response import Response, Status
 from dexpace.sdk.core.instrumentation import (
     InstrumentationContext,
@@ -61,6 +66,27 @@ class _OkClient(HttpClient):
         return Response(request=request, protocol=Protocol.HTTP_1_1, status=self.status)
 
 
+class _CapturingClient(HttpClient):
+    """Transport that drains and records the full request body it receives."""
+
+    def __init__(self) -> None:
+        self.received = bytearray()
+
+    def execute(self, request: Request) -> Response:
+        if request.body is not None:
+            for chunk in request.body.iter_bytes():
+                self.received.extend(chunk)
+        return Response(request=request, protocol=Protocol.HTTP_1_1, status=Status.OK)
+
+
+def _post(body: RequestBody) -> Request:
+    return Request(
+        method=Method.POST,
+        url=Url.parse("https://api.example.com/v1"),
+        body=body,
+    )
+
+
 class TestLoggingPolicy:
     def test_emits_request_and_response(self, caplog: LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
@@ -96,6 +122,69 @@ class TestLoggingPolicy:
                 logging_enabled=False,
             )
         assert not caplog.records
+
+    def test_default_preview_size_is_8_kib(self) -> None:
+        # The logging policy defaults to a small, bounded 8 KiB body preview.
+        assert LoggingPolicy().preview_bytes == 8 * 1024
+
+    def test_preview_bytes_is_configurable(self) -> None:
+        assert LoggingPolicy(preview_bytes=256).preview_bytes == 256
+
+    def test_preview_bytes_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="positive"):
+            LoggingPolicy(preview_bytes=0)
+
+    def test_full_body_forwarded_uncut_while_preview_truncates(
+        self, caplog: LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
+        payload = b"x" * (8 * 1024 + 500)  # larger than the 8 KiB preview cap
+        client = _CapturingClient()
+        with Pipeline(client, policies=[LoggingPolicy()]) as p:
+            p.run(_post(RequestBody.from_bytes(payload)), DispatchContext(_instr("0" * 16 + "8")))
+        # The transport received every byte — only the diagnostic tap truncates.
+        assert bytes(client.received) == payload
+        # The emitted preview is capped at the 8 KiB default.
+        responses = [m for m in (r.getMessage() for r in caplog.records) if "http.response" in m]
+        assert responses
+        preview = responses[0].split("request_body_preview=")[1]
+        assert len(preview) == 8 * 1024
+
+    def test_binary_body_preview_never_throws(self, caplog: LogCaptureFixture) -> None:
+        caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
+        payload = bytes(range(256)) * 40  # invalid UTF-8 sequences, > 8 KiB
+        client = _CapturingClient()
+        with Pipeline(client, policies=[LoggingPolicy()]) as p:
+            p.run(_post(RequestBody.from_bytes(payload)), DispatchContext(_instr("0" * 16 + "9")))
+        assert bytes(client.received) == payload
+        assert any("http.response" in r.getMessage() for r in caplog.records)
+
+    def test_preview_bounded_even_when_wrapper_ceiling_is_larger(
+        self, caplog: LogCaptureFixture
+    ) -> None:
+        # A caller-supplied wrapper with a large ceiling captures more than the
+        # preview, yet the emitted preview is still bounded to the 8 KiB default.
+        caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
+        payload = b"y" * (16 * 1024)
+        prewrapped = LoggableRequestBody(
+            RequestBody.from_bytes(payload), max_capture_bytes=32 * 1024
+        )
+        client = _CapturingClient()
+        with Pipeline(client, policies=[LoggingPolicy()]) as p:
+            p.run(_post(prewrapped), DispatchContext(_instr("0" * 16 + "a")))
+        assert bytes(client.received) == payload
+        assert prewrapped.captured_size == 16 * 1024  # tap kept the larger slice
+        responses = [m for m in (r.getMessage() for r in caplog.records) if "http.response" in m]
+        assert responses
+        preview = responses[0].split("request_body_preview=")[1]
+        assert len(preview) == 8 * 1024  # preview stays capped
+
+    def test_wrapper_ceiling_independent_of_logging_preview(self) -> None:
+        # The wrapper's own default cap stays large and is not lowered to the
+        # logging policy's 8 KiB preview default.
+        body = LoggableRequestBody(RequestBody.from_bytes(b"z" * (9 * 1024)))
+        list(body.iter_bytes())
+        assert body.captured_size == 9 * 1024
 
 
 class _RecordingSpan:

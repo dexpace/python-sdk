@@ -14,13 +14,14 @@ from .async_set_date import AsyncSetDatePolicy
 from .async_tracing_policy import AsyncOperationTracingPolicy
 from .client_identity import ClientIdentityPolicy, default_user_agent
 from .idempotency import IdempotencyPolicy
-from .logging_policy import LoggingPolicy
+from .logging_policy import DEFAULT_PREVIEW_BYTES, LoggingPolicy
 from .redirect import RedirectPolicy
 from .retry import RetryMode, RetryPolicy
 from .set_date import SetDatePolicy
 from .tracing_policy import OperationTracingPolicy, TracingPolicy
 
 __all__ = [
+    "DEFAULT_PREVIEW_BYTES",
     "AsyncClientIdentityPolicy",
     "AsyncIdempotencyPolicy",
     "AsyncOperationTracingPolicy",

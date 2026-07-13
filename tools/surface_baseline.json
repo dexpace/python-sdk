@@ -1618,6 +1618,7 @@
         "AsyncRetryPolicy",
         "AsyncSetDatePolicy",
         "ClientIdentityPolicy",
+        "DEFAULT_PREVIEW_BYTES",
         "IdempotencyPolicy",
         "LoggingPolicy",
         "OperationTracingPolicy",
