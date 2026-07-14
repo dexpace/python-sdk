@@ -1151,7 +1151,7 @@
         "AsyncPaginator": {
           "bases": [],
           "methods": {
-            "by_page": "async by_page(self) -> AsyncIterator[Page[T]]"
+            "by_page": "by_page(self) -> _AsyncPageView[T]"
           }
         },
         "Paginator": {
