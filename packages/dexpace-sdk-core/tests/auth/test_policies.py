@@ -1119,3 +1119,266 @@ async def test_async_bearer_eviction_matches_stamped_token_only() -> None:
     surviving = cache.get(("scope-a",))
     assert surviving is not None
     assert surviving.token == "fresh"
+
+
+# --------------------------------------------------------------------------- #
+# Credential hygiene: the HTTPS-only guard fires before any credential is       #
+# fetched or stamped, and before the transport is ever dialed.                  #
+# --------------------------------------------------------------------------- #
+
+
+class _NeverDialClient(HttpClient):
+    """Sync transport that fails loudly if it is ever asked to execute."""
+
+    def __init__(self) -> None:
+        self.dialed = False
+
+    def execute(self, request: Request) -> Response:
+        del request
+        self.dialed = True
+        raise AssertionError("transport dialed despite the HTTPS-only guard")
+
+
+class _NeverDialAsyncClient(AsyncHttpClient):
+    """Async twin of ``_NeverDialClient``."""
+
+    def __init__(self) -> None:
+        self.dialed = False
+
+    async def execute(self, request: Request) -> AsyncResponse:
+        del request
+        self.dialed = True
+        raise AssertionError("transport dialed despite the HTTPS-only guard")
+
+
+class _RecordingTokenCredential:
+    """TokenCredential that records whether ``get_token_info`` was called."""
+
+    def __init__(self, token: str = "s3cr3t-token") -> None:
+        self.calls = 0
+        self._token = token
+
+    def get_token_info(self, *scopes: str, options: object = None) -> AccessTokenInfo:
+        del scopes, options
+        self.calls += 1
+        return AccessTokenInfo(token=self._token, expires_on=int(time.time()) + 3600)
+
+    def close(self) -> None:
+        return None
+
+
+class _RecordingAsyncTokenCredential:
+    """Async twin of ``_RecordingTokenCredential``."""
+
+    def __init__(self, token: str = "s3cr3t-token") -> None:
+        self.calls = 0
+        self._token = token
+
+    async def get_token_info(self, *scopes: str, options: object = None) -> AccessTokenInfo:
+        del scopes, options
+        self.calls += 1
+        return AccessTokenInfo(token=self._token, expires_on=int(time.time()) + 3600)
+
+    async def close(self) -> None:
+        return None
+
+
+class _RecordingKeyCredential(KeyCredential):
+    """KeyCredential that counts reads of ``key`` to prove the guard runs first."""
+
+    def __init__(self, key: str) -> None:
+        super().__init__(key)
+        self.key_reads = 0
+
+    @property
+    def key(self) -> str:
+        self.key_reads += 1
+        return self._key
+
+
+class _RecordingBasicCredential(BasicAuthCredential):
+    """BasicAuthCredential that counts reads of ``encoded`` to prove the order."""
+
+    def __init__(self, username: str, password: str) -> None:
+        super().__init__(username, password)
+        self.encoded_reads = 0
+
+    @property
+    def encoded(self) -> str:
+        self.encoded_reads += 1
+        return self._encoded
+
+
+def test_bearer_policy_https_guard_precedes_fetch_and_dial() -> None:
+    """An http:// URL errors before the credential is fetched or transport dialed."""
+    client = _NeverDialClient()
+    cred = _RecordingTokenCredential()
+    policy = BearerTokenPolicy(cred, "scope-a")
+    with Pipeline(client, policies=[policy]) as p, pytest.raises(ServiceRequestError):
+        p.run(
+            _request("http://insecure.example.com/"),
+            DispatchContext(_instr("0" * 15 + "40")),
+        )
+    assert cred.calls == 0, "credential was fetched before the HTTPS guard fired"
+    assert client.dialed is False, "transport was dialed before the HTTPS guard fired"
+
+
+async def test_async_bearer_policy_https_guard_precedes_fetch_and_dial() -> None:
+    """Async twin: http:// errors before the async fetch or async dial."""
+    client = _NeverDialAsyncClient()
+    cred = _RecordingAsyncTokenCredential()
+    policy = AsyncBearerTokenPolicy(cred, "scope-a")
+    async with AsyncPipeline(client, policies=[policy]) as p:
+        with pytest.raises(ServiceRequestError):
+            await p.run(
+                _request("http://insecure.example.com/"),
+                DispatchContext(_instr("0" * 15 + "41")),
+            )
+    assert cred.calls == 0, "credential was fetched before the HTTPS guard fired"
+    assert client.dialed is False, "transport was dialed before the HTTPS guard fired"
+
+
+def test_key_credential_policy_https_guard_precedes_stamp_and_dial() -> None:
+    """An http:// URL errors before the key is read or the transport dialed."""
+    client = _NeverDialClient()
+    cred = _RecordingKeyCredential("hunter2")
+    policy = KeyCredentialPolicy(cred, "X-API-Key")
+    with Pipeline(client, policies=[policy]) as p, pytest.raises(ServiceRequestError):
+        p.run(
+            _request("http://insecure.example.com/"),
+            DispatchContext(_instr("0" * 15 + "42")),
+        )
+    assert cred.key_reads == 0, "key was read before the HTTPS guard fired"
+    assert client.dialed is False, "transport was dialed before the HTTPS guard fired"
+
+
+def test_basic_auth_policy_https_guard_precedes_stamp_and_dial() -> None:
+    """An http:// URL errors before the payload is read or the transport dialed."""
+    client = _NeverDialClient()
+    cred = _RecordingBasicCredential("user", "pass")
+    policy = BasicAuthPolicy(cred)
+    with Pipeline(client, policies=[policy]) as p, pytest.raises(ServiceRequestError):
+        p.run(
+            _request("http://insecure.example.com/"),
+            DispatchContext(_instr("0" * 15 + "43")),
+        )
+    assert cred.encoded_reads == 0, "payload was read before the HTTPS guard fired"
+    assert client.dialed is False, "transport was dialed before the HTTPS guard fired"
+
+
+def test_key_credential_policy_https_opt_out_stamps_over_http() -> None:
+    """``enforce_https=False`` lets the key policy stamp over plain HTTP."""
+    client = _CapturingClient()
+    policy = KeyCredentialPolicy(KeyCredential("hunter2"), "X-API-Key")
+    with Pipeline(client, policies=[policy]) as p:
+        p.run(
+            _request("http://insecure.example.com/"),
+            DispatchContext(_instr("0" * 15 + "45")),
+            enforce_https=False,
+        )
+    assert client.calls[0].headers.get("x-api-key") == "hunter2"
+
+
+def test_basic_auth_policy_https_opt_out_stamps_over_http() -> None:
+    """``enforce_https=False`` lets the basic policy stamp over plain HTTP."""
+    client = _CapturingClient()
+    policy = BasicAuthPolicy(BasicAuthCredential("user", "pass"))
+    with Pipeline(client, policies=[policy]) as p:
+        p.run(
+            _request("http://insecure.example.com/"),
+            DispatchContext(_instr("0" * 15 + "46")),
+            enforce_https=False,
+        )
+    assert client.calls[0].headers.get("authorization") == "Basic dXNlcjpwYXNz"
+
+
+# --------------------------------------------------------------------------- #
+# Credential hygiene: every credentialed policy redacts secrets in repr/str.    #
+# --------------------------------------------------------------------------- #
+
+
+def test_credentialed_policy_reprs_redact_secrets() -> None:
+    """Render every credentialed policy and grep for the literal secrets."""
+    secret_key = "hunter2-key"
+    secret_user = "alice-user"
+    secret_pass = "hunter2-pass"
+    secret_token = "s3cr3t-token"
+    encoded = BasicAuthCredential(secret_user, secret_pass).encoded
+    policies = [
+        KeyCredentialPolicy(KeyCredential(secret_key), "X-API-Key", prefix="SharedKey"),
+        BasicAuthPolicy(BasicAuthCredential(secret_user, secret_pass)),
+        BearerTokenPolicy(_RecordingTokenCredential(secret_token), "scope-a"),
+        AsyncBearerTokenPolicy(_RecordingAsyncTokenCredential(secret_token), "scope-a"),
+    ]
+    needles = [secret_key, secret_user, secret_pass, secret_token, encoded]
+    for policy in policies:
+        for rendered in (repr(policy), str(policy)):
+            for needle in needles:
+                assert needle not in rendered, (
+                    f"{type(policy).__name__} leaked a secret in {rendered!r}"
+                )
+
+
+# --------------------------------------------------------------------------- #
+# Credential hygiene: blank secrets are rejected at construction, not first use. #
+# --------------------------------------------------------------------------- #
+
+
+def test_key_credential_policy_rejects_blank_secret_at_construction() -> None:
+    with pytest.raises((TypeError, ValueError)):
+        KeyCredentialPolicy(KeyCredential(""), "X-API-Key")
+
+
+def test_basic_auth_policy_rejects_blank_secret_at_construction() -> None:
+    with pytest.raises(ValueError):
+        BasicAuthPolicy(BasicAuthCredential("user", ""))
+    with pytest.raises(ValueError):
+        BasicAuthPolicy(BasicAuthCredential("", "pass"))
+
+
+# --------------------------------------------------------------------------- #
+# Credential hygiene: KeyCredentialPolicy header/prefix shape.                  #
+# --------------------------------------------------------------------------- #
+
+
+def test_key_credential_policy_rejects_empty_header_name() -> None:
+    with pytest.raises(ValueError):
+        KeyCredentialPolicy(KeyCredential("k"), "")
+
+
+def test_key_credential_policy_rejects_non_key_credential() -> None:
+    with pytest.raises(TypeError):
+        KeyCredentialPolicy(object(), "X-API-Key")  # type: ignore[arg-type]
+
+
+def test_key_credential_policy_no_prefix_by_default() -> None:
+    client = _CapturingClient()
+    policy = KeyCredentialPolicy(KeyCredential("k"), "X-API-Key")
+    with Pipeline(client, policies=[policy]) as p:
+        p.run(_request(), DispatchContext(_instr("0" * 15 + "47")))
+    assert client.calls[0].headers.get("x-api-key") == "k"
+
+
+# --------------------------------------------------------------------------- #
+# Credential hygiene: key-style policies/credentials are identity-equal, while  #
+# the bearer-style access-token value object keeps value equality.              #
+# --------------------------------------------------------------------------- #
+
+
+def test_key_style_policies_use_identity_equality() -> None:
+    """Two policies with the same key value must not compare equal."""
+    a = KeyCredentialPolicy(KeyCredential("same"), "X-API-Key")
+    b = KeyCredentialPolicy(KeyCredential("same"), "X-API-Key")
+    assert a == a
+    assert a != b
+
+
+def test_key_style_credentials_use_identity_equality() -> None:
+    assert KeyCredential("same") != KeyCredential("same")
+    assert BasicAuthCredential("u", "p") != BasicAuthCredential("u", "p")
+
+
+def test_bearer_style_access_token_uses_value_equality() -> None:
+    a = AccessTokenInfo(token="t", expires_on=100, token_type="Bearer")
+    b = AccessTokenInfo(token="t", expires_on=100, token_type="Bearer")
+    assert a == b

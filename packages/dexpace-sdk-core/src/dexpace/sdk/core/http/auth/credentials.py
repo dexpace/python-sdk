@@ -125,13 +125,20 @@ class NamedKeyCredential:
 
 
 class BasicAuthCredential:
-    """HTTP Basic credential — username + password, base64-encoded once."""
+    """HTTP Basic credential — username + password, base64-encoded once.
+
+    Both halves are validated as non-empty at construction so a blank secret
+    is rejected immediately rather than silently base64-encoding an empty
+    ``user:pass`` pair.
+    """
 
     __slots__ = ("_encoded",)
 
     def __init__(self, username: str, password: str) -> None:
         if not isinstance(username, str) or not isinstance(password, str):
             raise TypeError("username and password must be strings")
+        if not username or not password:
+            raise ValueError("username and password must not be empty")
         raw = f"{username}:{password}".encode()
         self._encoded = base64.b64encode(raw).decode("ascii")
 

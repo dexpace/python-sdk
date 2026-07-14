@@ -97,6 +97,12 @@ class TestBasicAuthCredential:
         # base64("user:pass") = "dXNlcjpwYXNz"
         assert cred.encoded == "dXNlcjpwYXNz"
 
+    def test_rejects_empty(self) -> None:
+        with pytest.raises(ValueError):
+            BasicAuthCredential("user", "")
+        with pytest.raises(ValueError):
+            BasicAuthCredential("", "pass")
+
     def test_repr_redacts(self) -> None:
         cred = BasicAuthCredential("alice", "hunter2")
         assert "alice" not in repr(cred)
