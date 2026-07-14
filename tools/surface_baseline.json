@@ -1,6 +1,27 @@
 {
   "dexpace-sdk-core": {
     "definitions": {
+      "dexpace.sdk.core.client._async_to_sync": {
+        "AsyncToSyncHttpClient": {
+          "bases": [
+            "HttpClient"
+          ],
+          "methods": {
+            "close": "close(self) -> None",
+            "execute": "execute(self, request: Request) -> Response"
+          }
+        }
+      },
+      "dexpace.sdk.core.client._sync_to_async": {
+        "SyncToAsyncHttpClient": {
+          "bases": [
+            "AsyncHttpClient"
+          ],
+          "methods": {
+            "execute": "async execute(self, request: Request) -> AsyncResponse"
+          }
+        }
+      },
       "dexpace.sdk.core.client.async_http_client": {
         "AsyncHttpClient": {
           "bases": [
@@ -1661,7 +1682,9 @@
     "exports": {
       "dexpace.sdk.core.client": [
         "AsyncHttpClient",
+        "AsyncToSyncHttpClient",
         "HttpClient",
+        "SyncToAsyncHttpClient",
         "asyncio_sleep"
       ],
       "dexpace.sdk.core.codegen": [
