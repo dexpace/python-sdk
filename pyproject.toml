@@ -118,6 +118,17 @@ disallow_untyped_defs = true
 disallow_any_generics = true
 namespace_packages = true
 explicit_package_bases = true
+# Each transport-adapter package ships a thin tests/conftest.py that registers
+# its harness into the shared transport-conformance battery. Those shims all
+# resolve to the bare module name "conftest" and collide in mypy's flat module
+# namespace (core/tests avoids this by being a package via tests/__init__.py;
+# the adapter test dirs deliberately are not, to keep pytest's rootdir-relative
+# collection). The substantive, typed harness code lives in each package's
+# uniquely-named *_harness.py / *_conformance_harness.py module, which mypy
+# still type-checks in full — only the registration shims are excluded here.
+exclude = [
+    "packages/dexpace-sdk-http-[^/]+/tests/conftest\\.py$",
+]
 mypy_path = [
     "packages/dexpace-sdk-core/src",
     "packages/dexpace-sdk-http-stdlib/src",
