@@ -28,7 +28,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 from urllib.parse import urljoin
 
-from ..http.common.url import Url
+from ..http.common._query_codec import splice_query
+from ..http.common.url import QueryParams, Url
 from .link_header import parse_link_header
 from .page import Page
 
@@ -97,9 +98,26 @@ def _items_at[T](payload: object, path: Sequence[str]) -> list[T]:
 
 
 def _with_query_param(request: Request, name: str, value: str) -> Request:
-    """Return ``request`` with query parameter ``name`` set to ``value``."""
+    """Return ``request`` with query parameter ``name`` set to ``value``.
+
+    The rewrite is a wire-exact raw-query splice: the current query is spliced
+    at the token level (``splice_query``) so every untouched parameter is
+    preserved verbatim and only the new pair is freshly encoded — never a lossy
+    ``parse_qs`` / ``urlencode`` round-trip. The first occurrence of ``name`` is
+    replaced in place (or the pair appended when absent), and all other URL
+    components are left untouched.
+
+    Args:
+        request: The template request whose URL query is rewritten.
+        name: The query parameter name to set.
+        value: The query parameter value to set.
+
+    Returns:
+        A new request whose URL carries the spliced query.
+    """
     url = request.url
-    return request.with_url(url.with_query(url.query.with_set(name, value)))
+    spliced = splice_query(url.query.encode(), name, value)
+    return request.with_url(url.with_query(QueryParams.parse(spliced)))
 
 
 def _rel_targets(header: str) -> dict[str, str]:
@@ -296,10 +314,31 @@ class LinkHeaderStrategy[T]:
 
     @staticmethod
     def _request_for(target: str | None, template: Request) -> Request | None:
+        """Resolve a link target to a next/prev request, or ``None`` to end.
+
+        A relative or query-only target is resolved against the template URL
+        (so the base path survives a ``<?page=2>`` reference). A malformed or
+        unparseable target ends pagination — it returns ``None`` rather than
+        raising, so one bad ``Link`` value never aborts a walk that has already
+        yielded good pages.
+
+        Args:
+            target: The raw link target URI, or ``None`` when the relation is
+                absent.
+            template: The request to derive method, headers, and body from.
+
+        Returns:
+            The request pointing at ``target``, or ``None`` when the target is
+            absent or unparseable.
+        """
         if target is None:
             return None
         absolute = urljoin(str(template.url), target)
-        return template.with_url(Url.parse(absolute))
+        try:
+            resolved = Url.parse(absolute)
+        except ValueError:
+            return None
+        return template.with_url(resolved)
 
 
 if TYPE_CHECKING:

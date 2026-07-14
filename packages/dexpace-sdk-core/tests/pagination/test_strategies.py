@@ -109,6 +109,33 @@ class TestCursorStrategy:
         page = strategy.parse(_response(req), {"data": [1], "next_cursor": True}, req)
         assert page.next_request is None
 
+    def test_end_decision_reads_only_the_decoded_payload(self) -> None:
+        # The null-vs-empty-cursor termination is decided from the single
+        # pre-decoded payload the paginator already read; the strategy never
+        # reaches back into the response body for a second read.
+        class _BodyExplodes:
+            @property
+            def headers(self) -> Headers:
+                return Headers()
+
+            @property
+            def body(self) -> object:  # pragma: no cover - must never be hit
+                raise AssertionError("strategy must not read the response body")
+
+        strategy: CursorStrategy[int] = CursorStrategy(items_field="data")
+        req = _request()
+        page = strategy.parse(_BodyExplodes(), {"data": [1], "next_cursor": None}, req)
+        assert page.next_request is None
+
+    def test_next_request_preserves_untouched_encoded_param(self) -> None:
+        # An unrelated, pre-encoded query parameter on the template request
+        # survives verbatim into the next request when the cursor is spliced.
+        strategy: CursorStrategy[int] = CursorStrategy(items_field="data")
+        req = _request("https://api.example.com/items?q=a%20b")
+        page = strategy.parse(_response(req), {"data": [1], "next_cursor": "c2"}, req)
+        assert page.next_request is not None
+        assert str(page.next_request.url) == "https://api.example.com/items?q=a%20b&cursor=c2"
+
 
 class TestPageNumberStrategy:
     def test_increments_page_param_when_full_page(self) -> None:
@@ -156,6 +183,19 @@ class TestPageNumberStrategy:
             page_size=2,
         )
         req = _request()
+        page = strategy.parse(_response(req), {"data": [1, 2]}, req)
+        assert page.next_request is not None
+        assert page.next_request.url.query.get("page") == "2"
+
+    def test_garbage_page_value_falls_back_to_start_page(self) -> None:
+        # An unparseable ``page`` value must not raise; it falls back to the
+        # documented start page so the next index is derived deterministically.
+        strategy: PageNumberStrategy[int] = PageNumberStrategy(
+            items_field="data",
+            start_page=1,
+            page_size=2,
+        )
+        req = _request("https://api.example.com/items?page=notanumber")
         page = strategy.parse(_response(req), {"data": [1, 2]}, req)
         assert page.next_request is not None
         assert page.next_request.url.query.get("page") == "2"
@@ -252,3 +292,38 @@ class TestLinkHeaderStrategy:
         query = page.next_request.url.query
         assert query.get("fields") == "a,b"
         assert query.get("page") == "2"
+
+    def test_query_only_target_resolves_against_base_path(self) -> None:
+        # A query-only reference (RFC 3986 §5.4) replaces only the query; the
+        # base request's path is preserved rather than dropped.
+        strategy: LinkHeaderStrategy[int] = LinkHeaderStrategy(items_field="data")
+        headers = Headers([("Link", '<?page=2>; rel="next"')])
+        req = _request("https://api.example.com/v2/items?page=1")
+        page = strategy.parse(_response(req, headers=headers), {"data": [1]}, req)
+        assert page.next_request is not None
+        assert str(page.next_request.url) == "https://api.example.com/v2/items?page=2"
+
+    def test_multi_token_rel_value_resolves_next_and_prev(self) -> None:
+        # RFC 5988 §5.3 lets one link-value carry a space-separated rel set; a
+        # single ``rel="next prev"`` value must satisfy both relations.
+        strategy: LinkHeaderStrategy[int] = LinkHeaderStrategy(items_field="data")
+        headers = Headers(
+            [("Link", '<https://api.example.com/items?page=2>; rel="next prev"')],
+        )
+        req = _request()
+        page = strategy.parse(_response(req, headers=headers), {"data": [1]}, req)
+        assert page.next_request is not None
+        assert page.prev_request is not None
+        assert str(page.next_request.url) == "https://api.example.com/items?page=2"
+        assert str(page.prev_request.url) == "https://api.example.com/items?page=2"
+
+    def test_unparseable_target_ends_sequence_without_error(self) -> None:
+        # A malformed ``rel="next"`` target (here one that resolves to a
+        # scheme-only, host-less URI) must terminate pagination — never raise
+        # and abort a walk that had already yielded good pages.
+        strategy: LinkHeaderStrategy[int] = LinkHeaderStrategy(items_field="data")
+        headers = Headers([("Link", '<http://>; rel="next"')])
+        req = _request()
+        page = strategy.parse(_response(req, headers=headers), {"data": [1]}, req)
+        assert page.next_request is None
+        assert not page.has_next
