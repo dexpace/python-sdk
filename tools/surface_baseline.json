@@ -687,6 +687,22 @@
           }
         }
       },
+      "dexpace.sdk.core.http.response.async_loggable_response_body": {
+        "AsyncLoggableResponseBody": {
+          "bases": [
+            "AsyncResponseBody"
+          ],
+          "methods": {
+            "aiter_bytes": "aiter_bytes(self, chunk_size: int) -> AsyncIterator[bytes]",
+            "captured_size": "captured_size(self) -> int",
+            "close": "async close(self) -> None",
+            "content_length": "content_length(self) -> int",
+            "error": "async error(self) -> BaseException | None",
+            "media_type": "media_type(self) -> MediaType | None",
+            "snapshot": "async snapshot(self, max_bytes: int | None) -> bytes"
+          }
+        }
+      },
       "dexpace.sdk.core.http.response.async_response": {
         "AsyncResponse": {
           "bases": [],
@@ -1162,7 +1178,7 @@
         }
       },
       "dexpace.sdk.core.pipeline.defaults": {
-        "default_async_pipeline": "default_async_pipeline(client: AsyncHttpClient, *, redirect: AsyncRedirectPolicy | None, idempotency: AsyncIdempotencyPolicy | None, retry: AsyncRetryPolicy | None, set_date: AsyncSetDatePolicy | None, client_identity: AsyncClientIdentityPolicy | None, auth: AsyncPolicy | None) -> AsyncStagedPipelineBuilder",
+        "default_async_pipeline": "default_async_pipeline(client: AsyncHttpClient, *, redirect: AsyncRedirectPolicy | None, idempotency: AsyncIdempotencyPolicy | None, retry: AsyncRetryPolicy | None, set_date: AsyncSetDatePolicy | None, client_identity: AsyncClientIdentityPolicy | None, auth: AsyncPolicy | None, logging: AsyncLoggingPolicy | None, tracing: AsyncTracingPolicy | None) -> AsyncStagedPipelineBuilder",
         "default_pipeline": "default_pipeline(client: HttpClient, *, redirect: RedirectPolicy | None, idempotency: IdempotencyPolicy | None, retry: RetryPolicy | None, set_date: SetDatePolicy | None, client_identity: ClientIdentityPolicy | None, auth: Policy | None, logging: LoggingPolicy | None, tracing: TracingPolicy | None) -> StagedPipelineBuilder"
       },
       "dexpace.sdk.core.pipeline.dispatch": {
@@ -1217,6 +1233,16 @@
           }
         }
       },
+      "dexpace.sdk.core.pipeline.policies.async_logging_policy": {
+        "AsyncLoggingPolicy": {
+          "bases": [
+            "AsyncPolicy"
+          ],
+          "methods": {
+            "send": "async send(self, request: Request, ctx: PipelineContext) -> AsyncResponse"
+          }
+        }
+      },
       "dexpace.sdk.core.pipeline.policies.async_redirect": {
         "AsyncRedirectPolicy": {
           "bases": [
@@ -1250,6 +1276,14 @@
       },
       "dexpace.sdk.core.pipeline.policies.async_tracing_policy": {
         "AsyncOperationTracingPolicy": {
+          "bases": [
+            "AsyncPolicy"
+          ],
+          "methods": {
+            "send": "async send(self, request: Request, ctx: PipelineContext) -> AsyncResponse"
+          }
+        },
+        "AsyncTracingPolicy": {
           "bases": [
             "AsyncPolicy"
           ],
@@ -1641,6 +1675,7 @@
         "RequestBody"
       ],
       "dexpace.sdk.core.http.response": [
+        "AsyncLoggableResponseBody",
         "AsyncResponse",
         "AsyncResponseBody",
         "LoggableResponseBody",
@@ -1740,10 +1775,12 @@
       "dexpace.sdk.core.pipeline.policies": [
         "AsyncClientIdentityPolicy",
         "AsyncIdempotencyPolicy",
+        "AsyncLoggingPolicy",
         "AsyncOperationTracingPolicy",
         "AsyncRedirectPolicy",
         "AsyncRetryPolicy",
         "AsyncSetDatePolicy",
+        "AsyncTracingPolicy",
         "ClientIdentityPolicy",
         "DEFAULT_PREVIEW_BYTES",
         "IdempotencyPolicy",

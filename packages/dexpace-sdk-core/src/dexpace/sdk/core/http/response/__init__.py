@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from .async_loggable_response_body import AsyncLoggableResponseBody
 from .async_response import AsyncResponse
 from .async_response_body import AsyncResponseBody
 from .loggable_response_body import LoggableResponseBody
@@ -13,6 +14,7 @@ from .response_body import ResponseBody
 from .status import Status
 
 __all__ = [
+    "AsyncLoggableResponseBody",
     "AsyncResponse",
     "AsyncResponseBody",
     "LoggableResponseBody",

@@ -151,6 +151,31 @@ def test_default_async_pipeline_wires_operation_tracing() -> None:
     assert isinstance(builder._pillars[Stage.OPERATION], AsyncOperationTracingPolicy)
 
 
+def test_default_async_pipeline_wires_logging_and_tracing() -> None:
+    from dexpace.sdk.core.pipeline.policies import AsyncLoggingPolicy
+
+    builder = default_async_pipeline(_AsyncStubTransport())
+    # The async wire-logging gap is closed: the LOGGING pillar holds the async
+    # logging policy and the per-attempt tracing span sits at POST_LOGGING,
+    # matching the sync default's instrumentation slots.
+    assert isinstance(builder._pillars[Stage.LOGGING], AsyncLoggingPolicy)
+    stages = _async_stages_of(builder.build())
+    assert Stage.LOGGING in stages
+    assert Stage.POST_LOGGING in stages
+    # Logging / tracing sit inside the retry wrapper (per attempt), not before it.
+    assert stages.index(Stage.RETRY) < stages.index(Stage.LOGGING)
+    assert stages.index(Stage.LOGGING) < stages.index(Stage.POST_LOGGING)
+
+
+def test_default_async_pipeline_logging_tracing_overrides_replace_defaults() -> None:
+    from dexpace.sdk.core.pipeline.policies import AsyncLoggingPolicy, AsyncTracingPolicy
+
+    logging = AsyncLoggingPolicy(preview_bytes=256)
+    tracing = AsyncTracingPolicy()
+    builder = default_async_pipeline(_AsyncStubTransport(), logging=logging, tracing=tracing)
+    assert builder._pillars[Stage.LOGGING] is logging
+
+
 def test_default_async_pipeline_omits_redirect_by_default() -> None:
     # Gate: the async redirect twin is not certified against the full redirect
     # security battery (see test_async_redirect_battery.py and docs/deviations.md),
