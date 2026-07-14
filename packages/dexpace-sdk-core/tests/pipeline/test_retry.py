@@ -33,8 +33,8 @@ from dexpace.sdk.core.instrumentation import (
 )
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import Pipeline
+from dexpace.sdk.core.pipeline._pure.pacing import parse_retry_after
 from dexpace.sdk.core.pipeline.policies import RetryPolicy
-from dexpace.sdk.core.pipeline.policies.retry import _parse_retry_after
 
 from ..conftest import FakeClock
 
@@ -209,20 +209,20 @@ class TestReadPhaseMethodGating:
 
 class TestRetryAfterHeader:
     def test_parse_delta_seconds(self) -> None:
-        assert _parse_retry_after("5", now=0.0) == pytest.approx(5.0)
-        assert _parse_retry_after("0", now=0.0) == pytest.approx(0.0)
-        assert _parse_retry_after("0.5", now=0.0) == pytest.approx(0.5)
+        assert parse_retry_after("5", now=0.0) == pytest.approx(5.0)
+        assert parse_retry_after("0", now=0.0) == pytest.approx(0.0)
+        assert parse_retry_after("0.5", now=0.0) == pytest.approx(0.5)
 
     def test_parse_http_date_future(self) -> None:
         # Far-future date should be a positive delta.
-        result = _parse_retry_after("Sun, 06 Nov 2099 08:49:37 GMT", now=0.0)
+        result = parse_retry_after("Sun, 06 Nov 2099 08:49:37 GMT", now=0.0)
         assert result is not None
         assert result > 0
 
     def test_parse_http_date_past_clamps_to_zero(self) -> None:
         # ``now`` is well past the 1990 header instant, so the delta is
         # negative and clamps to zero.
-        result = _parse_retry_after("Mon, 01 Jan 1990 00:00:00 GMT", now=2_000_000_000.0)
+        result = parse_retry_after("Mon, 01 Jan 1990 00:00:00 GMT", now=2_000_000_000.0)
         assert result == pytest.approx(0.0)
 
     def test_parse_http_date_uses_injected_now(self) -> None:
@@ -230,16 +230,16 @@ class TestRetryAfterHeader:
         # injected clock, not the wall clock. 2000-01-01T00:00:00Z is epoch
         # 946684800; with ``now`` set 60s before it, the delay is exactly 60s.
         epoch_2000 = 946_684_800.0
-        result = _parse_retry_after(
+        result = parse_retry_after(
             "Sat, 01 Jan 2000 00:00:00 GMT",
             now=epoch_2000 - 60.0,
         )
         assert result == pytest.approx(60.0)
 
     def test_parse_invalid_returns_none(self) -> None:
-        assert _parse_retry_after("not-a-date", now=0.0) is None
-        assert _parse_retry_after("", now=0.0) is None
-        assert _parse_retry_after(None, now=0.0) is None
+        assert parse_retry_after("not-a-date", now=0.0) is None
+        assert parse_retry_after("", now=0.0) is None
+        assert parse_retry_after(None, now=0.0) is None
 
     def test_respected_during_retry(self) -> None:
         sleeps: list[float] = []

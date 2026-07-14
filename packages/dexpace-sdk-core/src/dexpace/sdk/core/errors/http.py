@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Final, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from ..http.response.loggable_response_body import LoggableResponseBody
 from .base import SdkError
@@ -26,12 +26,6 @@ if TYPE_CHECKING:
     ModelT = TypeVar("ModelT", default=Any)
 else:
     ModelT = TypeVar("ModelT")
-
-# Status codes for which a retry is worthwhile by default: request timeout,
-# rate limiting, and the transient 5xx family. Mirrors the retry policy's
-# ``_DEFAULT_STATUS_RETRIES`` so ``retryable`` and the policy agree out of
-# the box; callers can override per error via the ``retryable`` kwarg.
-_DEFAULT_RETRYABLE_STATUS: Final[frozenset[int]] = frozenset({408, 429, 500, 502, 503, 504})
 
 
 # UP046 wants PEP 695 ``class Foo[T = Any](...)`` form, but that syntax
@@ -103,11 +97,21 @@ class HttpResponseError(SdkError, Generic[ModelT]):  # noqa: UP046
     def _status_is_retryable(self) -> bool:
         """Return whether this error's status is retryable by default.
 
+        Consults the shared pure classifier against its default retryable
+        status set, so ``retryable`` and the retry policy agree out of the box
+        from one definition instead of a hand-mirrored literal. The classifier
+        is imported lazily inside the method because it lives under
+        ``pipeline`` (whose package import pulls in policies that import this
+        error module) — a module-level import would form an errors -> pipeline
+        -> errors cycle.
+
         Returns:
             ``True`` when the captured status is one of the default
             retryable codes, ``False`` when no status was captured.
         """
-        return self.status is not None and int(self.status) in _DEFAULT_RETRYABLE_STATUS
+        from ..pipeline._pure.classifier import DEFAULT_RETRYABLE_STATUS, status_is_retryable
+
+        return status_is_retryable(self.status, DEFAULT_RETRYABLE_STATUS)
 
     def body_snapshot(self, max_bytes: int | None = None) -> bytes:
         """Preview the error response body without consuming it.

@@ -24,9 +24,7 @@ from __future__ import annotations
 
 import logging
 import random
-import re
 from collections.abc import Iterable
-from email.utils import parsedate_to_datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
@@ -38,6 +36,9 @@ from ...errors import (
     ServiceResponseTimeoutError,
 )
 from ...util.clock import SYSTEM_CLOCK, Clock
+from .._pure.backoff import apply_jitter, compute_backoff
+from .._pure.classifier import DEFAULT_RETRYABLE_STATUS, status_is_retryable
+from .._pure.pacing import parse_rate_limit_reset, parse_retry_after
 from ..policy import Policy
 from ..stage import Stage
 from ._history import RequestHistory
@@ -81,7 +82,6 @@ class _ResponseLike(Protocol):
     def headers(self) -> Any: ...
 
 
-_DEFAULT_STATUS_RETRIES: Final[frozenset[int]] = frozenset({408, 429, 500, 502, 503, 504})
 _DEFAULT_METHOD_ALLOWLIST: Final[frozenset[str]] = frozenset(
     {"HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE"}
 )
@@ -188,7 +188,7 @@ class RetryPolicy(Policy):
         retry_mode: RetryMode = RetryMode.EXPONENTIAL,
         timeout: float = 604_800,  # 7 days, mirroring Azure's default
         method_allowlist: Iterable[str] = _DEFAULT_METHOD_ALLOWLIST,
-        retry_on_status_codes: Iterable[int] = _DEFAULT_STATUS_RETRIES,
+        retry_on_status_codes: Iterable[int] = DEFAULT_RETRYABLE_STATUS,
         respect_retry_after: bool = True,
         retry_after_max: float = _DEFAULT_RETRY_AFTER_MAX,
         full_jitter: bool = True,
@@ -299,7 +299,7 @@ class RetryPolicy(Policy):
             return False
         if not self._method_is_retryable(settings, request, response):
             return False
-        if status in self.retry_on_status_codes:
+        if status_is_retryable(status, self.retry_on_status_codes):
             return int(settings["total"]) > 0
         # ``Retry-After`` only triggers retry for status codes already in the
         # allowlist; a malicious server cannot force retries on arbitrary
@@ -407,10 +407,10 @@ class RetryPolicy(Policy):
             Seconds to wait, or ``None`` when neither header is present.
         """
         now = self._clock.now()
-        retry_after = _parse_retry_after(response.headers.get("Retry-After"), now)
+        retry_after = parse_retry_after(response.headers.get("Retry-After"), now)
         if retry_after is not None:
             return min(retry_after, self.retry_after_max)
-        reset = _parse_rate_limit_reset(
+        reset = parse_rate_limit_reset(
             response.headers.get(_RATE_LIMIT_RESET_HEADER),
             now,
         )
@@ -420,19 +420,28 @@ class RetryPolicy(Policy):
         return min(jittered, self.retry_after_max)
 
     def _backoff_seconds(self, settings: dict[str, Any]) -> float:
-        attempts = len(settings["history"])
-        if attempts <= 1:
-            return 0.0
-        if self.retry_mode is RetryMode.FIXED:
-            backoff = float(settings["backoff"])
-        else:
-            backoff = float(settings["backoff"]) * (2 ** (attempts - 1))
-        bounded = min(float(settings["max_backoff"]), backoff)
-        if self._full_jitter:
-            return bounded * self._rand.uniform(0.5, 1.0)
-        if self._jitter == 0:
-            return bounded
-        return bounded * self._rand.uniform(1 - self._jitter, 1 + self._jitter)
+        """Compute the jittered backoff delay for the next attempt, in seconds.
+
+        Delegates the schedule to the shared pure ``compute_backoff`` (the
+        deterministic exponential/fixed curve) and ``apply_jitter`` so the sync
+        and async policies share one formula instead of each restating it.
+
+        Args:
+            settings: Mutable per-call settings dict; reads ``history`` (for
+                the attempt count), ``backoff``, and ``max_backoff``.
+
+        Returns:
+            Non-negative seconds to wait before the next attempt.
+        """
+        delay = compute_backoff(
+            len(settings["history"]),
+            base=float(settings["backoff"]),
+            cap=float(settings["max_backoff"]),
+            fixed=self.retry_mode is RetryMode.FIXED,
+        )
+        return apply_jitter(
+            delay, self._rand, full_jitter=self._full_jitter, symmetric=self._jitter
+        )
 
     def _sleep_bounded(self, duration: float, absolute_deadline: float) -> None:
         """Sleep for ``duration`` seconds, clamped to the absolute deadline.
@@ -478,64 +487,6 @@ class _StatusRetryError(Exception):
     def __init__(self, status: int) -> None:
         super().__init__(f"retryable HTTP status {status}")
         self.status = status
-
-
-_RETRY_AFTER_DELTA_PATTERN = re.compile(r"^\s*\d+(\.\d+)?\s*$")
-
-
-def _parse_retry_after(value: str | None, now: float) -> float | None:
-    """Parse a ``Retry-After`` header value (delta-seconds or HTTP-date).
-
-    Args:
-        value: Raw header value. ``None`` returns ``None`` directly.
-        now: Current wall-clock time, in seconds since the epoch, used to
-            convert an HTTP-date into a delay. Injected so the value is
-            deterministic in tests.
-
-    Returns:
-        Seconds to wait (>= 0), or ``None`` when ``value`` is missing or
-        unparseable.
-    """
-    if value is None or not value.strip():
-        return None
-    if _RETRY_AFTER_DELTA_PATTERN.match(value):
-        return max(0.0, float(value))
-    try:
-        when = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        return None
-    if when is None:
-        return None
-    delta = when.timestamp() - now
-    return max(0.0, delta)
-
-
-_RATE_LIMIT_RESET_PATTERN = re.compile(r"^\s*\d+(\.\d+)?\s*$")
-
-
-def _parse_rate_limit_reset(value: str | None, now: float) -> float | None:
-    """Parse an ``X-RateLimit-Reset`` epoch header into a delay.
-
-    The header carries the wall-clock second at which the rate-limit window
-    resets (GitHub, Stripe, Slack). The delay is the difference between that
-    instant and ``now``, floored at zero (a reset already in the past means
-    retry immediately).
-
-    Args:
-        value: Raw header value (epoch seconds). ``None`` or unparseable
-            returns ``None``.
-        now: Current wall-clock time, in seconds since the epoch, used to
-            compute the delta. Injected so the value is deterministic in tests.
-
-    Returns:
-        Seconds to wait (>= 0), or ``None`` when the header is missing or not a
-        plain epoch number.
-    """
-    if value is None or not value.strip():
-        return None
-    if not _RATE_LIMIT_RESET_PATTERN.match(value):
-        return None
-    return max(0.0, float(value) - now)
 
 
 def _has_budget(settings: dict[str, Any]) -> bool:
