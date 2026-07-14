@@ -56,6 +56,20 @@
         "set_default_configuration": "set_default_configuration(config: Configuration) -> None"
       },
       "dexpace.sdk.core.errors.base": {
+        "NetworkError": {
+          "bases": [
+            "OSError",
+            "SdkError"
+          ],
+          "methods": {}
+        },
+        "RequestCancelledError": {
+          "bases": [
+            "OSError",
+            "SdkError"
+          ],
+          "methods": {}
+        },
         "SdkError": {
           "bases": [
             "Exception"
@@ -64,7 +78,7 @@
         },
         "ServiceRequestError": {
           "bases": [
-            "SdkError"
+            "NetworkError"
           ],
           "methods": {}
         },
@@ -109,7 +123,8 @@
             "SdkError"
           ],
           "methods": {
-            "body_snapshot": "body_snapshot(self, max_bytes: int | None) -> bytes"
+            "body_snapshot": "body_snapshot(self, max_bytes: int | None) -> bytes",
+            "read_body": "read_body(self, max_bytes: int) -> bytes"
           }
         },
         "ResourceExistsError": {
@@ -1561,8 +1576,11 @@
         "ClientAuthenticationError",
         "DecodeError",
         "DeserializationError",
+        "ERROR_BODY_MAX_BYTES",
         "HttpResponseError",
+        "NetworkError",
         "PipelineAbortedError",
+        "RequestCancelledError",
         "ResourceExistsError",
         "ResourceModifiedError",
         "ResourceNotFoundError",

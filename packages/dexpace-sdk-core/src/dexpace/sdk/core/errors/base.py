@@ -58,7 +58,36 @@ class SdkError(Exception):
         super().__init__(self.message)
 
 
-class ServiceRequestError(SdkError):
+class NetworkError(SdkError, OSError):
+    """A transport-level failure that never yielded a usable response.
+
+    Roots the transport branch of the taxonomy: connection refused, DNS
+    failure, TLS handshake failure, connect timeout — anything where the
+    request never completed an exchange that produced a response.
+
+    It subclasses ``OSError`` in addition to ``SdkError`` so that existing
+    ``except OSError:`` sites (in user code or third-party libraries) keep
+    matching transport failures after the SDK re-wraps them. The multiple
+    inheritance is deliberate and safe: both bases share ``Exception``, and
+    ``SdkError.__init__`` cooperates with ``OSError`` via ``super()``.
+
+    Transport failures on this branch are *always* retryable at the
+    error-class level — a request that never reached the service is safe to
+    re-send on an idempotent method. This is orthogonal to the per-status
+    retryability of ``HttpResponseError`` (which classifies HTTP status codes
+    on a response that *was* received); here the retryability is a property of
+    the error type itself. ``retryable`` is a class-level constant so the
+    ``Retryable`` structural protocol reads it directly.
+
+    Attributes:
+        retryable: Always ``True`` — the transport branch never got a response,
+            so a retry on an idempotent method may succeed.
+    """
+
+    retryable: bool = True
+
+
+class ServiceRequestError(NetworkError):
     """The request never reached the service.
 
     Raised for connection failures, DNS errors, TLS handshake failures, and
@@ -68,7 +97,14 @@ class ServiceRequestError(SdkError):
 
 
 class ServiceRequestTimeoutError(ServiceRequestError):
-    """The request timed out before any data was transmitted."""
+    """The request timed out before any data was transmitted.
+
+    The SDK's request-timeout type. It subclasses ``NetworkError`` (via
+    ``ServiceRequestError``) explicitly, so it is an ``OSError`` and retryable
+    by design — the SDK never relies on Python's builtin ``TimeoutError``
+    (itself an ``OSError`` since 3.10) coincidentally lining up. Discriminate
+    it before any cancellation type by subtype, never by message text.
+    """
 
 
 class ServiceResponseError(SdkError):
@@ -84,7 +120,33 @@ class ServiceResponseTimeoutError(ServiceResponseError):
     """The response timed out after the request was transmitted."""
 
 
+class RequestCancelledError(SdkError, OSError):
+    """The request was cancelled cooperatively before completion.
+
+    The terminal type for synchronous cooperative cancellation: a caller (or a
+    scheduled deadline) cancelled the in-flight request via the cooperative
+    cancellation handle. Like ``NetworkError`` it subclasses ``OSError`` so
+    ``except OSError:`` sites match it, but it is deliberately *not* a
+    ``NetworkError`` — cancellation is terminal, never retried. Its
+    ``retryable`` flag is a class-level ``False`` so the ``Retryable``
+    structural protocol reads it directly and a retry loop leaves it alone.
+
+    Discriminate it from a timeout by subtype (a ``ServiceRequestTimeoutError``
+    is a retryable ``NetworkError``; this is not), never by message text — the
+    two carry unrelated semantics even when their messages coincide. The
+    asynchronous equivalent is ``asyncio.CancelledError``, which is already a
+    ``BaseException`` and needs no SDK subtype.
+
+    Attributes:
+        retryable: Always ``False`` — cancellation is terminal.
+    """
+
+    retryable: bool = False
+
+
 __all__ = [
+    "NetworkError",
+    "RequestCancelledError",
     "SdkError",
     "ServiceRequestError",
     "ServiceRequestTimeoutError",

@@ -7,11 +7,14 @@ distinguish failure modes by subclass.
 ```
 Exception
 └─ SdkError                              # root; captures sys.exc_info + inner_exception
-   ├─ ServiceRequestError                # request never reached server
-   │  └─ ServiceRequestTimeoutError
+   ├─ NetworkError  (also OSError)       # transport branch; never got a response;
+   │  │                                  #   always retryable at the error-class level
+   │  └─ ServiceRequestError             # request never reached server
+   │     └─ ServiceRequestTimeoutError   # connect-phase timeout (retryable)
+   ├─ RequestCancelledError  (also OSError)  # sync cooperative-cancel; terminal, never retried
    ├─ ServiceResponseError               # response unparseable / connection dropped
-   │  └─ ServiceResponseTimeoutError
-   ├─ HttpResponseError                  # 4xx/5xx received intact
+   │  └─ ServiceResponseTimeoutError     #   (not the always-retryable transport branch)
+   ├─ HttpResponseError                  # 4xx/5xx received intact; carries bounded error body
    │  ├─ ClientAuthenticationError       # 401/403 — short-circuits retry
    │  ├─ DecodeError                     # body could not be decoded
    │  ├─ ResourceExistsError             # typically 409
@@ -27,6 +30,36 @@ Exception
       ├─ SerializationError              # encode side
       └─ DeserializationError            # decode side (CodecError lives here)
 ```
+
+The taxonomy has two branches, split by whether a response was ever received:
+
+- **`NetworkError`** roots the transport branch — a request that never yielded a
+  usable response (connection refused, DNS failure, connect timeout). It also
+  subclasses `OSError`, so `except OSError:` sites (in user code or third-party
+  libraries) keep matching transport failures after the SDK re-wraps them, and
+  it is *always retryable* at the error-class level (a request that never
+  reached the service is safe to re-send on an idempotent method). Never catch a
+  `NetworkError` and re-wrap it into a non-network branch — that would break
+  those `except OSError:` sites.
+- **`HttpResponseError`** roots the response branch — a 4xx/5xx response arrived
+  intact. Its `retryable` flag is derived per-status from the shared retry
+  classifier and *baked once* at construction, so a later change to a retry
+  policy's configured status set never mutates an already-built error. It also
+  carries a bounded, replayable copy of the error body via
+  `read_body(max_bytes=ERROR_BODY_MAX_BYTES)` (default cap: 1 MiB) for repeatable
+  post-mortem inspection; `body_snapshot` remains the non-consuming preview.
+
+`ServiceResponseError` is the in-between case (request sent, but the response
+could not be parsed): it is deliberately *not* on the always-retryable transport
+branch, because the request may already have been processed.
+
+`RequestCancelledError` is the terminal type for synchronous cooperative
+cancellation. Like `NetworkError` it is an `OSError`, but — being terminal — it
+is not a `NetworkError` and is never retryable. Discriminate a timeout from a
+cancellation by subtype (a `ServiceRequestTimeoutError` is a retryable
+`NetworkError`; a `RequestCancelledError` is not), checking the timeout first,
+never by matching message text. The asynchronous cancel signal is
+`asyncio.CancelledError`, a `BaseException` that needs no SDK subtype.
 
 `SerdeError` roots the serde failure taxonomy: catch it to handle any
 serde failure regardless of direction, or catch `SerializationError` /

@@ -12,7 +12,11 @@ from __future__ import annotations
 
 import pytest
 
-from dexpace.sdk.core.errors import HttpResponseError, ResourceNotFoundError
+from dexpace.sdk.core.errors import (
+    ERROR_BODY_MAX_BYTES,
+    HttpResponseError,
+    ResourceNotFoundError,
+)
 from dexpace.sdk.core.http.common import MediaType, Protocol, Url
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.response import (
@@ -21,6 +25,7 @@ from dexpace.sdk.core.http.response import (
     ResponseBody,
     Status,
 )
+from dexpace.sdk.core.pipeline._pure import classifier
 
 
 def _response(status: Status, *, body: ResponseBody | None = None) -> Response:
@@ -81,6 +86,87 @@ def test_retryable_override_forces_false() -> None:
 def test_retryable_inherited_by_subclasses() -> None:
     err = ResourceNotFoundError(response=_response(Status.NOT_FOUND))
     assert err.retryable is False
+
+
+def test_retryable_is_baked_once_and_stable_against_classifier_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The flag is derived from the shared classifier at construction time and
+    # then baked as a plain attribute, so mutating the classifier's configured
+    # set afterwards must not retroactively change an already-built error.
+    err = HttpResponseError(response=_response(Status.SERVICE_UNAVAILABLE))
+    assert err.retryable is True
+    baked = err.retryable
+
+    # Repoint the classifier's default set at an empty set *after* construction.
+    monkeypatch.setattr(classifier, "DEFAULT_RETRYABLE_STATUS", frozenset())
+
+    # The already-constructed error keeps its baked value (no recompute).
+    assert err.retryable is baked is True
+    # Proof the patch is live: a freshly built error now reflects the empty set,
+    # confirming the first error's flag was frozen at its own construction.
+    fresh = HttpResponseError(response=_response(Status.SERVICE_UNAVAILABLE))
+    assert fresh.retryable is False
+
+
+# ----- bounded, replayable error body -------------------------------------
+
+
+def test_error_body_cap_is_one_mib() -> None:
+    assert ERROR_BODY_MAX_BYTES == 1 << 20  # documented 1 MiB cap
+
+
+def test_read_body_captures_bounded_replayable_copy() -> None:
+    # A body larger than the cap is truncated to the documented ceiling and the
+    # captured copy replays identically on every subsequent read.
+    payload = b"x" * (ERROR_BODY_MAX_BYTES + 4096)
+    body = ResponseBody.from_bytes(payload)
+    err = HttpResponseError(response=_response(Status.BAD_REQUEST, body=body))
+
+    first = err.read_body()
+    assert len(first) == ERROR_BODY_MAX_BYTES
+    # Replayable: the error carries the bounded copy, so a second read matches.
+    assert err.read_body() == first
+
+
+def test_read_body_returns_full_body_under_cap() -> None:
+    body = ResponseBody.from_bytes(b'{"error":"boom"}')
+    err = HttpResponseError(response=_response(Status.BAD_REQUEST, body=body))
+    assert err.read_body() == b'{"error":"boom"}'
+    assert err.read_body() == b'{"error":"boom"}'  # replayable
+
+
+def test_read_body_reads_from_loggable_body_repeatably() -> None:
+    loggable = LoggableResponseBody(
+        ResponseBody.from_bytes(b'{"error":"boom"}', MediaType.parse("application/json")),
+    )
+    err = HttpResponseError(response=_response(Status.BAD_REQUEST, body=loggable))
+    assert err.read_body() == b'{"error":"boom"}'
+    # The caller-owned loggable body is still readable afterwards.
+    assert loggable.bytes() == b'{"error":"boom"}'
+
+
+def test_read_body_honours_explicit_smaller_cap() -> None:
+    body = ResponseBody.from_bytes(b"0123456789")
+    err = HttpResponseError(response=_response(Status.BAD_REQUEST, body=body))
+    assert err.read_body(4) == b"0123"
+
+
+def test_read_body_returns_empty_when_no_body() -> None:
+    err = HttpResponseError(response=_response(Status.BAD_REQUEST))
+    assert err.read_body() == b""
+
+
+def test_read_body_returns_empty_when_no_response() -> None:
+    err = HttpResponseError("no response captured")
+    assert err.read_body() == b""
+
+
+def test_read_body_rejects_negative_max_bytes() -> None:
+    body = ResponseBody.from_bytes(b"data")
+    err = HttpResponseError(response=_response(Status.BAD_REQUEST, body=body))
+    with pytest.raises(ValueError, match="max_bytes must be non-negative"):
+        err.read_body(-1)
 
 
 # ----- body_snapshot ------------------------------------------------------
