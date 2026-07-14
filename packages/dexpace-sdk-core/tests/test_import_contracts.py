@@ -30,6 +30,7 @@ _EXPECTED_CONTRACTS = {
     "Adapters depend on core, never the reverse",
     "furl is confined to the Url module",
     "Pipeline runners sit above the pure algorithm layer",
+    "Codegen executor shells sit above the pure planner layer and never import each other",
 }
 
 
@@ -67,7 +68,7 @@ def test_real_tree_satisfies_all_contracts() -> None:
         "lint-imports failed against the real tree:\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
-    assert "Contracts: 3 kept, 0 broken." in result.stdout
+    assert "Contracts: 4 kept, 0 broken." in result.stdout
 
 
 def test_seeded_furl_violation_breaks_the_build() -> None:

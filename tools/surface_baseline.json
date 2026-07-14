@@ -43,8 +43,41 @@
           }
         }
       },
+      "dexpace.sdk.core.codegen._pure.options": {
+        "plan_options": "plan_options(auth: object | None, call_options: Mapping[str, Any]) -> Mapping[str, Any]"
+      },
+      "dexpace.sdk.core.codegen._pure.requests": {
+        "plan_request": "plan_request(op: Operation, input: OperationInput, base_url: str | Url, serde: Serde | None) -> Request"
+      },
+      "dexpace.sdk.core.codegen._pure.results": {
+        "plan_result": "plan_result(handler: H | None, default_handler: H, response_type: _Witness | None, default_witness: _Witness) -> tuple[H, _Witness] | None"
+      },
       "dexpace.sdk.core.codegen.assembly": {
         "assemble": "assemble(op: Operation, input: OperationInput, base_url: str | Url, *, serde: Serde | None) -> Request"
+      },
+      "dexpace.sdk.core.codegen.async_response_handler": {
+        "AsyncDecodeSuccess": {
+          "bases": [],
+          "methods": {}
+        },
+        "AsyncResponseHandler": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.codegen.async_service_core": {
+        "AsyncServiceCore": {
+          "bases": [],
+          "methods": {
+            "aclose": "async aclose(self) -> None",
+            "events": "events(self, op: Operation, input: OperationInput, mapper: SseMapper[T], *, auth: AsyncPolicy | None, **call_options: Any) -> AsyncTypedSseConnection[T]",
+            "execute": "async execute(self, op: Operation, input: OperationInput, *, response_type: _Witness[Any] | None, handler: AsyncResponseHandler | None, auth: AsyncPolicy | None, **call_options: Any) -> Any",
+            "execute_request": "async execute_request(self, request: Request, *, response_type: _Witness[Any] | None, handler: AsyncResponseHandler | None, auth: AsyncPolicy | None, **call_options: Any) -> Any",
+            "paginate": "paginate(self, op: Operation, input: OperationInput, strategy: PaginationStrategy[T], *, max_pages: int | None, auth: AsyncPolicy | None, **call_options: Any) -> AsyncPaginator[T]"
+          }
+        }
       },
       "dexpace.sdk.core.codegen.operation": {
         "Operation": {
@@ -54,6 +87,18 @@
         "OperationInput": {
           "bases": [],
           "methods": {}
+        }
+      },
+      "dexpace.sdk.core.codegen.service_core": {
+        "ServiceCore": {
+          "bases": [],
+          "methods": {
+            "close": "close(self) -> None",
+            "events": "events(self, op: Operation, input: OperationInput, mapper: SseMapper[T], *, auth: Policy | None, **call_options: Any) -> TypedSseConnection[T]",
+            "execute": "execute(self, op: Operation, input: OperationInput, *, response_type: _Witness[Any] | None, handler: ResponseHandler | None, auth: Policy | None, **call_options: Any) -> Any",
+            "execute_request": "execute_request(self, request: Request, *, response_type: _Witness[Any] | None, handler: ResponseHandler | None, auth: Policy | None, **call_options: Any) -> Any",
+            "paginate": "paginate(self, op: Operation, input: OperationInput, strategy: PaginationStrategy[T], *, max_pages: int | None, auth: Policy | None, **call_options: Any) -> Paginator[T]"
+          }
         }
       },
       "dexpace.sdk.core.codegen.status_error_map": {
@@ -1713,8 +1758,12 @@
         "asyncio_sleep"
       ],
       "dexpace.sdk.core.codegen": [
+        "AsyncDecodeSuccess",
+        "AsyncResponseHandler",
+        "AsyncServiceCore",
         "Operation",
         "OperationInput",
+        "ServiceCore",
         "StatusErrorMap",
         "assemble"
       ],

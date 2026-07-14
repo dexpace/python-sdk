@@ -65,3 +65,13 @@ layers =
     _sansio_runner | _transport_runner | _async_sansio_runner | _async_transport_runner
     (_pure)
 exhaustive = False
+
+[importlinter:contract:codegen-executors-above-pure]
+name = Codegen executor shells sit above the pure planner layer and never import each other
+type = layers
+containers =
+    dexpace.sdk.core.codegen
+layers =
+    service_core | async_service_core
+    (_pure)
+exhaustive = False

@@ -28,6 +28,7 @@ from collections.abc import Sequence
 from typing import BinaryIO, assert_type
 
 from dexpace.sdk.core.client import AsyncHttpClient, HttpClient
+from dexpace.sdk.core.codegen import AsyncServiceCore, Operation, OperationInput, ServiceCore
 from dexpace.sdk.core.http.common import Headers
 from dexpace.sdk.core.http.request import Request, RequestBody
 from dexpace.sdk.core.http.response import AsyncResponse, Response, Status
@@ -107,3 +108,30 @@ def _request_body_factories() -> None:
     """The `RequestBody` factories return the base `RequestBody` type."""
     assert_type(RequestBody.from_bytes(b"payload"), RequestBody)
     assert_type(RequestBody.from_string("payload"), RequestBody)
+
+
+def _service_core_execute(
+    core: ServiceCore, op: Operation, inp: OperationInput, request: Request
+) -> None:
+    """`ServiceCore.execute` / `execute_request` overloads narrow on `response_type`.
+
+    With no ``response_type`` the raw `Response` is returned; a concrete type or
+    a subscripted generic passed as ``response_type`` narrows the return to that
+    exact type.
+    """
+    assert_type(core.execute(op, inp), Response)
+    assert_type(core.execute(op, inp, response_type=Pet), Pet)
+    assert_type(core.execute(op, inp, response_type=list[Pet]), list[Pet])
+    assert_type(core.execute_request(request), Response)
+    assert_type(core.execute_request(request, response_type=Pet), Pet)
+
+
+async def _async_service_core_execute(
+    core: AsyncServiceCore, op: Operation, inp: OperationInput, request: Request
+) -> None:
+    """`AsyncServiceCore.execute` awaits to the same narrowed types as the sync twin."""
+    assert_type(await core.execute(op, inp), AsyncResponse)
+    assert_type(await core.execute(op, inp, response_type=Pet), Pet)
+    assert_type(await core.execute(op, inp, response_type=list[Pet]), list[Pet])
+    assert_type(await core.execute_request(request), AsyncResponse)
+    assert_type(await core.execute_request(request, response_type=Pet), Pet)
