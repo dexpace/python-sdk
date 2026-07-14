@@ -1131,6 +1131,23 @@
           }
         }
       },
+      "dexpace.sdk.core.pipeline._async_recovery": {
+        "afrom_status": "async afrom_status(response: AsyncResponse, *, error_map: Mapping[int, type[HttpResponseError]] | None, max_body_bytes: int) -> Outcome[AsyncResponse]",
+        "amap_success": "async amap_success(outcome: Outcome[AsyncResponse], step: Callable[[AsyncResponse], Awaitable[AsyncResponse]]) -> Outcome[AsyncResponse]",
+        "aproduce": "async aproduce(source: Callable[[], Awaitable[AsyncResponse]]) -> Outcome[AsyncResponse]",
+        "arecover": "async arecover(outcome: Outcome[AsyncResponse], cleanup: Callable[[Outcome[AsyncResponse]], Awaitable[Outcome[AsyncResponse]]]) -> Outcome[AsyncResponse]"
+      },
+      "dexpace.sdk.core.pipeline._outcome": {
+        "Failure": {
+          "bases": [],
+          "methods": {}
+        },
+        "Success": {
+          "bases": [],
+          "methods": {}
+        },
+        "unwrap": "unwrap(outcome: Outcome[R]) -> R"
+      },
       "dexpace.sdk.core.pipeline._pure.backoff": {
         "apply_jitter": "apply_jitter(delay: float, rng: random.Random, *, full_jitter: bool, symmetric: float) -> float",
         "compute_backoff": "compute_backoff(attempt: int, *, base: float, cap: float, multiplier: float, fixed: bool) -> float"
@@ -1148,6 +1165,12 @@
       "dexpace.sdk.core.pipeline._pure.pacing": {
         "parse_rate_limit_reset": "parse_rate_limit_reset(value: str | None, now: float) -> float | None",
         "parse_retry_after": "parse_retry_after(value: str | None, now: float) -> float | None"
+      },
+      "dexpace.sdk.core.pipeline._recovery": {
+        "from_status": "from_status(response: Response, *, error_map: Mapping[int, type[HttpResponseError]] | None, max_body_bytes: int) -> Outcome[Response]",
+        "map_success": "map_success(outcome: Outcome[Response], step: Callable[[Response], Response]) -> Outcome[Response]",
+        "produce": "produce(source: Callable[[], Response]) -> Outcome[Response]",
+        "recover": "recover(outcome: Outcome[Response], cleanup: Callable[[Outcome[Response]], Outcome[Response]]) -> Outcome[Response]"
       },
       "dexpace.sdk.core.pipeline.async_pipeline": {
         "AsyncPipeline": {
