@@ -57,7 +57,11 @@ print(logged.snapshot()[:200])
 The cap is a soft truncate on the *tap*; the primary write path
 receives the full payload. `LoggableResponseBody` is the same shape on
 the response side — first access drains the underlying body into a
-`bytes` cache that subsequent calls replay.
+`bytes` cache. A body that fits the cap is captured whole and replayed by
+every later read; a body that exceeds the cap keeps only the prefix, then
+streams the live tail once (single-use past the cap). Either way,
+`snapshot()` returns the captured prefix without raising, and `error()`
+reports a mid-drain failure.
 
 ## Async equivalents
 

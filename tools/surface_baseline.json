@@ -729,6 +729,7 @@
             "captured_size": "captured_size(self) -> int",
             "close": "close(self) -> None",
             "content_length": "content_length(self) -> int",
+            "error": "error(self) -> BaseException | None",
             "iter_bytes": "iter_bytes(self, chunk_size: int) -> Iterator[bytes]",
             "media_type": "media_type(self) -> MediaType | None",
             "snapshot": "snapshot(self, max_bytes: int | None) -> bytes"
