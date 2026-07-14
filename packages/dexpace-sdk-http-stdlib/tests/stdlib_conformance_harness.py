@@ -49,14 +49,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final, Self
 
-from dexpace.sdk.core.errors import ServiceRequestError
-from dexpace.sdk.core.http.common.headers import Headers
-from dexpace.sdk.core.http.common.url import Url
-from dexpace.sdk.core.http.request.request import Request
-from dexpace.sdk.http.stdlib.asyncio_http_client import AsyncioHttpClient
-from dexpace.sdk.http.stdlib.urllib_http_client import UrllibHttpClient
-
-from .harness import (
+from tests.transport_conformance.harness import (
     AsyncTransportHarness,
     ClosableNative,
     DropLog,
@@ -66,6 +59,13 @@ from .harness import (
     SentRequest,
     SyncTransportHarness,
 )
+
+from dexpace.sdk.core.errors import ServiceRequestError
+from dexpace.sdk.core.http.common.headers import Headers
+from dexpace.sdk.core.http.common.url import Url
+from dexpace.sdk.core.http.request.request import Request
+from dexpace.sdk.http.stdlib.asyncio_http_client import AsyncioHttpClient
+from dexpace.sdk.http.stdlib.urllib_http_client import UrllibHttpClient
 
 if TYPE_CHECKING:
     from dexpace.sdk.core.client.async_http_client import AsyncHttpClient

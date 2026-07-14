@@ -3,14 +3,16 @@
 
 """Wiring for the transport-adapter conformance battery.
 
-Registers the in-memory reference harnesses into the shared registries and
+Registers the in-memory reference harness into the shared registries and
 parametrizes the ``sync_harness`` / ``async_harness`` fixtures over them at
 collection time via ``pytest_generate_tests``. Reading the registries at
 collection time (rather than at import time) is what makes the battery
-genuinely parametrizable: a later certification task appends its real-adapter
+genuinely parametrizable: each real transport-adapter package appends its own
 harness factory to ``SYNC_HARNESS_FACTORIES`` / ``ASYNC_HARNESS_FACTORIES``
-(from here, or from its own package's conftest once the TCK is extracted) and
-every ``test_*`` body runs against it unchanged.
+from ITS OWN ``tests/conftest.py`` when that package's tests are collected, and
+every ``test_*`` body runs against it unchanged. This shared conftest depends
+on NO adapter package — it registers only the in-memory reference — so the
+battery stays transport-agnostic and lifts cleanly into a standalone TCK.
 """
 
 from __future__ import annotations
@@ -26,7 +28,6 @@ from .harness import (
     AsyncTransportHarness,
     SyncTransportHarness,
 )
-from .stdlib_transport import StdlibAsyncHarness, StdlibSyncHarness
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -40,10 +41,6 @@ def _register(registry: list[tuple[str, type]], label: str, factory: type) -> No
 
 _register(SYNC_HARNESS_FACTORIES, "in-memory", InMemorySyncHarness)
 _register(ASYNC_HARNESS_FACTORIES, "in-memory", InMemoryAsyncHarness)
-# PY-M8-02: real transport-adapter certification. Same mechanism, no test
-# body changes — see `stdlib_transport.py`'s module docstring.
-_register(SYNC_HARNESS_FACTORIES, "stdlib-urllib", StdlibSyncHarness)
-_register(ASYNC_HARNESS_FACTORIES, "stdlib-asyncio", StdlibAsyncHarness)
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
