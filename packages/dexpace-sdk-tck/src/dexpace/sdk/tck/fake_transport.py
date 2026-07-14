@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from dexpace.sdk.core.client.http_client import HttpClient
     from dexpace.sdk.core.http.request.request import Request
 
-_LOGGER: Final = logging.getLogger("dexpace.sdk.transport_conformance.fake")
+_LOGGER: Final = logging.getLogger("dexpace.sdk.tck.fake")
 
 _DEFAULT_TIMEOUT: Final[float] = 30.0
 #: Methods whose semantics call for an explicit zero-length body substitution

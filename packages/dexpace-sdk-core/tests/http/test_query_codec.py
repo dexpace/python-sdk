@@ -23,8 +23,7 @@ from hypothesis import strategies as st
 
 from dexpace.sdk.core.http.common import QueryParams, Url
 from dexpace.sdk.core.http.common._query_codec import parse_query, render_query
-
-from ..golden_corpus import QueryCodecVector, load_query_codec
+from dexpace.sdk.tck.golden_corpus import QueryCodecVector, load_query_codec
 
 _VECTORS = load_query_codec()
 

@@ -3,38 +3,45 @@
 
 """Registers the httpx harnesses into the shared transport-conformance battery.
 
-``dexpace-sdk-core``'s ``tests/transport_conformance/conftest.py`` parametrizes
-the ``sync_harness`` / ``async_harness`` fixtures over
-``SYNC_HARNESS_FACTORIES`` / ``ASYNC_HARNESS_FACTORIES`` at collection time.
-Appending this package's factories here — rather than editing that shared
-module — keeps this certification task's changes confined to
-``dexpace-sdk-http-httpx``, so it never collides with the equivalent
-registration a sibling transport's certification task adds to its own
-package.
+The TCK's ``dexpace.sdk.tck`` conftest parametrizes the ``sync_harness`` /
+``async_harness`` fixtures over ``SYNC_HARNESS_FACTORIES`` /
+``ASYNC_HARNESS_FACTORIES`` at collection time. Appending this package's
+factories here — rather than editing the TCK — keeps this certification's
+changes confined to ``dexpace-sdk-http-httpx``, so it never collides with the
+equivalent registration a sibling transport adds to its own package.
 
-Registration only has an effect when ``dexpace-sdk-core``'s own test tree is
-part of the same pytest session (the normal case: the workspace's
-``testpaths`` walks every package's ``tests/`` directory in one run, and all
-five distributions share one editable-install virtualenv, so
-``tests.transport_conformance.harness`` is the very same module object
-regardless of which package's conftest imports it first). Running this
-package's tests in isolation (``pytest packages/dexpace-sdk-http-httpx/tests``
-on its own) never loads that module, so both the harness module and this
-registration are best-effort: this package's own tests still run standalone,
-just without the shared battery.
+Registration only has an effect when the TCK's battery is part of the same
+pytest session (the normal case: the workspace's ``testpaths`` collects the TCK
+battery and every adapter package's ``tests/`` in one run, and all
+distributions share one editable-install virtualenv, so
+``dexpace.sdk.tck.harness`` is the very same module object regardless of which
+package's conftest imports it first). Running this package's tests in isolation
+without the TCK installed never loads that module, so both the harness module
+and this registration are best-effort: this package's own tests still run
+standalone, just without the shared battery.
 """
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+# This package's own ``transport_conformance_harness`` is a bare module in this
+# test directory; adding the directory to ``sys.path`` makes it importable
+# regardless of pytest's import mode (``consider_namespace_packages`` stops
+# pytest from adding a plain test directory to ``sys.path`` on its own).
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
 
 _Registry = list[tuple[str, type]]
 
 _registries: tuple[_Registry, _Registry] | None
 try:
-    from tests.transport_conformance.harness import (
+    from dexpace.sdk.tck.harness import (
         ASYNC_HARNESS_FACTORIES,
         SYNC_HARNESS_FACTORIES,
     )
-
     from transport_conformance_harness import HttpxAsyncHarness, HttpxSyncHarness
 
     _registries = (SYNC_HARNESS_FACTORIES, ASYNC_HARNESS_FACTORIES)

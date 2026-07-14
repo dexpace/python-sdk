@@ -9,6 +9,7 @@ dependencies = [
     "dexpace-sdk-http-aiohttp",
     "dexpace-sdk-http-httpx",
     "dexpace-sdk-http-requests",
+    "dexpace-sdk-tck",
 ]
 
 [tool.uv.workspace]
@@ -20,6 +21,7 @@ dexpace-sdk-http-stdlib = { workspace = true }
 dexpace-sdk-http-aiohttp = { workspace = true }
 dexpace-sdk-http-httpx = { workspace = true }
 dexpace-sdk-http-requests = { workspace = true }
+dexpace-sdk-tck = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -34,6 +36,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = [
+    "packages/dexpace-sdk-tck/src/dexpace/sdk/tck",
     "packages/dexpace-sdk-core/tests",
     "packages/dexpace-sdk-http-stdlib/tests",
     "packages/dexpace-sdk-http-aiohttp/tests",
@@ -41,6 +44,13 @@ testpaths = [
     "packages/dexpace-sdk-http-requests/tests",
     "examples/petstore/tests",
 ]
+# The TCK battery + its self-tests ship inside the installed ``dexpace.sdk.tck``
+# namespace package (so ``pytest --pyargs dexpace.sdk.tck`` certifies an adapter
+# externally). ``consider_namespace_packages`` makes pytest import those modules
+# under their full ``dexpace.sdk.tck.*`` names — the same module objects the
+# adapter conftests import ``SYNC_HARNESS_FACTORIES`` / ``ASYNC_HARNESS_FACTORIES``
+# from — so registration and the battery share one registry, not two.
+consider_namespace_packages = true
 # The petstore canary lives outside the packaged workspace members, so its
 # generated SDK is importable in tests without an editable install.
 pythonpath = ["examples/petstore/src"]
@@ -87,6 +97,7 @@ src = ["packages/dexpace-sdk-core/src", "packages/dexpace-sdk-core/tests",
        "packages/dexpace-sdk-http-aiohttp/src", "packages/dexpace-sdk-http-aiohttp/tests",
        "packages/dexpace-sdk-http-httpx/src", "packages/dexpace-sdk-http-httpx/tests",
        "packages/dexpace-sdk-http-requests/src", "packages/dexpace-sdk-http-requests/tests",
+       "packages/dexpace-sdk-tck/src",
        "examples/petstore/src", "examples/petstore/tests"]
 
 [tool.ruff.lint]
@@ -140,6 +151,7 @@ mypy_path = [
     "packages/dexpace-sdk-http-aiohttp/src",
     "packages/dexpace-sdk-http-httpx/src",
     "packages/dexpace-sdk-http-requests/src",
+    "packages/dexpace-sdk-tck/src",
     "examples/petstore/src",
 ]
 files = [
@@ -153,12 +165,32 @@ files = [
     "packages/dexpace-sdk-http-httpx/tests",
     "packages/dexpace-sdk-http-requests/src",
     "packages/dexpace-sdk-http-requests/tests",
+    "packages/dexpace-sdk-tck/src",
     "examples/petstore/src",
     "examples/petstore/tests",
 ]
 
 [[tool.mypy.overrides]]
 module = "tests.*"
+disallow_untyped_defs = false
+disallow_untyped_decorators = false
+disallow_untyped_calls = false
+warn_return_any = false
+
+# The TCK's own pytest bodies (the battery + its packaging/import self-tests)
+# and its conftest are test code, not library surface, so they get the same
+# relaxations as every other `tests.*` module. The TCK's *library* modules
+# (`harness`, `fake_transport`, `golden_corpus.*`) are deliberately excluded
+# from this list and stay under full `--strict`, since they are the public
+# certification seam adapters compile against.
+[[tool.mypy.overrides]]
+module = [
+    "dexpace.sdk.tck.conftest",
+    "dexpace.sdk.tck.test_async_contract",
+    "dexpace.sdk.tck.test_corpus_packaging",
+    "dexpace.sdk.tck.test_import_discipline",
+    "dexpace.sdk.tck.test_sync_contract",
+]
 disallow_untyped_defs = false
 disallow_untyped_decorators = false
 disallow_untyped_calls = false

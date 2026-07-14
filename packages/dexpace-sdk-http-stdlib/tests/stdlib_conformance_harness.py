@@ -3,8 +3,9 @@
 
 """Real-transport harness for `UrllibHttpClient` / `AsyncioHttpClient`.
 
-Unlike `fake_transport.py` (an in-memory fake native layer), this harness
-drives the REAL `dexpace-sdk-http-stdlib` adapters over a REAL local TCP
+Unlike the TCK's `dexpace.sdk.tck.fake_transport` (an in-memory fake native
+layer), this harness drives the REAL `dexpace-sdk-http-stdlib` adapters over a
+REAL local TCP
 server (`_MockServer`) speaking raw HTTP/1.1 — both stdlib transports refuse
 to follow redirects and force ``Connection: close``, so one accepted
 connection always corresponds to exactly one programmed `Outcome`.
@@ -49,7 +50,13 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final, Self
 
-from tests.transport_conformance.harness import (
+from dexpace.sdk.core.errors import ServiceRequestError
+from dexpace.sdk.core.http.common.headers import Headers
+from dexpace.sdk.core.http.common.url import Url
+from dexpace.sdk.core.http.request.request import Request
+from dexpace.sdk.http.stdlib.asyncio_http_client import AsyncioHttpClient
+from dexpace.sdk.http.stdlib.urllib_http_client import UrllibHttpClient
+from dexpace.sdk.tck.harness import (
     AsyncTransportHarness,
     ClosableNative,
     DropLog,
@@ -59,13 +66,6 @@ from tests.transport_conformance.harness import (
     SentRequest,
     SyncTransportHarness,
 )
-
-from dexpace.sdk.core.errors import ServiceRequestError
-from dexpace.sdk.core.http.common.headers import Headers
-from dexpace.sdk.core.http.common.url import Url
-from dexpace.sdk.core.http.request.request import Request
-from dexpace.sdk.http.stdlib.asyncio_http_client import AsyncioHttpClient
-from dexpace.sdk.http.stdlib.urllib_http_client import UrllibHttpClient
 
 if TYPE_CHECKING:
     from dexpace.sdk.core.client.async_http_client import AsyncHttpClient

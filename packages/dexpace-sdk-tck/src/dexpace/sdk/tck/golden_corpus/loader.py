@@ -9,12 +9,12 @@ CRLF SSE fixtures and percent-encoded query bytes survive untouched — and
 exposes each vector as a frozen, slotted record.
 
 Every fixture family is tagged with a requirement-ID-style label (``HTTP-29``,
-``REDIR-12``, ``PAGE-21``, ``SSE-14``, ``RETRY-19``, ``CFG-29``) so a later
+``REDIR-12``, ``PAGE-21``, ``SSE-14``, ``RETRY-19``, ``CFG-29``) so a
 traceability tool can map vectors back to their spec requirements. Each
 family's raw files plus its ``manifest.jsonl`` index live in a single
-self-contained directory, so a future move into a standalone TCK distribution
-(shipping the corpus as package data via ``importlib.resources``) is a clean
-lift rather than a scatter-gather.
+self-contained directory, and the whole corpus ships as package data inside the
+``dexpace.sdk.tck`` distribution — read via ``importlib.resources`` so it loads
+byte-exactly from an installed wheel, never from a repo-relative path.
 
 The loader carries no codec logic of its own: it materialises the fixture set
 and the expectations the fixtures pin. The URL codec, redirect resolver,

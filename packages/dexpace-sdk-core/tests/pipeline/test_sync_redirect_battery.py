@@ -58,8 +58,7 @@ from dexpace.sdk.core.instrumentation import (
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import Pipeline
 from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
-
-from ..golden_corpus import RedirectVector, load_redirect
+from dexpace.sdk.tck.golden_corpus import RedirectVector, load_redirect
 
 
 def _instr(trace: str) -> InstrumentationContext:

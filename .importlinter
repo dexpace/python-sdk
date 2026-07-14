@@ -26,6 +26,7 @@ root_packages =
     dexpace.sdk.http.httpx
     dexpace.sdk.http.aiohttp
     dexpace.sdk.http.requests
+    dexpace.sdk.tck
 # Needed so `forbidden` contracts can name external distributions (furl,
 # orderedmultidict) as forbidden import targets.
 include_external_packages = True
@@ -46,6 +47,7 @@ source_modules =
     dexpace.sdk.http.httpx
     dexpace.sdk.http.aiohttp
     dexpace.sdk.http.requests
+    dexpace.sdk.tck
 forbidden_modules =
     furl
     orderedmultidict

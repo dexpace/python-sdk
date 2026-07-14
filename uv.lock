@@ -13,6 +13,7 @@ members = [
     "dexpace-sdk-http-httpx",
     "dexpace-sdk-http-requests",
     "dexpace-sdk-http-stdlib",
+    "dexpace-sdk-tck",
     "dexpace-sdk-workspace",
 ]
 
@@ -453,6 +454,30 @@ dependencies = [
 requires-dist = [{ name = "dexpace-sdk-core", editable = "packages/dexpace-sdk-core" }]
 
 [[package]]
+name = "dexpace-sdk-tck"
+version = "0.1.0"
+source = { editable = "packages/dexpace-sdk-tck" }
+dependencies = [
+    { name = "dexpace-sdk-core" },
+]
+
+[package.optional-dependencies]
+test = [
+    { name = "hypothesis" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dexpace-sdk-core", editable = "packages/dexpace-sdk-core" },
+    { name = "hypothesis", marker = "extra == 'test'", specifier = ">=6.100" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=9.1.0" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=1.4.0" },
+]
+provides-extras = ["test"]
+
+[[package]]
 name = "dexpace-sdk-workspace"
 version = "0.0.0"
 source = { virtual = "." }
@@ -462,6 +487,7 @@ dependencies = [
     { name = "dexpace-sdk-http-httpx" },
     { name = "dexpace-sdk-http-requests" },
     { name = "dexpace-sdk-http-stdlib" },
+    { name = "dexpace-sdk-tck" },
 ]
 
 [package.dev-dependencies]
@@ -482,6 +508,7 @@ requires-dist = [
     { name = "dexpace-sdk-http-httpx", editable = "packages/dexpace-sdk-http-httpx" },
     { name = "dexpace-sdk-http-requests", editable = "packages/dexpace-sdk-http-requests" },
     { name = "dexpace-sdk-http-stdlib", editable = "packages/dexpace-sdk-http-stdlib" },
+    { name = "dexpace-sdk-tck", editable = "packages/dexpace-sdk-tck" },
 ]
 
 [package.metadata.requires-dev]

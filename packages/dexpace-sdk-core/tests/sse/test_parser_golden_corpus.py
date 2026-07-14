@@ -30,8 +30,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from dexpace.sdk.core.http.sse import SseEvent, parse_async_events, parse_events
-
-from ..golden_corpus import SseExpectedEvent, SseVector, load_sse
+from dexpace.sdk.tck.golden_corpus import SseExpectedEvent, SseVector, load_sse
 
 _SSE_VECTORS: tuple[SseVector, ...] = load_sse()
 _VECTOR_IDS: list[str] = [vector.id for vector in _SSE_VECTORS]
