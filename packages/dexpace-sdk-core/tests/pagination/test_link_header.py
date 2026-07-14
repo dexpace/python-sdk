@@ -61,6 +61,7 @@ def test_param_names_are_case_insensitive() -> None:
         "whitespace-header",
     ],
 )
+@pytest.mark.req("PAGINATION-06")
 def test_find_rel_returns_matching_target(header: str, rel: str, expected: str | None) -> None:
     assert find_rel(header, rel) == expected
 

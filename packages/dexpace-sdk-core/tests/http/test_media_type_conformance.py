@@ -26,6 +26,7 @@ import pytest
 from dexpace.sdk.core.http.common import MediaType
 
 
+@pytest.mark.req("HTTP-53")
 class TestInvariantBehindAccessor:
     """HTTP-53: the type/subtype/params invariant cannot be bypassed.
 
@@ -129,6 +130,7 @@ class TestFullTypeAndWildcards:
         assert pattern.includes(MediaType.of("application", "json"))
 
 
+@pytest.mark.req("HTTP-24")
 class TestQuotedStringRendering:
     """HTTP-24: values needing quoting are quoted and escaped; tokens are bare."""
 
@@ -178,6 +180,7 @@ def _corpus() -> list[str]:
     return fragments
 
 
+@pytest.mark.req("HTTP-23")
 class TestParseRenderRoundTripProperty:
     """HTTP-23: enumerated property — ``parse(str(mt)) == mt`` and str is a fixed point."""
 

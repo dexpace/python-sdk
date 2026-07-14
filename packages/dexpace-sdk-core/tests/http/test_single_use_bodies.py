@@ -126,6 +126,7 @@ _SYNC_REQUEST_SINGLE_USE: list[tuple[str, _SyncReqFactory]] = [
 
 
 class TestSyncRequestSingleUse:
+    @pytest.mark.req("BODY-08")
     @pytest.mark.parametrize(("_name", "factory"), _SYNC_REQUEST_SINGLE_USE)
     def test_double_consume_raises_documented_message(
         self, _name: str, factory: _SyncReqFactory
@@ -159,6 +160,7 @@ class TestSyncRequestSingleUse:
         assert stream.content_length() == -1
         assert iters.content_length() == -1
 
+    @pytest.mark.req("BODY-21")
     @pytest.mark.parametrize(("_name", "factory"), _SYNC_REQUEST_SINGLE_USE)
     def test_to_replayable_before_consumption_round_trips(
         self, _name: str, factory: _SyncReqFactory

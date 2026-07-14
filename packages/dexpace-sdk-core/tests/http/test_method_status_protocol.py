@@ -67,6 +67,7 @@ def test_protocol_unknown_raises() -> None:
 # --- Protocol parse battery (HTTP-33) ---------------------------------------
 
 
+@pytest.mark.req("HTTP-33")
 @pytest.mark.parametrize("proto", list(Protocol))
 def test_protocol_str_round_trips_for_every_member(proto: Protocol) -> None:
     assert Protocol.parse(str(proto)) is proto

@@ -12,6 +12,7 @@ from dexpace.sdk.core.http.common.http_header_name import AUTHORIZATION, CONTENT
 
 
 class TestCaseInsensitiveLookup:
+    @pytest.mark.req("HEADER-04")
     def test_get_matches_regardless_of_case(self) -> None:
         h = Headers([("Content-Type", "application/json")])
         assert h.get("content-type") == "application/json"
@@ -126,6 +127,7 @@ class TestOrMerge:
 
 
 class TestEqualityAndHashing:
+    @pytest.mark.req("HEADER-04")
     def test_equality_is_case_insensitive(self) -> None:
         a = Headers([("Content-Type", "json")])
         b = Headers([("content-type", "json")])

@@ -122,6 +122,7 @@ def _run(client: _ScriptedClient, policy: RedirectPolicy, request: Request) -> R
 
 
 class TestStatusCodeMatrix:
+    @pytest.mark.req("REDIRECT-03")
     def test_301_follows_get(self) -> None:
         client = _ScriptedClient(
             [_Hop(Status.MOVED_PERMANENTLY, "https://example.com/new"), _Hop(Status.OK)],
@@ -265,6 +266,7 @@ class TestStatusCodeMatrix:
 
 
 class TestHopAndLoopGuards:
+    @pytest.mark.req("REDIRECT-03")
     def test_max_hops_respected(self) -> None:
         # Three redirects, but max_hops=2 — second redirect response is final.
         hops = [

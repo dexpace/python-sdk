@@ -196,6 +196,7 @@ class TestApplyJitter:
 
         assert apply_jitter(0.0, _ExplodingRandom(), full_jitter=True) == 0.0
 
+    @pytest.mark.req("RETRY-31")
     def test_full_jitter_stays_within_band(self) -> None:
         rng = random.Random(7)
         for _ in range(200):

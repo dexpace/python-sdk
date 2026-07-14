@@ -272,6 +272,7 @@ async def test_apache_218_status_is_preserved() -> None:
     assert response.status.is_success
 
 
+@pytest.mark.req("TRANSPORT-24")
 async def test_out_of_range_status_surfaces_with_readable_body() -> None:
     """TRANSPORT-24: a genuinely out-of-range code (outside 100..599) surfaces."""
     request = Request(method=Method.GET, url=Url.parse("http://example.test/"))

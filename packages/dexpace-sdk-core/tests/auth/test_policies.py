@@ -191,6 +191,7 @@ class _StaticCredential:
         return None
 
 
+@pytest.mark.req("AUTH-02")
 def test_bearer_token_policy_stamps_header() -> None:
     client = _CapturingClient()
     cred = _StaticCredential()
@@ -200,6 +201,7 @@ def test_bearer_token_policy_stamps_header() -> None:
     assert client.calls[0].headers.get("authorization") == "Bearer abc"
 
 
+@pytest.mark.req("AUTH-14")
 def test_bearer_token_policy_caches_token() -> None:
     client = _CapturingClient()
     cred = _StaticCredential()

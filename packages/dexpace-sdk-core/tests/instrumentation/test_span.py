@@ -52,6 +52,7 @@ class _FakeSpan(Span):
 # ----- Recording flag + idempotent end (OBS-21) ----------------------------
 
 
+@pytest.mark.req("OBS-21")
 def test_noop_span_is_not_recording() -> None:
     assert NOOP_SPAN.is_recording is False
 
@@ -84,6 +85,7 @@ def test_recording_span_end_records_error_once() -> None:
 # ----- make_current restores the prior span, incl. on throw (OBS-22) -------
 
 
+@pytest.mark.req("OBS-22")
 def test_default_current_span_is_the_noop_span() -> None:
     assert get_current_span() is NOOP_SPAN
 

@@ -43,6 +43,7 @@ class _RecordingHistogram(Histogram):
 # ----- Counter: rejects negative (OBS-33) ----------------------------------
 
 
+@pytest.mark.req("OBS-33")
 def test_counter_default_increment_is_one() -> None:
     counter = _RecordingCounter()
     counter.add()

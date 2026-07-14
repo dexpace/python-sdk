@@ -312,6 +312,7 @@ def test_in_range_unregistered_status_returns_response() -> None:
             assert response.body.bytes() == payload
 
 
+@pytest.mark.req("TRANSPORT-24")
 def test_out_of_range_status_surfaces_with_readable_body() -> None:
     """TRANSPORT-24: an out-of-range status surfaces intact with its body."""
 

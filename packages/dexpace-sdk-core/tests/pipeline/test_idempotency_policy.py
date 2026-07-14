@@ -88,6 +88,7 @@ def test_stage_runs_before_retry() -> None:
     assert AsyncIdempotencyPolicy.STAGE < Stage.RETRY
 
 
+@pytest.mark.req("IDEMPOTENCY-05")
 def test_key_added_to_post() -> None:
     client = _RecordingClient()
     with Pipeline(client, policies=[IdempotencyPolicy()]) as p:
@@ -219,6 +220,7 @@ class _FlakyAsyncClient(AsyncHttpClient):
         return AsyncResponse(request=request, protocol=Protocol.HTTP_1_1, status=status)
 
 
+@pytest.mark.req("IDEMPOTENCY-05")
 def test_key_stable_across_retry_attempts() -> None:
     """One retried call carries a single key across every attempt.
 

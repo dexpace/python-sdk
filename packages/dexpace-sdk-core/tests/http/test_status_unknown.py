@@ -56,6 +56,7 @@ class TestUnregisteredCodesSynthesized:
         assert Status(404) is Status.NOT_FOUND
 
 
+@pytest.mark.req("HTTP-10")
 class TestTotalityOverInts:
     """HTTP-10: any integer constructs without raising; equality is by code."""
 
@@ -91,6 +92,7 @@ class TestTotalityOverInts:
                 Status(bad)  # type: ignore[arg-type]
 
 
+@pytest.mark.req("HTTP-12")
 class TestEqualityByCode:
     """HTTP-12: a Status compares and hashes as its integer code."""
 
@@ -114,6 +116,7 @@ class TestEqualityByCode:
         assert Status(200) in {Status.OK}
 
 
+@pytest.mark.req("HTTP-11")
 class TestBandClassification:
     """HTTP-11: is_informational/success/redirect/client_error/server_error/error."""
 
