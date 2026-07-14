@@ -4,8 +4,17 @@
 """Digest access authentication handler (RFC 7616).
 
 Supports algorithms ``MD5``, ``MD5-sess``, ``SHA-256``, and ``SHA-256-sess``
-with ``qop=auth``. ``auth-int`` and mutual-auth (``Authentication-Info``)
-verification are out of scope — matching the Java v1 cut.
+with ``qop=auth``.
+
+``qop=auth-int`` is negotiated away rather than attempted: it folds a hash of
+the request entity body into ``HA2`` (RFC 7616 §3.4.3), but the
+``ChallengeHandler`` contract carries no request body, and a single-use
+(non-replayable) body may already be consumed by the time a challenge is
+answered. The handler therefore prefers ``auth`` whenever the server offers it
+and declines an ``auth-int``-only challenge; the digest routine refuses
+``auth-int`` outright so no path can silently fall through and emit an RFC 2069
+hash the server would reject. Mutual-auth (``Authentication-Info``)
+verification is out of scope.
 
 A single handler instance is intended to be reused across requests so the
 per-nonce request counter (``nc``) advances correctly. RFC 7616 §3.4 defines
@@ -277,6 +286,21 @@ class DigestChallengeHandler:
 
     @staticmethod
     def _pick_qop(qop_param: str | None) -> str | None:
+        """Select the ``qop`` to answer with from the server's offer.
+
+        Always prefers ``auth`` when present — the only protection this handler
+        can compute — regardless of where it sits in the comma-separated list.
+        An ``auth-int``-only offer yields ``None`` so the caller declines the
+        challenge rather than emitting an unverifiable header (``auth-int``
+        needs the entity body, which is unavailable here).
+
+        Args:
+            qop_param: The raw ``qop`` directive, or ``None`` when the server
+                sent an RFC 2069-style challenge without one.
+
+        Returns:
+            ``"auth"`` when offered, else ``None``.
+        """
         if qop_param is None:
             return None
         options = [opt.strip().lower() for opt in qop_param.split(",")]
@@ -296,6 +320,17 @@ class DigestChallengeHandler:
         qop: str | None,
         charset: str,
     ) -> str:
+        """Compute the ``response`` digest per RFC 7616 §3.4.1.
+
+        Handles ``qop=auth`` and the qop-less RFC 2069 shape. ``-sess``
+        algorithms fold ``nonce``/``cnonce`` into ``HA1``.
+
+        Raises:
+            ValueError: If ``qop`` is ``auth-int``. Integrity protection hashes
+                the request entity body, which this handler cannot access, so
+                it fails loudly rather than emit a hash the server will reject.
+        """
+
         def h(data: str) -> str:
             return hasher(data.encode(charset)).hexdigest()
 
@@ -305,6 +340,17 @@ class DigestChallengeHandler:
         ha2 = h(f"{method}:{uri}")
         if qop == "auth":
             return h(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}")
+        if qop == "auth-int":
+            # ``auth-int`` mixes a hash of the entity body into HA2, which this
+            # handler cannot obtain (the ChallengeHandler contract passes no
+            # body, and a non-replayable body may already be consumed). Fail
+            # loudly instead of falling through to the RFC 2069 branch below and
+            # emitting a hash the server would silently reject as wrong.
+            raise ValueError(
+                "Digest qop=auth-int is not supported: it requires hashing the "
+                "request entity body, which is unavailable here (and a "
+                "non-replayable body may already have been consumed)."
+            )
         # No qop (legacy RFC 2069): response = H(HA1:nonce:HA2)
         return h(f"{ha1}:{nonce}:{ha2}")
 
