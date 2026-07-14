@@ -22,6 +22,13 @@ from __future__ import annotations
 from .assembly import assemble
 from .async_response_handler import AsyncDecodeSuccess, AsyncResponseHandler
 from .async_service_core import AsyncServiceCore
+from .auth import (
+    AuthDescriptor,
+    AuthRegistry,
+    AuthRequirement,
+    AuthResolutionError,
+    AuthScheme,
+)
 from .operation import Operation, OperationInput
 from .service_core import ServiceCore
 from .status_error_map import StatusErrorMap
@@ -30,6 +37,11 @@ __all__ = [
     "AsyncDecodeSuccess",
     "AsyncResponseHandler",
     "AsyncServiceCore",
+    "AuthDescriptor",
+    "AuthRegistry",
+    "AuthRequirement",
+    "AuthResolutionError",
+    "AuthScheme",
     "Operation",
     "OperationInput",
     "ServiceCore",

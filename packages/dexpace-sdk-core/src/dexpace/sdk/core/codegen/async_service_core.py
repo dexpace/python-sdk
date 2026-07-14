@@ -26,12 +26,14 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, Self, overload
 
 from ..http.response.async_response import AsyncResponse
+from ..pipeline.async_policy import AsyncPolicy
 from ..pipeline.defaults import default_async_pipeline
 from ..serde import JSON_SERDE
 from ._pure.options import plan_options
 from ._pure.requests import plan_request
 from ._pure.results import plan_result
 from .async_response_handler import AsyncDecodeSuccess
+from .auth import AuthRegistry, resolve_auth
 from .status_error_map import StatusErrorMap
 
 if TYPE_CHECKING:
@@ -44,9 +46,9 @@ if TYPE_CHECKING:
     from ..http.sse.typed import AsyncTypedSseConnection, SseMapper
     from ..pagination import AsyncPaginator, PaginationStrategy
     from ..pipeline.async_pipeline import AsyncPipeline
-    from ..pipeline.async_policy import AsyncPolicy
     from ..serde import Serde, TypeRef
     from .async_response_handler import AsyncResponseHandler
+    from .auth import AuthDescriptor
     from .operation import Operation, OperationInput
 
 __all__ = ["AsyncServiceCore"]
@@ -69,12 +71,14 @@ class AsyncServiceCore:
 
     __slots__ = (
         "_base_url",
+        "_client_auth",
         "_closed",
         "_default_handler",
         "_dispatch_factory",
         "_errors",
         "_owned_transport",
         "_pipeline",
+        "_registry",
         "_serde",
     )
 
@@ -87,6 +91,8 @@ class AsyncServiceCore:
         errors: StatusErrorMap | None = None,
         serde: Serde | None = None,
         dispatch_factory: Callable[[], DispatchContext] | None = None,
+        auth: AuthDescriptor | None = None,
+        auth_registry: AuthRegistry[AsyncPolicy] | None = None,
     ) -> None:
         """Wire the executor to an async pipeline (BYO) or a transport it builds one around.
 
@@ -104,6 +110,14 @@ class AsyncServiceCore:
                 JSON.
             dispatch_factory: Builds the per-call dispatch context. Defaults to
                 `DispatchContext.noop`.
+            auth: The client-level authentication requirement — the broadest
+                resolver tier, used when neither a per-call nor an operation-level
+                requirement is present. ``None`` leaves the client without a
+                default requirement.
+            auth_registry: The pool of `AuthScheme`s a declared requirement is
+                resolved against. ``None`` is an empty registry, so any present
+                requirement is unsatisfiable (and raises rather than falling
+                through).
 
         Raises:
             ValueError: If neither or both of ``pipeline`` and ``transport`` are
@@ -116,6 +130,10 @@ class AsyncServiceCore:
         self._base_url = base_url
         self._serde: Serde = serde if serde is not None else JSON_SERDE
         self._errors = errors if errors is not None else StatusErrorMap()
+        self._client_auth = auth
+        self._registry: AuthRegistry[AsyncPolicy] = (
+            auth_registry if auth_registry is not None else AuthRegistry()
+        )
         self._dispatch_factory = (
             dispatch_factory if dispatch_factory is not None else DispatchContext.noop
         )
@@ -141,7 +159,7 @@ class AsyncServiceCore:
         *,
         response_type: _Witness[T],
         handler: AsyncResponseHandler | None = ...,
-        auth: AsyncPolicy | None = ...,
+        auth: AuthDescriptor | AsyncPolicy | None = ...,
         **call_options: Any,
     ) -> T: ...
 
@@ -153,7 +171,7 @@ class AsyncServiceCore:
         *,
         response_type: None = ...,
         handler: None = ...,
-        auth: AsyncPolicy | None = ...,
+        auth: AuthDescriptor | AsyncPolicy | None = ...,
         **call_options: Any,
     ) -> AsyncResponse: ...
 
@@ -165,7 +183,7 @@ class AsyncServiceCore:
         *,
         response_type: None = ...,
         handler: AsyncResponseHandler,
-        auth: AsyncPolicy | None = ...,
+        auth: AuthDescriptor | AsyncPolicy | None = ...,
         **call_options: Any,
     ) -> Any: ...
 
@@ -176,7 +194,7 @@ class AsyncServiceCore:
         *,
         response_type: _Witness[Any] | None = None,
         handler: AsyncResponseHandler | None = None,
-        auth: AsyncPolicy | None = None,
+        auth: AuthDescriptor | AsyncPolicy | None = None,
         **call_options: Any,
     ) -> Any:
         """Run one operation and return its decoded result.
@@ -189,7 +207,11 @@ class AsyncServiceCore:
                 caller to consume and close.
             handler: An explicit response handler overriding the default
                 `AsyncDecodeSuccess`.
-            auth: A per-call auth override, threaded through the options mapping.
+            auth: The per-call auth tier. An `AuthDescriptor` is resolved
+                against the executor's registry, over the operation's ``auth``
+                and the client-level default; a concrete `AsyncPolicy` is a
+                verbatim override; ``None`` defers to the operation / client
+                tiers.
             **call_options: Per-call overrides forwarded to the pipeline's
                 policies via ``ctx.options``.
 
@@ -197,11 +219,15 @@ class AsyncServiceCore:
             The decoded value for a given ``response_type``, the raw
             `AsyncResponse` when neither ``response_type`` nor ``handler`` is
             given, or the handler's result.
+
+        Raises:
+            AuthResolutionError: If the selected auth tier is present but no
+                registered scheme satisfies it (never falls through to a
+                broader tier).
         """
         request = plan_request(op, input, self._base_url, self._serde)
-        return await self.execute_request(
-            request, response_type=response_type, handler=handler, auth=auth, **call_options
-        )
+        resolved = self._resolve_auth(op.auth, auth)
+        return await self._run(request, resolved, response_type, handler, call_options)
 
     # -- execute_request ------------------------------------------------------
 
@@ -212,7 +238,7 @@ class AsyncServiceCore:
         *,
         response_type: _Witness[T],
         handler: AsyncResponseHandler | None = ...,
-        auth: AsyncPolicy | None = ...,
+        auth: AuthDescriptor | AsyncPolicy | None = ...,
         **call_options: Any,
     ) -> T: ...
 
@@ -223,7 +249,7 @@ class AsyncServiceCore:
         *,
         response_type: None = ...,
         handler: None = ...,
-        auth: AsyncPolicy | None = ...,
+        auth: AuthDescriptor | AsyncPolicy | None = ...,
         **call_options: Any,
     ) -> AsyncResponse: ...
 
@@ -234,7 +260,7 @@ class AsyncServiceCore:
         *,
         response_type: None = ...,
         handler: AsyncResponseHandler,
-        auth: AsyncPolicy | None = ...,
+        auth: AuthDescriptor | AsyncPolicy | None = ...,
         **call_options: Any,
     ) -> Any: ...
 
@@ -244,7 +270,7 @@ class AsyncServiceCore:
         *,
         response_type: _Witness[Any] | None = None,
         handler: AsyncResponseHandler | None = None,
-        auth: AsyncPolicy | None = None,
+        auth: AuthDescriptor | AsyncPolicy | None = None,
         **call_options: Any,
     ) -> Any:
         """Run a pre-built `Request` through the pipeline — the raw-call seam.
@@ -254,13 +280,65 @@ class AsyncServiceCore:
             response_type: The type to decode a 2xx body into, or ``None`` for
                 the raw `AsyncResponse`.
             handler: An explicit response handler overriding the default.
-            auth: A per-call auth override, threaded through the options mapping.
+            auth: The per-call auth tier. Resolved as for `execute`, but with no
+                operation tier — the raw seam knows only the per-call and
+                client tiers.
             **call_options: Per-call overrides forwarded to the pipeline.
 
         Returns:
             The decoded value, the raw `AsyncResponse`, or the handler's result.
+
+        Raises:
+            AuthResolutionError: If the selected auth tier is present but
+                unsatisfiable.
         """
-        options = plan_options(auth, call_options)
+        resolved = self._resolve_auth(None, auth)
+        return await self._run(request, resolved, response_type, handler, call_options)
+
+    def _resolve_auth(
+        self, op_auth: AuthDescriptor | None, per_call: AuthDescriptor | AsyncPolicy | None
+    ) -> AsyncPolicy | None:
+        """Resolve the tiered auth requirements to the async policy to stamp with.
+
+        A concrete `AsyncPolicy` passed per-call is the most specific tier and
+        is returned verbatim without descriptor resolution — the BYO override
+        path. Otherwise the per-call descriptor (if any), the operation's
+        ``auth``, and the client-level default are resolved by tier against the
+        registry.
+
+        Args:
+            op_auth: The operation-level descriptor, or ``None`` (the raw seam
+                passes ``None`` — it has no operation).
+            per_call: The per-call tier — a descriptor to resolve, an
+                `AsyncPolicy` override to pass through, or ``None``.
+
+        Returns:
+            The chosen stamping policy, or ``None`` when no tier is present.
+
+        Raises:
+            AuthResolutionError: If the selected tier is present but no
+                registered scheme satisfies it.
+        """
+        if isinstance(per_call, AsyncPolicy):
+            return per_call
+        resolution = resolve_auth(
+            per_call=per_call,
+            operation=op_auth,
+            client=self._client_auth,
+            registry=self._registry,
+        )
+        return resolution.scheme.policy if resolution is not None else None
+
+    async def _run(
+        self,
+        request: Request,
+        resolved_auth: AsyncPolicy | None,
+        response_type: _Witness[Any] | None,
+        handler: AsyncResponseHandler | None,
+        call_options: Mapping[str, Any],
+    ) -> Any:
+        """Pack the resolved auth into options, run the pipeline, await the result."""
+        options = plan_options(resolved_auth, call_options)
         response = await self._pipeline.run(request, self._dispatch_factory(), **options)
         return await self._handle(response, response_type, handler)
 
@@ -286,7 +364,7 @@ class AsyncServiceCore:
         strategy: PaginationStrategy[T],
         *,
         max_pages: int | None = None,
-        auth: AsyncPolicy | None = None,
+        auth: AuthDescriptor | AsyncPolicy | None = None,
         **call_options: Any,
     ) -> AsyncPaginator[T]:
         """Return an `AsyncPaginator` walking the operation's paged sequence.
@@ -302,17 +380,23 @@ class AsyncServiceCore:
             strategy: The `PaginationStrategy` that parses each response into a
                 page and derives the next request.
             max_pages: Optional cap on pages fetched. ``None`` is unbounded.
-            auth: A per-call auth override, threaded through the options mapping.
+            auth: The per-call auth tier, resolved as for `execute` (over the
+                operation and client tiers) before every page fetch.
             **call_options: Per-call overrides forwarded to every page fetch.
 
         Returns:
             An `AsyncPaginator` over ``strategy``'s element type.
+
+        Raises:
+            AuthResolutionError: If the selected auth tier is present but
+                unsatisfiable.
         """
         from ..pagination import AsyncPaginator
 
+        resolved = self._resolve_auth(op.auth, auth)
         request = plan_request(op, input, self._base_url, self._serde)
         return AsyncPaginator(
-            self._page_sender(auth, call_options), strategy, request, max_pages=max_pages
+            self._page_sender(resolved, call_options), strategy, request, max_pages=max_pages
         )
 
     def events[T](
@@ -321,7 +405,7 @@ class AsyncServiceCore:
         input: OperationInput,
         mapper: SseMapper[T],
         *,
-        auth: AsyncPolicy | None = None,
+        auth: AuthDescriptor | AsyncPolicy | None = None,
         **call_options: Any,
     ) -> AsyncTypedSseConnection[T]:
         """Return a typed async SSE connection over the operation's event stream.
@@ -337,17 +421,23 @@ class AsyncServiceCore:
             input: The per-call values for the opening request.
             mapper: Maps ``(event_name, data)`` to a typed value or an
                 `SseSignal` (skip / done).
-            auth: A per-call auth override, threaded through the options mapping.
+            auth: The per-call auth tier, resolved as for `execute` (over the
+                operation and client tiers) before every (re)connection.
             **call_options: Per-call overrides forwarded to every (re)connection.
 
         Returns:
             An `AsyncTypedSseConnection` over ``mapper``'s value type.
+
+        Raises:
+            AuthResolutionError: If the selected auth tier is present but
+                unsatisfiable.
         """
         from ..http.sse.connection import AsyncSseConnection
         from ..http.sse.typed import AsyncTypedSseConnection
 
+        resolved = self._resolve_auth(op.auth, auth)
         request = plan_request(op, input, self._base_url, self._serde)
-        connection = AsyncSseConnection(self._page_sender(auth, call_options), request)
+        connection = AsyncSseConnection(self._page_sender(resolved, call_options), request)
         return AsyncTypedSseConnection(connection, mapper)
 
     def _page_sender(

@@ -30,10 +30,12 @@ from typing import TYPE_CHECKING, Any, Self, overload
 
 from ..http.response.response import Response
 from ..pipeline.defaults import default_pipeline
+from ..pipeline.policy import Policy
 from ..serde import JSON_SERDE, DecodeSuccess
 from ._pure.options import plan_options
 from ._pure.requests import plan_request
 from ._pure.results import plan_result
+from .auth import AuthRegistry, resolve_auth
 from .status_error_map import StatusErrorMap
 
 if TYPE_CHECKING:
@@ -46,8 +48,8 @@ if TYPE_CHECKING:
     from ..http.sse.typed import SseMapper, TypedSseConnection
     from ..pagination import PaginationStrategy, Paginator
     from ..pipeline.pipeline import Pipeline
-    from ..pipeline.policy import Policy
     from ..serde import ResponseHandler, Serde, TypeRef
+    from .auth import AuthDescriptor
     from .operation import Operation, OperationInput
 
 __all__ = ["ServiceCore"]
@@ -70,12 +72,14 @@ class ServiceCore:
 
     __slots__ = (
         "_base_url",
+        "_client_auth",
         "_closed",
         "_default_handler",
         "_dispatch_factory",
         "_errors",
         "_owned_transport",
         "_pipeline",
+        "_registry",
         "_serde",
     )
 
@@ -88,6 +92,8 @@ class ServiceCore:
         errors: StatusErrorMap | None = None,
         serde: Serde | None = None,
         dispatch_factory: Callable[[], DispatchContext] | None = None,
+        auth: AuthDescriptor | None = None,
+        auth_registry: AuthRegistry[Policy] | None = None,
     ) -> None:
         """Wire the executor to a pipeline (BYO) or a transport it builds one around.
 
@@ -105,6 +111,14 @@ class ServiceCore:
                 JSON.
             dispatch_factory: Builds the per-call dispatch context. Defaults to
                 `DispatchContext.noop`.
+            auth: The client-level authentication requirement — the broadest
+                resolver tier, used when neither a per-call nor an operation-level
+                requirement is present. ``None`` leaves the client without a
+                default requirement.
+            auth_registry: The pool of `AuthScheme`s a declared requirement is
+                resolved against. ``None`` is an empty registry, so any present
+                requirement is unsatisfiable (and raises rather than falling
+                through).
 
         Raises:
             ValueError: If neither or both of ``pipeline`` and ``transport`` are
@@ -117,6 +131,10 @@ class ServiceCore:
         self._base_url = base_url
         self._serde: Serde = serde if serde is not None else JSON_SERDE
         self._errors = errors if errors is not None else StatusErrorMap()
+        self._client_auth = auth
+        self._registry: AuthRegistry[Policy] = (
+            auth_registry if auth_registry is not None else AuthRegistry()
+        )
         self._dispatch_factory = (
             dispatch_factory if dispatch_factory is not None else DispatchContext.noop
         )
@@ -140,7 +158,7 @@ class ServiceCore:
         *,
         response_type: _Witness[T],
         handler: ResponseHandler | None = ...,
-        auth: Policy | None = ...,
+        auth: AuthDescriptor | Policy | None = ...,
         **call_options: Any,
     ) -> T: ...
 
@@ -152,7 +170,7 @@ class ServiceCore:
         *,
         response_type: None = ...,
         handler: None = ...,
-        auth: Policy | None = ...,
+        auth: AuthDescriptor | Policy | None = ...,
         **call_options: Any,
     ) -> Response: ...
 
@@ -164,7 +182,7 @@ class ServiceCore:
         *,
         response_type: None = ...,
         handler: ResponseHandler,
-        auth: Policy | None = ...,
+        auth: AuthDescriptor | Policy | None = ...,
         **call_options: Any,
     ) -> Any: ...
 
@@ -175,7 +193,7 @@ class ServiceCore:
         *,
         response_type: _Witness[Any] | None = None,
         handler: ResponseHandler | None = None,
-        auth: Policy | None = None,
+        auth: AuthDescriptor | Policy | None = None,
         **call_options: Any,
     ) -> Any:
         """Run one operation and return its decoded result.
@@ -188,7 +206,10 @@ class ServiceCore:
                 caller to consume and close.
             handler: An explicit response handler overriding the default
                 `DecodeSuccess`. Receives the response and the witness.
-            auth: A per-call auth override, threaded through the options mapping.
+            auth: The per-call auth tier. An `AuthDescriptor` is resolved
+                against the executor's registry, over the operation's ``auth``
+                and the client-level default; a concrete `Policy` is a verbatim
+                override; ``None`` defers to the operation / client tiers.
             **call_options: Per-call overrides forwarded to the pipeline's
                 policies via ``ctx.options``.
 
@@ -196,11 +217,15 @@ class ServiceCore:
             The decoded value for a given ``response_type``, the raw `Response`
             when neither ``response_type`` nor ``handler`` is given, or the
             handler's result.
+
+        Raises:
+            AuthResolutionError: If the selected auth tier is present but no
+                registered scheme satisfies it (never falls through to a
+                broader tier).
         """
         request = plan_request(op, input, self._base_url, self._serde)
-        return self.execute_request(
-            request, response_type=response_type, handler=handler, auth=auth, **call_options
-        )
+        resolved = self._resolve_auth(op.auth, auth)
+        return self._run(request, resolved, response_type, handler, call_options)
 
     # -- execute_request ------------------------------------------------------
 
@@ -211,7 +236,7 @@ class ServiceCore:
         *,
         response_type: _Witness[T],
         handler: ResponseHandler | None = ...,
-        auth: Policy | None = ...,
+        auth: AuthDescriptor | Policy | None = ...,
         **call_options: Any,
     ) -> T: ...
 
@@ -222,7 +247,7 @@ class ServiceCore:
         *,
         response_type: None = ...,
         handler: None = ...,
-        auth: Policy | None = ...,
+        auth: AuthDescriptor | Policy | None = ...,
         **call_options: Any,
     ) -> Response: ...
 
@@ -233,7 +258,7 @@ class ServiceCore:
         *,
         response_type: None = ...,
         handler: ResponseHandler,
-        auth: Policy | None = ...,
+        auth: AuthDescriptor | Policy | None = ...,
         **call_options: Any,
     ) -> Any: ...
 
@@ -243,7 +268,7 @@ class ServiceCore:
         *,
         response_type: _Witness[Any] | None = None,
         handler: ResponseHandler | None = None,
-        auth: Policy | None = None,
+        auth: AuthDescriptor | Policy | None = None,
         **call_options: Any,
     ) -> Any:
         """Run a pre-built `Request` through the pipeline — the raw-call seam.
@@ -253,14 +278,65 @@ class ServiceCore:
             response_type: The type to decode a 2xx body into, or ``None`` for
                 the raw `Response`.
             handler: An explicit response handler overriding the default.
-            auth: A per-call auth override, threaded through the options mapping.
+            auth: The per-call auth tier. Resolved as for `execute`, but with no
+                operation tier — the raw seam knows only the per-call and
+                client tiers.
             **call_options: Per-call overrides forwarded to the pipeline.
 
         Returns:
             The decoded value, the raw `Response`, or the handler's result — as
             for `execute`.
+
+        Raises:
+            AuthResolutionError: If the selected auth tier is present but
+                unsatisfiable.
         """
-        options = plan_options(auth, call_options)
+        resolved = self._resolve_auth(None, auth)
+        return self._run(request, resolved, response_type, handler, call_options)
+
+    def _resolve_auth(
+        self, op_auth: AuthDescriptor | None, per_call: AuthDescriptor | Policy | None
+    ) -> Policy | None:
+        """Resolve the tiered auth requirements to the policy to stamp with.
+
+        A concrete `Policy` passed per-call is the most specific tier and is
+        returned verbatim without descriptor resolution — the BYO override path.
+        Otherwise the per-call descriptor (if any), the operation's ``auth``,
+        and the client-level default are resolved by tier against the registry.
+
+        Args:
+            op_auth: The operation-level descriptor, or ``None`` (the raw seam
+                passes ``None`` — it has no operation).
+            per_call: The per-call tier — a descriptor to resolve, a `Policy`
+                override to pass through, or ``None``.
+
+        Returns:
+            The chosen stamping policy, or ``None`` when no tier is present.
+
+        Raises:
+            AuthResolutionError: If the selected tier is present but no
+                registered scheme satisfies it.
+        """
+        if isinstance(per_call, Policy):
+            return per_call
+        resolution = resolve_auth(
+            per_call=per_call,
+            operation=op_auth,
+            client=self._client_auth,
+            registry=self._registry,
+        )
+        return resolution.scheme.policy if resolution is not None else None
+
+    def _run(
+        self,
+        request: Request,
+        resolved_auth: Policy | None,
+        response_type: _Witness[Any] | None,
+        handler: ResponseHandler | None,
+        call_options: Mapping[str, Any],
+    ) -> Any:
+        """Pack the resolved auth into options, run the pipeline, handle the result."""
+        options = plan_options(resolved_auth, call_options)
         response = self._pipeline.run(request, self._dispatch_factory(), **options)
         return self._handle(response, response_type, handler)
 
@@ -286,7 +362,7 @@ class ServiceCore:
         strategy: PaginationStrategy[T],
         *,
         max_pages: int | None = None,
-        auth: Policy | None = None,
+        auth: AuthDescriptor | Policy | None = None,
         **call_options: Any,
     ) -> Paginator[T]:
         """Return a `Paginator` walking the operation's paged sequence.
@@ -302,17 +378,23 @@ class ServiceCore:
             strategy: The `PaginationStrategy` that parses each response into a
                 page and derives the next request.
             max_pages: Optional cap on pages fetched. ``None`` is unbounded.
-            auth: A per-call auth override, threaded through the options mapping.
+            auth: The per-call auth tier, resolved as for `execute` (over the
+                operation and client tiers) before every page fetch.
             **call_options: Per-call overrides forwarded to every page fetch.
 
         Returns:
             A `Paginator` over ``strategy``'s element type.
+
+        Raises:
+            AuthResolutionError: If the selected auth tier is present but
+                unsatisfiable.
         """
         from ..pagination import Paginator
 
+        resolved = self._resolve_auth(op.auth, auth)
         request = plan_request(op, input, self._base_url, self._serde)
         return Paginator(
-            self._page_sender(auth, call_options), strategy, request, max_pages=max_pages
+            self._page_sender(resolved, call_options), strategy, request, max_pages=max_pages
         )
 
     def events[T](
@@ -321,7 +403,7 @@ class ServiceCore:
         input: OperationInput,
         mapper: SseMapper[T],
         *,
-        auth: Policy | None = None,
+        auth: AuthDescriptor | Policy | None = None,
         **call_options: Any,
     ) -> TypedSseConnection[T]:
         """Return a typed SSE connection over the operation's event stream.
@@ -337,17 +419,23 @@ class ServiceCore:
             input: The per-call values for the opening request.
             mapper: Maps ``(event_name, data)`` to a typed value or an
                 `SseSignal` (skip / done).
-            auth: A per-call auth override, threaded through the options mapping.
+            auth: The per-call auth tier, resolved as for `execute` (over the
+                operation and client tiers) before every (re)connection.
             **call_options: Per-call overrides forwarded to every (re)connection.
 
         Returns:
             A `TypedSseConnection` over ``mapper``'s value type.
+
+        Raises:
+            AuthResolutionError: If the selected auth tier is present but
+                unsatisfiable.
         """
         from ..http.sse.connection import SseConnection
         from ..http.sse.typed import TypedSseConnection
 
+        resolved = self._resolve_auth(op.auth, auth)
         request = plan_request(op, input, self._base_url, self._serde)
-        connection = SseConnection(self._page_sender(auth, call_options), request)
+        connection = SseConnection(self._page_sender(resolved, call_options), request)
         return TypedSseConnection(connection, mapper)
 
     def _page_sender(
