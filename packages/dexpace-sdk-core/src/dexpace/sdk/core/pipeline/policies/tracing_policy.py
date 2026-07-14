@@ -30,10 +30,11 @@ default tracer factory returns ``NOOP_HTTP_TRACER`` and the no-op span carries
 the sentinel trace ids. Disable either per-call by setting
 ``ctx.options["tracing_enabled"] = False``.
 
-`OperationTracingPolicy` has an async twin, `AsyncOperationTracingPolicy`,
-wired into ``default_async_pipeline`` so the async stack reports the same
-per-operation lifecycle. `TracingPolicy`'s per-attempt OpenTelemetry span
-machinery is sync-only and has no async counterpart.
+Both policies have async twins — `AsyncOperationTracingPolicy` and
+`AsyncTracingPolicy` — wired into ``default_async_pipeline`` so the async
+stack reports the same per-operation lifecycle and opens the same per-attempt
+OpenTelemetry span (identical semantic-convention attributes and per-request
+events) inside the redirect and retry wrappers.
 """
 
 from __future__ import annotations
