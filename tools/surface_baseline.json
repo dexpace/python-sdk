@@ -1136,7 +1136,7 @@
         "Paginator": {
           "bases": [],
           "methods": {
-            "by_page": "by_page(self) -> Iterator[Page[T]]"
+            "by_page": "by_page(self) -> _PageView[T]"
           }
         }
       },
