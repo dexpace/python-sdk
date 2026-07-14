@@ -102,6 +102,7 @@ def _conn(responses: list[Response]) -> SseConnection:
 # --- release-exactly-once ledger across every termination path -------------
 
 
+@pytest.mark.req("SSE-25")
 def test_release_once_on_partial_consumption() -> None:
     body = _LedgerBody([b"data: one\n\n"])
     conn = _conn([_response(body)])
@@ -113,6 +114,7 @@ def test_release_once_on_partial_consumption() -> None:
     assert body.closes == 1
 
 
+@pytest.mark.req("SSE-23", "SSE-25")
 def test_release_once_on_with_block_exit() -> None:
     body = _LedgerBody([b"data: one\n\n"])
 
@@ -123,6 +125,7 @@ def test_release_once_on_with_block_exit() -> None:
     assert body.closes == 1
 
 
+@pytest.mark.req("SSE-23", "SSE-28")
 def test_release_once_and_idempotent_on_explicit_close() -> None:
     body = _LedgerBody([b"data: one\n\n"])
     conn = _conn([_response(body)])
@@ -134,6 +137,7 @@ def test_release_once_and_idempotent_on_explicit_close() -> None:
     assert body.closes == 1
 
 
+@pytest.mark.req("SSE-17", "SSE-24")
 def test_release_once_per_response_on_clean_end_of_stream() -> None:
     # A clean end-of-stream reconnects; the finished response must be released
     # exactly once as the client rolls over to the next connection.
@@ -152,6 +156,7 @@ def test_release_once_per_response_on_clean_end_of_stream() -> None:
     assert second.closes == 1
 
 
+@pytest.mark.req("SSE-23", "SSE-28")
 def test_release_once_on_transient_mid_stream_failure() -> None:
     dropped = _LedgerBody([b"data: a\n\n"], error=ServiceResponseError("dropped"))
     resumed = _LedgerBody([b"data: b\n\n"])
@@ -176,6 +181,7 @@ class _SecondaryError(Exception):
     """A failure raised while releasing; must not mask the primary failure."""
 
 
+@pytest.mark.req("SSE-29")
 def test_non_transient_failure_releases_before_propagating() -> None:
     body = _LedgerBody([], error=_PrimaryError("mid-stream boom"))
     conn = _conn([_response(body)])
@@ -204,6 +210,7 @@ class _MaskingBody(ResponseBody):
         raise _SecondaryError("teardown failed")
 
 
+@pytest.mark.req("SSE-29")
 def test_close_time_error_is_demoted_onto_context() -> None:
     conn = _conn([_response(_MaskingBody())])
 
@@ -219,6 +226,7 @@ def test_close_time_error_is_demoted_onto_context() -> None:
 # --- single-pass iteration -------------------------------------------------
 
 
+@pytest.mark.req("SSE-26")
 def test_second_iterator_raises() -> None:
     conn = _conn([_response(_LedgerBody([b"data: one\n\n"]))])
     it = iter(conn)
@@ -230,6 +238,7 @@ def test_second_iterator_raises() -> None:
     conn.close()
 
 
+@pytest.mark.req("SSE-27")
 def test_iteration_after_close_raises() -> None:
     conn = _conn([])
     conn.close()
@@ -269,6 +278,7 @@ class _ParkingBody(ResponseBody):
         self._unblock.set()
 
 
+@pytest.mark.req("SSE-18", "SSE-27", "SSE-31")
 def test_close_from_another_thread_during_iteration_releases_once() -> None:
     # Free-threaded-CPython correctness: the close-once transition is guarded by
     # an explicit ``threading.Lock`` (not the GIL), so only the closer that

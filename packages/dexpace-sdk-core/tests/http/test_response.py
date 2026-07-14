@@ -96,6 +96,7 @@ def test_is_success_property() -> None:
     assert not r2.is_success
 
 
+@pytest.mark.req("HTTP-11")
 def test_status_group_properties() -> None:
     req = _request()
     redirect = Response(request=req, protocol=Protocol.HTTP_1_1, status=Status.FOUND)
@@ -115,6 +116,7 @@ def test_status_group_properties() -> None:
     assert not server_err.is_client_error
 
 
+@pytest.mark.req("HTTP-43")
 def test_close_idempotent_with_no_body() -> None:
     r = Response(request=_request(), protocol=Protocol.HTTP_1_1, status=Status.OK)
     r.close()
@@ -149,6 +151,7 @@ def test_with_status() -> None:
     assert r.status is Status.OK
 
 
+@pytest.mark.req("HTTP-6")
 def test_default_headers_empty() -> None:
     r = Response(request=_request(), protocol=Protocol.HTTP_1_1, status=Status.OK)
     assert isinstance(r.headers, Headers)
@@ -158,12 +161,14 @@ def test_default_headers_empty() -> None:
 # --- Validation grammar -----------------------------------------------------
 
 
+@pytest.mark.req("HTTP-1", "XCUT-15")
 def test_frozen_rejects_attribute_assignment() -> None:
     resp = _response()
     with pytest.raises(FrozenInstanceError):
         resp.status = Status.NOT_FOUND  # type: ignore[misc]
 
 
+@pytest.mark.req("HTTP-4")
 def test_missing_request_raises_field_named_error() -> None:
     with pytest.raises(ValueError, match=r"^request is required$"):
         Response(request=None, protocol=Protocol.HTTP_1_1, status=Status.OK)  # type: ignore[arg-type]
@@ -222,6 +227,7 @@ def test_replace_resets_the_parse_latch() -> None:
     assert resp2.parse(list[int]) == [2]
 
 
+@pytest.mark.req("HTTP-45")
 def test_parse_latch_deserializes_exactly_once_under_concurrent_first_access() -> None:
     thread_count = 24
     body = _CountingBody(b"[1, 2, 3]")
@@ -278,6 +284,7 @@ def test_repr_omits_the_private_parse_latch() -> None:
 # --- Close-once semantics across paths --------------------------------------
 
 
+@pytest.mark.req("BODY-15", "HTTP-41")
 def test_close_releases_body_without_reading() -> None:
     body = _TrackingBody()
     _response(body).close()
@@ -285,6 +292,7 @@ def test_close_releases_body_without_reading() -> None:
     assert not body.read  # connection released even though nothing was read
 
 
+@pytest.mark.req("BODY-15", "HTTP-41")
 def test_close_is_idempotent() -> None:
     body = _TrackingBody()
     resp = _response(body)
@@ -293,6 +301,7 @@ def test_close_is_idempotent() -> None:
     assert body.closed  # repeated close does not raise
 
 
+@pytest.mark.req("HTTP-43")
 def test_context_manager_closes_on_exit() -> None:
     body = _TrackingBody()
     resp = _response(body)
@@ -301,6 +310,7 @@ def test_context_manager_closes_on_exit() -> None:
     assert body.closed
 
 
+@pytest.mark.req("HTTP-43")
 def test_context_manager_closes_on_exception() -> None:
     body = _TrackingBody()
     with pytest.raises(RuntimeError, match="boom"), _response(body):

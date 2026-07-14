@@ -37,6 +37,7 @@ def test_operation_input_is_frozen() -> None:
         inp.body = None  # type: ignore[misc]
 
 
+@pytest.mark.req("SEAM-26")
 def test_operation_input_defaults_are_empty() -> None:
     inp = OperationInput()
     assert dict(inp.path_params) == {}
@@ -45,6 +46,7 @@ def test_operation_input_defaults_are_empty() -> None:
     assert inp.body is None
 
 
+@pytest.mark.req("SEAM-28")
 def test_name_excluded_from_equality() -> None:
     # ``name`` is purely advisory: two operations that differ only in name are
     # equal, so nothing keyed on an Operation can ever be split apart by name.

@@ -40,10 +40,12 @@ class TestUrl:
         u = Url.parse(original)
         assert str(u) == original
 
+    @pytest.mark.req("HTTP-47")
     def test_empty_url_raises(self) -> None:
         with pytest.raises(ValueError):
             Url.parse("")
 
+    @pytest.mark.req("HTTP-47")
     def test_missing_scheme_raises(self) -> None:
         with pytest.raises(ValueError):
             Url.parse("//api.example.com/path")
@@ -90,6 +92,7 @@ class TestQueryParams:
         assert q.get("a") == "1"
         assert q.get("b") == "x"
 
+    @pytest.mark.req("HTTP-28")
     def test_values_returns_all(self) -> None:
         q = QueryParams([("a", "1"), ("a", "2")])
         assert q.values("a") == ("1", "2")
@@ -105,6 +108,7 @@ class TestQueryParams:
         result = q.with_set("a", "only")
         assert result.values("a") == ("only",)
 
+    @pytest.mark.req("HTTP-30")
     def test_with_set_no_values_removes_param(self) -> None:
         # ``with_set`` with zero values must remove the parameter entirely
         # (mirroring ``Headers.with_set``), not leave a phantom empty entry
@@ -135,6 +139,7 @@ class TestQueryParams:
         assert "a" not in result
         assert "b" in result
 
+    @pytest.mark.req("HTTP-28")
     def test_case_sensitive(self) -> None:
         q = QueryParams([("FOO", "1")])
         assert q.get("foo") is None
@@ -151,6 +156,7 @@ class TestQueryParams:
         assert q.get("a") == "1"
         assert q.get("b") == "hello world"
 
+    @pytest.mark.req("HTTP-31")
     def test_parse_leading_question_mark(self) -> None:
         q = QueryParams.parse("?a=1")
         assert q.get("a") == "1"

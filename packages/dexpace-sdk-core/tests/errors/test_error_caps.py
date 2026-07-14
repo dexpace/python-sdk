@@ -41,6 +41,7 @@ def _response(status: Status, *, body: ResponseBody | None = None) -> Response:
 # ----- retryable flag -----------------------------------------------------
 
 
+@pytest.mark.req("RETRY-3")
 @pytest.mark.parametrize(
     "status",
     [
@@ -88,6 +89,7 @@ def test_retryable_inherited_by_subclasses() -> None:
     assert err.retryable is False
 
 
+@pytest.mark.req("RETRY-3")
 def test_retryable_is_baked_once_and_stable_against_classifier_change(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -135,10 +137,12 @@ def test_retry_policy_custom_set_does_not_rewrite_baked_error_flag() -> None:
 # ----- bounded, replayable error body -------------------------------------
 
 
+@pytest.mark.req("HTTP-52")
 def test_error_body_cap_is_one_mib() -> None:
     assert ERROR_BODY_MAX_BYTES == 1 << 20  # documented 1 MiB cap
 
 
+@pytest.mark.req("BODY-30", "HTTP-52")
 def test_read_body_captures_bounded_replayable_copy() -> None:
     # A body larger than the cap is truncated to the documented ceiling and the
     # captured copy replays identically on every subsequent read.
@@ -152,6 +156,7 @@ def test_read_body_captures_bounded_replayable_copy() -> None:
     assert err.read_body() == first
 
 
+@pytest.mark.req("HTTP-52")
 def test_read_body_returns_full_body_under_cap() -> None:
     body = ResponseBody.from_bytes(b'{"error":"boom"}')
     err = HttpResponseError(response=_response(Status.BAD_REQUEST, body=body))
@@ -195,6 +200,7 @@ def test_read_body_rejects_negative_max_bytes() -> None:
 # ----- body_snapshot ------------------------------------------------------
 
 
+@pytest.mark.req("BODY-33")
 def test_body_snapshot_previews_loggable_body_without_consuming() -> None:
     loggable = LoggableResponseBody(
         ResponseBody.from_bytes(b'{"error":"boom"}', MediaType.parse("application/json")),
@@ -208,6 +214,7 @@ def test_body_snapshot_previews_loggable_body_without_consuming() -> None:
     assert loggable.bytes() == b'{"error":"boom"}'
 
 
+@pytest.mark.req("XCUT-24")
 def test_body_snapshot_truncates_to_max_bytes() -> None:
     loggable = LoggableResponseBody(ResponseBody.from_bytes(b"0123456789"))
     err = HttpResponseError(response=_response(Status.BAD_REQUEST, body=loggable))
@@ -215,6 +222,7 @@ def test_body_snapshot_truncates_to_max_bytes() -> None:
     assert err.body_snapshot(4) == b"0123"
 
 
+@pytest.mark.req("BODY-33", "XCUT-24")
 def test_body_snapshot_returns_empty_for_single_use_body() -> None:
     # A plain bytes-backed body is single-use; previewing it must not drain it.
     body = ResponseBody.from_bytes(b"unsafe-to-peek")
@@ -225,6 +233,7 @@ def test_body_snapshot_returns_empty_for_single_use_body() -> None:
     assert body.bytes() == b"unsafe-to-peek"
 
 
+@pytest.mark.req("BODY-33")
 def test_body_snapshot_returns_empty_when_no_body() -> None:
     err = HttpResponseError(response=_response(Status.BAD_REQUEST))
     assert err.body_snapshot() == b""

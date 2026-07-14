@@ -24,6 +24,7 @@ def _drain(body: RequestBody) -> bytes:
 
 
 class TestFactories:
+    @pytest.mark.req("BODY-1", "HTTP-36")
     def test_from_bytes(self) -> None:
         body = RequestBody.from_bytes(b"payload")
         assert body.is_replayable()
@@ -52,6 +53,7 @@ class TestFactories:
         assert utf8 == b"name=%C3%A9"
         assert latin1 != utf8
 
+    @pytest.mark.req("BODY-6")
     def test_from_stream_single_use(self) -> None:
         body = RequestBody.from_stream(BytesIO(b"once"), content_length=4)
         assert not body.is_replayable()
@@ -59,6 +61,7 @@ class TestFactories:
         with pytest.raises(RuntimeError):
             _drain(body)
 
+    @pytest.mark.req("BODY-6")
     def test_from_iter_single_use(self) -> None:
         body = RequestBody.from_iter([b"a", b"bc"], content_length=3)
         assert _drain(body) == b"abc"
@@ -73,6 +76,7 @@ class TestFactories:
 
 
 class TestWriteTo:
+    @pytest.mark.req("HTTP-36")
     def test_write_to_returns_total(self) -> None:
         body = RequestBody.from_bytes(b"abcdefg")
         sink = BytesIO()
@@ -97,6 +101,7 @@ class TestLoggableRequestBody:
         with pytest.raises(ValueError):
             LoggableRequestBody(RequestBody.from_bytes(b""), max_capture_bytes=0)
 
+    @pytest.mark.req("BODY-17", "BODY-19")
     def test_cap_truncates_capture_not_primary(self) -> None:
         logged = LoggableRequestBody(
             RequestBody.from_bytes(b"abcdefghij"),
@@ -144,6 +149,7 @@ class TestFileRequestBody:
         body = FileRequestBody(tmp_path / "missing.bin", count=7)
         assert body.content_length() == 7
 
+    @pytest.mark.req("BODY-12")
     def test_from_file_factory(self, tmp_path: Path) -> None:
         path = tmp_path / "x.bin"
         path.write_bytes(b"abc")

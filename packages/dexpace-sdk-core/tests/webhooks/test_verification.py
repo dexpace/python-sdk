@@ -108,7 +108,6 @@ def test_verify_rejects_a_tampered_webhook_id() -> None:
         _verifier().verify(headers, _BODY)
 
 
-@pytest.mark.req("WEBHOOK-12")
 def test_verify_rejects_signature_made_with_a_different_secret() -> None:
     signature = _sign(b"a-completely-different-key", _WEBHOOK_ID, _TIMESTAMP, _BODY)
     with pytest.raises(InvalidWebhookSignatureError, match="no matching signature"):

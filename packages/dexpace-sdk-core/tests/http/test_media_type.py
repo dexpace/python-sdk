@@ -26,6 +26,7 @@ class TestParse:
         mt = MediaType.parse("multipart/form-data; boundary=abc=def")
         assert dict(mt.parameters)["boundary"] == "abc=def"
 
+    @pytest.mark.req("HTTP-53")
     def test_blank_value_raises(self) -> None:
         with pytest.raises(ValueError):
             MediaType.parse("")
@@ -34,6 +35,7 @@ class TestParse:
         with pytest.raises(ValueError):
             MediaType.parse("not-a-media-type")
 
+    @pytest.mark.req("HTTP-53")
     def test_missing_subtype_raises(self) -> None:
         with pytest.raises(ValueError):
             MediaType.parse("application/")
@@ -60,6 +62,7 @@ class TestNormalisation:
         mt = MediaType.of("APPLICATION", "JSON")
         assert mt.full_type == "application/json"
 
+    @pytest.mark.req("HTTP-23")
     def test_parameter_keys_normalised(self) -> None:
         mt = MediaType.of("text", "plain", {"CHARSET": "UTF-8"})
         # Keys are case-folded; values preserve case (multipart boundaries
@@ -71,6 +74,7 @@ class TestNormalisation:
         with pytest.raises(ValueError):
             MediaType.of("  ", "json")
 
+    @pytest.mark.req("HTTP-27")
     def test_wildcard_type_requires_wildcard_subtype(self) -> None:
         with pytest.raises(ValueError):
             MediaType.of("*", "json")
@@ -82,6 +86,7 @@ class TestIncludes:
         b = MediaType.of("application", "json")
         assert a.includes(b)
 
+    @pytest.mark.req("HTTP-27")
     def test_wildcard_subtype(self) -> None:
         a = MediaType.of("application", "*")
         b = MediaType.of("application", "json")

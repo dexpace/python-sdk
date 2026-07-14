@@ -76,6 +76,7 @@ def test_build_orders_by_stage(async_transport: _AsyncStubTransport) -> None:
     assert isinstance(pipeline, AsyncPipeline)
 
 
+@pytest.mark.req("PIPE-28")
 def test_pillar_double_append_raises(async_transport: _AsyncStubTransport) -> None:
     b = AsyncStagedPipelineBuilder(async_transport)
     b.append(AsyncRetryPolicy())
@@ -151,6 +152,7 @@ def test_insert_second_pillar_via_splice_raises(
     assert [p.tag for p in b._flatten() if isinstance(p, _AsyncMarkerPolicy)] == ["m"]
 
 
+@pytest.mark.req("PIPE-28")
 def test_replace_pillar_with_different_stage_rejected(
     async_transport: _AsyncStubTransport,
 ) -> None:

@@ -339,6 +339,7 @@ def test_shared_client_is_not_closed_on_close() -> None:
     shared.close()
 
 
+@pytest.mark.req("TRANSPORT-16")
 def test_byo_client_second_close_is_a_noop() -> None:
     """Closing an adapter over a BYO client twice never touches the client."""
     transport = httpx.MockTransport(_ok_handler(b"{}"))
@@ -350,6 +351,7 @@ def test_byo_client_second_close_is_a_noop() -> None:
     shared.close()
 
 
+@pytest.mark.req("TRANSPORT-1")
 def test_byo_client_with_follow_redirects_true_is_overridden() -> None:
     """A BYO client's own ``follow_redirects=True`` never leaks through.
 

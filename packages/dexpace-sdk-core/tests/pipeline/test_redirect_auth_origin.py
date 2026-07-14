@@ -115,6 +115,7 @@ def _run(client: _ScriptedClient, policies: Sequence[object], trace: str) -> Res
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("REDIR-24")
 def test_bearer_token_not_reissued_to_cross_origin_redirect_target() -> None:
     # The redirect policy (outermost) 302s to a foreign host; the bearer policy
     # (inner) sees the reissued request but must NOT re-stamp the token onto it.
@@ -232,7 +233,6 @@ def test_basic_auth_reissued_same_origin() -> None:
     assert client.requests[1].headers.get("authorization") == "Basic dXNlcjpwYXNz"
 
 
-@pytest.mark.req("REDIRECT-11")
 def test_caller_authorization_kept_same_origin_dropped_cross_origin() -> None:
     # No auth policy at all: a caller-set Authorization header. The redirect
     # policy keeps it on a same-origin 301 and drops it on a cross-origin 302.

@@ -68,6 +68,7 @@ class _AsyncStepClock:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("AUTH-34")
 def test_refresh_margin_default_is_30_seconds() -> None:
     assert REFRESH_MARGIN_SECONDS == 30.0
 
@@ -139,6 +140,7 @@ def test_sync_fresh_token_served_without_fetch() -> None:
     assert sf.get_token(provider).token == "cached"
 
 
+@pytest.mark.req("AUTH-35")
 def test_sync_none_token_raises() -> None:
     sf = _SyncSingleFlight(InMemoryTokenCache(), ("s",), None, SYSTEM_CLOCK)
 
@@ -149,6 +151,7 @@ def test_sync_none_token_raises() -> None:
         sf.get_token(provider)
 
 
+@pytest.mark.req("AUTH-35")
 def test_sync_already_expired_token_raises() -> None:
     clock = FakeClock(start=1000.0)
     sf = _SyncSingleFlight(InMemoryTokenCache(), ("s",), None, clock)
@@ -160,6 +163,7 @@ def test_sync_already_expired_token_raises() -> None:
         sf.get_token(provider)
 
 
+@pytest.mark.req("AUTH-11", "AUTH-35")
 def test_sync_throwing_provider_not_cached_and_retried() -> None:
     cache = InMemoryTokenCache()
     calls = 0
@@ -185,6 +189,7 @@ def test_sync_throwing_provider_not_cached_and_retried() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("AUTH-37")
 async def test_async_single_flight_one_fetch_under_gather() -> None:
     """N concurrent cache misses collapse to exactly one provider fetch."""
     clock = _AsyncStepClock(start=1000.0)
@@ -204,6 +209,7 @@ async def test_async_single_flight_one_fetch_under_gather() -> None:
     assert all(r.token == "t" for r in results)
 
 
+@pytest.mark.req("AUTH-37")
 async def test_async_fresh_zone_serves_without_fetch() -> None:
     clock = _AsyncStepClock(start=1000.0)
     cache = InMemoryTokenCache()
@@ -216,6 +222,7 @@ async def test_async_fresh_zone_serves_without_fetch() -> None:
     assert (await sf.get_token(provider)).token == "fresh"
 
 
+@pytest.mark.req("AUTH-37")
 async def test_async_soft_zone_serves_stale_and_refreshes_in_background() -> None:
     clock = _AsyncStepClock(start=1000.0)
     cache = InMemoryTokenCache()
@@ -241,6 +248,7 @@ async def test_async_soft_zone_serves_stale_and_refreshes_in_background() -> Non
     assert entry is not None and entry.token == "fresh"
 
 
+@pytest.mark.req("AUTH-37")
 async def test_async_background_refresh_failure_is_non_fatal() -> None:
     clock = _AsyncStepClock(start=1000.0)
     cache = InMemoryTokenCache()
@@ -261,6 +269,7 @@ async def test_async_background_refresh_failure_is_non_fatal() -> None:
     assert entry is not None and entry.token == "stale"
 
 
+@pytest.mark.req("AUTH-37")
 async def test_async_hard_zone_blocks_on_fetch() -> None:
     clock = _AsyncStepClock(start=1000.0)
     cache = InMemoryTokenCache()
@@ -294,6 +303,7 @@ async def test_async_already_expired_token_raises() -> None:
         await sf.get_token(provider)
 
 
+@pytest.mark.req("AUTH-11")
 async def test_async_throwing_provider_not_cached_and_retried() -> None:
     clock = _AsyncStepClock(start=1000.0)
     cache = InMemoryTokenCache()

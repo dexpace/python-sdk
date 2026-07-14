@@ -79,6 +79,7 @@ def test_apply_to_returns_new_instance() -> None:
 
 @pytest.mark.req("HTTP-50")
 class TestETagListRendering:
+    @pytest.mark.req("HTTP-50")
     def test_if_match_multiple_comma_joined(self) -> None:
         cond = RequestConditions(if_match=[ETag(value="a"), ETag(value="b")])
         assert cond.apply_to(_request()).headers.get("if-match") == '"a", "b"'
@@ -123,6 +124,7 @@ class TestHeaderSelection:
         assert headers.get("if-modified-since") == "Mon, 01 Jan 2024 12:00:00 GMT"
         assert headers.get("if-unmodified-since") == "Mon, 01 Jan 2024 12:00:00 GMT"
 
+    @pytest.mark.req("HTTP-50")
     def test_apply_to_replaces_existing_conditional_header(self) -> None:
         base = _request().with_header("if-match", '"stale"')
         result = RequestConditions(if_match=[ETag(value="fresh")]).apply_to(base)
@@ -130,6 +132,7 @@ class TestHeaderSelection:
 
 
 class TestHttpDateFormatting:
+    @pytest.mark.req("HTTP-50")
     def test_utc_datetime_rendered_as_imf_fixdate(self) -> None:
         when = datetime(2024, 3, 5, 8, 9, 10, tzinfo=UTC)
         cond = RequestConditions(if_modified_since=when)

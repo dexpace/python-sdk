@@ -51,6 +51,7 @@ class TestUnregisteredCodesSynthesized:
         assert int(status) == code
         assert status.name == f"UNKNOWN_{code}"
 
+    @pytest.mark.req("HTTP-10")
     def test_known_code_still_returns_named_member(self) -> None:
         assert Status(200) is Status.OK
         assert Status(404) is Status.NOT_FOUND
@@ -60,6 +61,7 @@ class TestUnregisteredCodesSynthesized:
 class TestTotalityOverInts:
     """HTTP-10: any integer constructs without raising; equality is by code."""
 
+    @pytest.mark.req("HTTP-10")
     def test_out_of_band_codes_construct_instead_of_raising(self) -> None:
         # These previously raised; a total lookup surfaces them with the raw int
         # so an odd status never costs the caller the live response.
@@ -103,6 +105,7 @@ class TestEqualityByCode:
         assert ok_code == Status.OK
         assert Status(200) == Status.OK
 
+    @pytest.mark.req("HTTP-12")
     def test_synthesized_member_equals_int(self) -> None:
         assert Status(499) == 499
         assert Status(499) != 500
@@ -120,6 +123,7 @@ class TestEqualityByCode:
 class TestBandClassification:
     """HTTP-11: is_informational/success/redirect/client_error/server_error/error."""
 
+    @pytest.mark.req("HTTP-11")
     @pytest.mark.parametrize(
         "code,predicate",
         [

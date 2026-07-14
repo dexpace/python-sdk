@@ -87,6 +87,7 @@ def _ev(data: str, event: str = "message") -> SseEvent:
 # --- SKIP / DONE ------------------------------------------------------------
 
 
+@pytest.mark.req("SSE-24", "SSE-33", "SSE-34")
 def test_skip_discards_and_keeps_pulling() -> None:
     source = _RecordingSource([_ev("keep-a"), _ev("drop"), _ev("keep-b")])
 
@@ -97,6 +98,7 @@ def test_skip_discards_and_keeps_pulling() -> None:
     assert source.closes == 1  # released on clean exhaustion
 
 
+@pytest.mark.req("SSE-34")
 def test_done_stops_the_stream_and_releases() -> None:
     source = _RecordingSource([_ev("1"), _ev("2"), _ev("stop"), _ev("3")])
 
@@ -112,6 +114,7 @@ def test_done_stops_the_stream_and_releases() -> None:
 # --- lazy, pull-based draining ---------------------------------------------
 
 
+@pytest.mark.req("SSE-35", "SSE-39")
 def test_mapping_is_lazy_one_pull_per_demand() -> None:
     source = _RecordingSource([_ev("a"), _ev("b"), _ev("c")])
     typed = TypedSseConnection(source, lambda name, data: data)
@@ -126,6 +129,7 @@ def test_mapping_is_lazy_one_pull_per_demand() -> None:
     typed.close()
 
 
+@pytest.mark.req("SSE-35")
 def test_lazy_draining_accounts_for_skipped_events() -> None:
     source = _RecordingSource([_ev("skip"), _ev("value"), _ev("ahead")])
 
@@ -142,6 +146,7 @@ def test_lazy_draining_accounts_for_skipped_events() -> None:
     typed.close()
 
 
+@pytest.mark.req("SSE-33")
 def test_mapper_receives_event_name_and_data() -> None:
     source = _RecordingSource([_ev("payload", event="custom")])
     seen: list[tuple[str, str]] = []
@@ -161,6 +166,7 @@ class _MapperError(Exception):
     pass
 
 
+@pytest.mark.req("SSE-36")
 def test_mapper_throw_releases_resource_first() -> None:
     source = _RecordingSource([_ev("boom")])
 
@@ -214,6 +220,7 @@ def _request() -> Request:
     return Request(method=Method.GET, url=Url.parse("https://api.example.com/stream"))
 
 
+@pytest.mark.req("SSE-37")
 def test_typed_adapter_drives_real_connection_to_clean_stop() -> None:
     body = _Body([b"data: 1\n\n", b"data: 2\n\ndata: [DONE]\n\n"])
 
@@ -234,6 +241,7 @@ def test_typed_adapter_drives_real_connection_to_clean_stop() -> None:
 # --- async twin -------------------------------------------------------------
 
 
+@pytest.mark.req("SSE-34")
 async def test_async_skip_and_done() -> None:
     source = _AsyncRecordingSource([_ev("1"), _ev("drop"), _ev("2"), _ev("stop"), _ev("3")])
 
@@ -250,6 +258,7 @@ async def test_async_skip_and_done() -> None:
     assert source.closes == 1
 
 
+@pytest.mark.req("SSE-36")
 async def test_async_mapper_throw_releases_resource_first() -> None:
     source = _AsyncRecordingSource([_ev("boom")])
 
@@ -264,6 +273,7 @@ async def test_async_mapper_throw_releases_resource_first() -> None:
     assert source.closes == 1
 
 
+@pytest.mark.req("SSE-35", "SSE-39")
 async def test_async_mapping_is_lazy() -> None:
     source = _AsyncRecordingSource([_ev("a"), _ev("b"), _ev("c")])
     typed = AsyncTypedSseConnection(source, lambda name, data: data)

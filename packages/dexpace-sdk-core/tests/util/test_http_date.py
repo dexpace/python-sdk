@@ -16,6 +16,7 @@ _CANONICAL = "Sun, 06 Nov 1994 08:49:37 GMT"
 _CANONICAL_DT = datetime(1994, 11, 6, 8, 49, 37, tzinfo=UTC)
 
 
+@pytest.mark.req("CFG-29")
 def test_format_renders_canonical_rfc1123() -> None:
     assert format_http_date(_CANONICAL_DT) == _CANONICAL
 
@@ -25,16 +26,19 @@ def test_format_treats_naive_datetime_as_utc() -> None:
     assert format_http_date(naive) == _CANONICAL
 
 
+@pytest.mark.req("CFG-29")
 def test_format_converts_aware_datetime_to_gmt() -> None:
     # 09:49:37 +0100 is 08:49:37 GMT.
     aware = datetime(1994, 11, 6, 9, 49, 37, tzinfo=timezone(timedelta(hours=1)))
     assert format_http_date(aware) == _CANONICAL
 
 
+@pytest.mark.req("CFG-30")
 def test_parse_rfc1123() -> None:
     assert parse_http_date(_CANONICAL) == _CANONICAL_DT
 
 
+@pytest.mark.req("CFG-30")
 @pytest.mark.parametrize(
     "raw",
     [

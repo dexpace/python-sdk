@@ -106,6 +106,7 @@ def _protocol_members(proto: type) -> frozenset[str]:
     return frozenset(members)
 
 
+@pytest.mark.req("NFR-3")
 @pytest.mark.parametrize(
     ("proto", "expected"),
     list(_PROTOCOL_MEMBERS.items()),
@@ -155,6 +156,7 @@ def _copy_source_trees(destination: Path) -> None:
         shutil.copytree(src, destination / "packages" / dist / "src")
 
 
+@pytest.mark.req("NFR-4")
 def test_seeded_public_signature_change_breaks_the_surface_diff(tmp_path: Path) -> None:
     tool = _load_snapshot_tool()
     baseline = json.loads(_BASELINE_PATH.read_text(encoding="utf-8"))

@@ -84,6 +84,7 @@ def test_sdk_error_rejects_extra_positional_args() -> None:
         SdkError("msg", "extra")  # type: ignore[misc,arg-type]
 
 
+@pytest.mark.req("XCUT-4")
 def test_http_response_error_carries_status_and_response() -> None:
     response = _response(Status.NOT_FOUND)
     err = HttpResponseError(response=response)
@@ -107,6 +108,7 @@ def test_request_response_errors_are_distinct() -> None:
 # ----- transport branch: NetworkError(OSError) ----------------------------
 
 
+@pytest.mark.req("XCUT-4")
 def test_network_error_is_both_sdk_error_and_os_error() -> None:
     # NetworkError joins the SDK root and OSError so ``except OSError:`` sites
     # (including user code) keep matching transport-level failures.
@@ -122,6 +124,7 @@ def test_service_request_error_is_a_network_error() -> None:
     assert issubclass(ServiceRequestTimeoutError, NetworkError)
 
 
+@pytest.mark.req("XCUT-4")
 def test_service_response_error_stays_off_the_network_branch() -> None:
     # A response *was* received (just unparseable); it is not the
     # never-got-a-response branch, so it must not be a NetworkError and must
@@ -149,6 +152,7 @@ def test_except_oserror_catches_transport_and_cancel(factory: object) -> None:
         raise factory()  # type: ignore[operator]
 
 
+@pytest.mark.req("RETRY-24", "RETRY-4", "XCUT-2", "XCUT-4")
 def test_network_error_is_always_retryable_at_class_level() -> None:
     # Transport failures that never got a response are always retryable at the
     # error-class level — distinct from the per-status classifier.
@@ -157,6 +161,7 @@ def test_network_error_is_always_retryable_at_class_level() -> None:
     assert ServiceRequestTimeoutError("connect timed out").retryable is True
 
 
+@pytest.mark.req("XCUT-1")
 def test_request_cancelled_is_oserror_but_not_network_or_retryable() -> None:
     cancel = RequestCancelledError("cancelled")
     assert isinstance(cancel, OSError)
@@ -166,6 +171,7 @@ def test_request_cancelled_is_oserror_but_not_network_or_retryable() -> None:
     assert cancel.retryable is False
 
 
+@pytest.mark.req("RETRY-24", "XCUT-2")
 def test_timeout_and_cancellation_discriminated_by_class_not_message() -> None:
     # Identical message text on purpose: discrimination must be by type only.
     timeout = ServiceRequestTimeoutError("deadline exceeded")
@@ -184,6 +190,7 @@ def test_timeout_and_cancellation_discriminated_by_class_not_message() -> None:
     assert cancel.retryable is False
 
 
+@pytest.mark.req("XCUT-2")
 def test_sdk_timeout_type_is_not_the_builtin_timeouterror() -> None:
     # The SDK's mapping is explicit: a NetworkError-branch timeout is an OSError
     # by design, not by coincidental reuse of Python's builtin ``TimeoutError``

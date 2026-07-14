@@ -60,12 +60,14 @@ def transport() -> _StubTransport:
 
 
 class TestAppendPrepend:
+    @pytest.mark.req("PIPE-1", "PIPE-7")
     def test_append_non_pillar_stacks(self, transport: _StubTransport) -> None:
         b = StagedPipelineBuilder(transport)
         b.append(_MarkerPolicy("a")).append(_MarkerPolicy("b"))
         flat = b._flatten()
         assert [p.tag for p in flat if isinstance(p, _MarkerPolicy)] == ["a", "b"]
 
+    @pytest.mark.req("PIPE-7")
     def test_prepend_non_pillar_inserts_at_head(self, transport: _StubTransport) -> None:
         b = StagedPipelineBuilder(transport)
         b.append(_MarkerPolicy("a")).prepend(_MarkerPolicy("z"))
@@ -78,6 +80,7 @@ class TestAppendPrepend:
         b.append(retry)
         assert b._pillars[Stage.RETRY] is retry
 
+    @pytest.mark.req("PIPE-24", "PIPE-4", "PIPE-5")
     def test_append_pillar_second_time_raises(self, transport: _StubTransport) -> None:
         b = StagedPipelineBuilder(transport)
         b.append(RetryPolicy())
@@ -94,6 +97,7 @@ class TestAppendPrepend:
 
 
 class TestSurgicalEdits:
+    @pytest.mark.req("PIPE-19")
     def test_replace_pillar(self, transport: _StubTransport) -> None:
         b = StagedPipelineBuilder(transport)
         original = RetryPolicy()
@@ -125,11 +129,13 @@ class TestSurgicalEdits:
         flat = b._flatten()
         assert any(p is new for p in flat)
 
+    @pytest.mark.req("PIPE-21")
     def test_replace_missing_raises(self, transport: _StubTransport) -> None:
         b = StagedPipelineBuilder(transport)
         with pytest.raises(ValueError, match="No instance of RetryPolicy"):
             b.replace(RetryPolicy, RetryPolicy())
 
+    @pytest.mark.req("PIPE-18")
     def test_insert_after(self, transport: _StubTransport) -> None:
         b = StagedPipelineBuilder(transport)
         a = _MarkerPolicy("a")
@@ -141,6 +147,7 @@ class TestSurgicalEdits:
         # insert_after first match (a) → inserted slots between a and b
         assert tags == ["a", "inserted", "b"]
 
+    @pytest.mark.req("PIPE-18")
     def test_insert_before(self, transport: _StubTransport) -> None:
         b = StagedPipelineBuilder(transport)
         a = _MarkerPolicy("a")
@@ -151,6 +158,7 @@ class TestSurgicalEdits:
         tags = [p.tag for p in b._flatten() if isinstance(p, _MarkerPolicy)]
         assert tags == ["inserted", "a", "b"]
 
+    @pytest.mark.req("PIPE-20", "PIPE-7")
     def test_remove_all_of_type(self, transport: _StubTransport) -> None:
         b = StagedPipelineBuilder(transport)
         b.append(_MarkerPolicy("a")).append(_MarkerPolicy("b")).append(_SecondMarkerPolicy("c"))
@@ -161,6 +169,7 @@ class TestSurgicalEdits:
 
 
 class TestBuild:
+    @pytest.mark.req("PIPE-1", "PIPE-25", "PIPE-8")
     def test_build_orders_by_stage(self, transport: _StubTransport) -> None:
         b = StagedPipelineBuilder(transport)
         # Append in scrambled order
@@ -184,6 +193,7 @@ class TestBuild:
 
 
 class TestFromPipeline:
+    @pytest.mark.req("PIPE-22")
     def test_round_trip(self, transport: _StubTransport) -> None:
         original = Pipeline(
             transport,
@@ -229,6 +239,7 @@ class TestFromPipeline:
 class TestOccupancyGuards:
     """A singleton (pillar) stage admits at most one occupant, on every path."""
 
+    @pytest.mark.req("PIPE-18", "PIPE-23", "PIPE-5")
     def test_insert_second_pillar_via_splice_raises(self, transport: _StubTransport) -> None:
         b = StagedPipelineBuilder(transport)
         original = RetryPolicy()
@@ -255,6 +266,7 @@ class TestOccupancyGuards:
 class TestNoRelocation:
     """Shipped singleton policies own their stage; replace can't relocate them."""
 
+    @pytest.mark.req("PIPE-19", "PIPE-36")
     def test_replace_pillar_with_different_stage_rejected(
         self,
         transport: _StubTransport,
@@ -290,6 +302,7 @@ class TestAtomicEdits:
             b.replace(_MarkerPolicy, RetryPolicy())
         assert [p.tag for p in b._flatten() if isinstance(p, _MarkerPolicy)] == ["m"]
 
+    @pytest.mark.req("PIPE-23")
     def test_batch_rolls_back_on_failure(self, transport: _StubTransport) -> None:
         b = StagedPipelineBuilder(transport)
         original = RetryPolicy()
@@ -332,6 +345,7 @@ class TestAtomicEdits:
 
 
 class TestPillarOrderFixed:
+    @pytest.mark.req("PIPE-1", "PIPE-22")
     def test_pillar_relative_order_is_fixed_regardless_of_insert_order(
         self,
         transport: _StubTransport,
@@ -347,6 +361,7 @@ class TestPillarOrderFixed:
 class TestPillarReplacementSafety:
     """Default raises; force=True is the explicit escape."""
 
+    @pytest.mark.req("PIPE-5")
     def test_double_pillar_without_force_surfaces_loud_error(
         self,
         transport: _StubTransport,

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from dexpace.sdk.core.http.auth import AuthenticateChallenge, parse_challenges
 
 
@@ -35,6 +37,7 @@ class TestParseChallenges:
         assert challenges[0].parameters["realm"] == "x"
         assert challenges[0].parameters["qop"] == "auth"
 
+    @pytest.mark.req("AUTH-13")
     def test_parse_malformed_skips_gracefully(self) -> None:
         # Garbage between two valid challenges should not break parsing.
         challenges = parse_challenges('Basic realm="ok", =badtoken, Digest realm="d"')
@@ -42,6 +45,7 @@ class TestParseChallenges:
         assert "Basic" in schemes
         assert "Digest" in schemes
 
+    @pytest.mark.req("AUTH-13")
     def test_parse_empty_returns_empty(self) -> None:
         assert parse_challenges("") == []
         assert parse_challenges("   ") == []

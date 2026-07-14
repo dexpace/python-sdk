@@ -50,6 +50,7 @@ def test_counter_default_increment_is_one() -> None:
     assert counter.calls == [(1.0, None)]
 
 
+@pytest.mark.req("OBS-33")
 def test_counter_accepts_zero_and_positive() -> None:
     counter = _RecordingCounter()
     counter.add(0.0)
@@ -72,6 +73,7 @@ def test_noop_counter_also_rejects_negative() -> None:
         NOOP_COUNTER.add(-0.01)
 
 
+@pytest.mark.req("OBS-31")
 def test_noop_counter_discards_valid_increments_silently() -> None:
     NOOP_COUNTER.add()
     NOOP_COUNTER.add(3.0)
@@ -89,6 +91,7 @@ def test_up_down_counter_allows_negative() -> None:
 # ----- Histogram: tolerates any input (OBS-33) -----------------------------
 
 
+@pytest.mark.req("OBS-33")
 def test_histogram_tolerates_any_numeric_input() -> None:
     hist = _RecordingHistogram()
     hist.record(-1.0)
@@ -100,6 +103,7 @@ def test_histogram_tolerates_any_numeric_input() -> None:
     assert math.isnan(hist.values[-1])
 
 
+@pytest.mark.req("OBS-33")
 def test_noop_histogram_tolerates_any_input() -> None:
     NOOP_HISTOGRAM.record(-1.0)
     NOOP_HISTOGRAM.record(math.nan)
@@ -109,6 +113,7 @@ def test_noop_histogram_tolerates_any_input() -> None:
 # ----- Meter/MetricsContext: OTel names + units (OBS-31/32) ----------------
 
 
+@pytest.mark.req("OBS-31")
 def test_noop_metrics_context_builds_instruments_with_units() -> None:
     counter = NOOP_METRICS_CONTEXT.counter(
         "http.client.request.count", unit="{request}", description="requests"
@@ -127,6 +132,7 @@ def test_noop_metrics_context_builds_instruments_with_units() -> None:
 # ----- No-op allocation / identity (OBS-25) --------------------------------
 
 
+@pytest.mark.req("OBS-31")
 def test_noop_metrics_context_returns_shared_singletons() -> None:
     assert NOOP_METRICS_CONTEXT.counter("a") is NOOP_COUNTER
     assert NOOP_METRICS_CONTEXT.counter("b", unit="s") is NOOP_COUNTER
@@ -134,6 +140,7 @@ def test_noop_metrics_context_returns_shared_singletons() -> None:
     assert NOOP_METRICS_CONTEXT.up_down_counter("d") is NOOP_UPDOWN_COUNTER
 
 
+@pytest.mark.req("OBS-20", "OBS-30")
 def test_meter_callback_exception_is_not_wrapped() -> None:
     # Meter callbacks are contractually never-throwing; a raising recording seam
     # propagates unchanged rather than being wrapped or suppressed.
@@ -148,6 +155,7 @@ def test_meter_callback_exception_is_not_wrapped() -> None:
     assert excinfo.value is sentinel
 
 
+@pytest.mark.req("OBS-25")
 def test_noop_metric_calls_retain_no_memory() -> None:
     # A genuine no-op retains nothing PER CALL: repeating the loop must not
     # grow traced memory further. The first loop is a warm-up round, not just

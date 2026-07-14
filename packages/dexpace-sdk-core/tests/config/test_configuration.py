@@ -64,6 +64,7 @@ def test_get_returns_none_when_default_is_none_and_missing() -> None:
     assert cfg.get("KEY") is None
 
 
+@pytest.mark.req("CFG-2")
 def test_empty_env_value_treated_as_absent() -> None:
     cfg = Configuration(env=_env({"KEY": ""}))
     assert cfg.get("KEY", "default") == "default"
@@ -84,6 +85,7 @@ def test_get_int_happy_path() -> None:
     assert cfg.get_int("N", 7) == 42
 
 
+@pytest.mark.req("CFG-5")
 def test_get_int_parse_failure_returns_default() -> None:
     cfg = Configuration(env=_env({"N": "not-a-number"}))
     assert cfg.get_int("N", 7) == 7
@@ -103,6 +105,7 @@ def test_get_int_override_beats_env() -> None:
 # get_bool — strict
 
 
+@pytest.mark.req("CFG-6")
 @pytest.mark.parametrize(
     "value,expected",
     [
@@ -119,6 +122,7 @@ def test_get_bool_recognized_values(value: str, expected: bool) -> None:
     assert cfg.get_bool("FLAG", not expected) is expected
 
 
+@pytest.mark.req("CFG-6")
 @pytest.mark.parametrize("value", ["1", "0", "yes", "no", "on", "off", "", "garbage"])
 def test_get_bool_strict_rejects_non_boolean_literals(value: str) -> None:
     cfg = Configuration(env=_env({"FLAG": value} if value else {}))
@@ -158,6 +162,7 @@ def test_get_duration_parses_supported_formats(raw: str, expected_seconds: float
     assert cfg.get_duration("T", 0.0) == pytest.approx(expected_seconds)
 
 
+@pytest.mark.req("CFG-5")
 def test_get_duration_parse_failure_returns_default() -> None:
     cfg = Configuration(env=_env({"T": "nonsense"}))
     assert cfg.get_duration("T", 9.0) == 9.0
@@ -215,6 +220,7 @@ def test_well_known_constants_exposed() -> None:
     assert Configuration.NO_PROXY == "NO_PROXY"
 
 
+@pytest.mark.req("CFG-11")
 def test_default_env_is_os_environ(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DEXPACE_TEST_CONFIG_KEY", "value-from-os")
     cfg = Configuration()
@@ -222,6 +228,7 @@ def test_default_env_is_os_environ(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestOverrideImmutability:
+    @pytest.mark.req("CFG-8")
     def test_external_mutation_of_overrides_does_not_leak(self) -> None:
         """A defensive copy means callers can't mutate config after construction."""
         original = {"KEY": "initial"}
@@ -229,6 +236,7 @@ class TestOverrideImmutability:
         original["KEY"] = "mutated-after-construction"
         assert cfg.get("KEY") == "initial"
 
+    @pytest.mark.req("CFG-12", "CFG-8")
     def test_builder_build_takes_defensive_copy(self) -> None:
         builder = Configuration.builder().put("KEY", "v1")
         cfg = builder.build()
@@ -248,6 +256,7 @@ _MATRIX_KEY = "FOO_BAR"
 _MATRIX_PROP_KEY = "foo.bar"
 
 
+@pytest.mark.req("CFG-1", "CFG-2")
 @pytest.mark.parametrize(
     "overrides,env,props,expected",
     [
@@ -275,12 +284,14 @@ def test_precedence_matrix(
     assert cfg.get(_MATRIX_KEY, "def") == expected
 
 
+@pytest.mark.req("CFG-1", "CFG-3")
 def test_property_seam_is_normalised_by_get() -> None:
     # ``get`` normalises the env-style key to the dotted-lowercase property key.
     cfg = Configuration(props=_props({_MATRIX_PROP_KEY: "value"}))
     assert cfg.get(_MATRIX_KEY, "def") == "value"
 
 
+@pytest.mark.req("CFG-3")
 def test_property_seam_not_found_with_unnormalised_key_via_get() -> None:
     # A property source keyed by the raw env-style name is NOT seen by ``get``,
     # which only queries the normalised key.
@@ -292,6 +303,7 @@ def test_property_seam_not_found_with_unnormalised_key_via_get() -> None:
 # Raw accessor: skips property-key normalisation
 
 
+@pytest.mark.req("CFG-4")
 def test_get_raw_queries_property_with_verbatim_key() -> None:
     cfg = Configuration(props=_props({_MATRIX_KEY: "raw-value"}))
     # ``get_raw`` looks the property source up under the verbatim name...
@@ -300,6 +312,7 @@ def test_get_raw_queries_property_with_verbatim_key() -> None:
     assert cfg.get(_MATRIX_KEY, "def") == "def"
 
 
+@pytest.mark.req("CFG-4")
 def test_get_raw_still_honours_override_and_env() -> None:
     cfg = Configuration(
         overrides={_MATRIX_KEY: "ov"},
@@ -321,21 +334,25 @@ def test_get_raw_falls_back_to_env_over_property() -> None:
 # Typed accessors resolve through the FULL layered lookup (incl. property seam)
 
 
+@pytest.mark.req("CFG-38")
 def test_get_int_resolves_via_property_seam() -> None:
     cfg = Configuration(props=_props({_MATRIX_PROP_KEY: "42"}))
     assert cfg.get_int(_MATRIX_KEY, 7) == 42
 
 
+@pytest.mark.req("CFG-38")
 def test_get_bool_resolves_via_property_seam() -> None:
     cfg = Configuration(props=_props({_MATRIX_PROP_KEY: "true"}))
     assert cfg.get_bool(_MATRIX_KEY, False) is True
 
 
+@pytest.mark.req("CFG-38")
 def test_get_duration_resolves_via_property_seam() -> None:
     cfg = Configuration(props=_props({_MATRIX_PROP_KEY: "5s"}))
     assert cfg.get_duration(_MATRIX_KEY, 0.0) == pytest.approx(5.0)
 
 
+@pytest.mark.req("CFG-5")
 def test_get_int_negative_is_valid() -> None:
     # Negative values are legitimate for plain int config (unlike durations).
     cfg = Configuration(env=_env({"N": "-3"}))
@@ -346,6 +363,7 @@ def test_get_int_negative_is_valid() -> None:
 # Property seam via the builder
 
 
+@pytest.mark.req("CFG-11")
 def test_builder_with_property_source() -> None:
     cfg = ConfigurationBuilder().props(_props({_MATRIX_PROP_KEY: "pv"})).build()
     assert cfg.get(_MATRIX_KEY, "def") == "pv"
@@ -355,6 +373,7 @@ def test_builder_with_property_source() -> None:
 # Derivation (copy-on-write) shares seams
 
 
+@pytest.mark.req("CFG-9")
 def test_with_override_is_copy_on_write() -> None:
     base = Configuration(env=_env({"KEY": "env"}))
     derived = base.with_override("KEY", "derived")
@@ -363,6 +382,7 @@ def test_with_override_is_copy_on_write() -> None:
     assert base.get("KEY", "def") == "env"
 
 
+@pytest.mark.req("CFG-9")
 def test_with_override_shares_source_seams() -> None:
     env = _env({})
     props = _props({_MATRIX_PROP_KEY: "shared"})
@@ -374,6 +394,7 @@ def test_with_override_shares_source_seams() -> None:
     assert derived.get(_MATRIX_KEY, "def") == "shared"
 
 
+@pytest.mark.req("CFG-9")
 def test_with_override_does_not_mutate_source_overrides() -> None:
     base = Configuration(overrides={"A": "1"})
     base.with_override("A", "2")
@@ -384,6 +405,7 @@ def test_with_override_does_not_mutate_source_overrides() -> None:
 # None-rejection for required arguments
 
 
+@pytest.mark.req("CFG-37")
 def test_get_rejects_none_key() -> None:
     cfg = Configuration()
     with pytest.raises(TypeError):
@@ -396,12 +418,14 @@ def test_get_raw_rejects_none_key() -> None:
         cfg.get_raw(None)  # type: ignore[arg-type]
 
 
+@pytest.mark.req("CFG-37")
 def test_with_override_rejects_none_key() -> None:
     cfg = Configuration()
     with pytest.raises(TypeError):
         cfg.with_override(None, "v")  # type: ignore[arg-type]
 
 
+@pytest.mark.req("CFG-37")
 def test_set_default_configuration_rejects_none() -> None:
     with pytest.raises(TypeError):
         set_default_configuration(None)  # type: ignore[arg-type]
@@ -421,6 +445,7 @@ def _restore_default_slot() -> Iterator[None]:
         _configuration._default_configuration = saved
 
 
+@pytest.mark.req("CFG-13")
 def test_default_configuration_lazily_initialises(_restore_default_slot: None) -> None:
     _configuration._default_configuration = None
     cfg = default_configuration()
@@ -429,6 +454,7 @@ def test_default_configuration_lazily_initialises(_restore_default_slot: None) -
     assert default_configuration() is cfg
 
 
+@pytest.mark.req("CFG-13")
 def test_set_default_configuration_last_write_wins(_restore_default_slot: None) -> None:
     first = Configuration(overrides={"K": "first"})
     second = Configuration(overrides={"K": "second"})
@@ -443,6 +469,7 @@ def test_set_default_configuration_last_write_wins(_restore_default_slot: None) 
 # Hermetic seam substitution — tests never touch real ``os.environ``
 
 
+@pytest.mark.req("CFG-11")
 def test_injected_env_seam_bypasses_real_os_environ() -> None:
     sentinel = "DEXPACE_HERMETIC_SENTINEL_KEY"
     # Precondition: the sentinel is genuinely absent from the real process env.

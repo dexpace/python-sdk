@@ -59,6 +59,7 @@ def test_protocol_h2_aliases() -> None:
     assert Protocol.parse("http/2.0") is Protocol.HTTP_2
 
 
+@pytest.mark.req("HTTP-33")
 def test_protocol_unknown_raises() -> None:
     with pytest.raises(ValueError):
         Protocol.parse("ftp/1.0")
@@ -73,6 +74,7 @@ def test_protocol_str_round_trips_for_every_member(proto: Protocol) -> None:
     assert Protocol.parse(str(proto)) is proto
 
 
+@pytest.mark.req("HTTP-33")
 @pytest.mark.parametrize(
     "text,expected",
     [

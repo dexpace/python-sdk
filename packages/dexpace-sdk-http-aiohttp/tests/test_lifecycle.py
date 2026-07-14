@@ -70,6 +70,7 @@ async def base_url() -> AsyncIterator[str]:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("ASYNC-15", "SEAM-14", "SEAM-25", "TRANSPORT-15")
 async def test_byo_session_and_connector_survive_close(base_url: str) -> None:
     """A caller-supplied session AND its connector survive `aclose()`."""
     connector = aiohttp.TCPConnector()
@@ -89,6 +90,7 @@ async def test_byo_session_and_connector_survive_close(base_url: str) -> None:
         await session.close()
 
 
+@pytest.mark.req("ASYNC-15", "ASYNC-16", "SEAM-14", "SEAM-25", "TRANSPORT-16")
 async def test_owned_session_and_connector_released_exactly_once(base_url: str) -> None:
     """An adapter-owned connector is closed exactly once.
 
@@ -126,6 +128,7 @@ async def test_owned_session_and_connector_released_exactly_once(base_url: str) 
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("ASYNC-6", "SEAM-13", "TRANSPORT-7")
 async def test_cancelled_error_propagates_natively_through_execute(base_url: str) -> None:
     """``asyncio.CancelledError`` is never swallowed or remapped by `execute`.
 

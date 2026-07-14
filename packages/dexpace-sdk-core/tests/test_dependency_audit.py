@@ -68,16 +68,19 @@ _WITHIN_BUDGET: dict[str, list[str]] = {
 }
 
 
+@pytest.mark.req("NFR-1", "SEAM-1", "SEAM-2")
 def test_live_workspace_is_within_budget(tool: ModuleType) -> None:
     violations = tool.audit_workspace(_REPO_ROOT)
     assert violations == [], [f"{v.distribution}: {v.message}" for v in violations]
 
 
+@pytest.mark.req("NFR-2")
 def test_synthetic_budget_workspace_passes(tool: ModuleType, tmp_path: Path) -> None:
     _write_workspace(tmp_path, _WITHIN_BUDGET)
     assert tool.audit_workspace(tmp_path) == []
 
 
+@pytest.mark.req("NFR-1", "SEAM-1")
 def test_core_with_extra_dependency_is_rejected(tool: ModuleType, tmp_path: Path) -> None:
     deps = dict(_WITHIN_BUDGET)
     deps["dexpace-sdk-core"] = ["furl>=2.1.3", "requests>=2.32"]
@@ -86,6 +89,7 @@ def test_core_with_extra_dependency_is_rejected(tool: ModuleType, tmp_path: Path
     assert any(v.distribution == "dexpace-sdk-core" and "requests" in v.message for v in violations)
 
 
+@pytest.mark.req("NFR-1")
 def test_core_without_furl_is_rejected(tool: ModuleType, tmp_path: Path) -> None:
     deps = dict(_WITHIN_BUDGET)
     deps["dexpace-sdk-core"] = []
@@ -94,6 +98,7 @@ def test_core_without_furl_is_rejected(tool: ModuleType, tmp_path: Path) -> None
     assert any(v.distribution == "dexpace-sdk-core" for v in violations)
 
 
+@pytest.mark.req("NFR-2")
 def test_adapter_with_two_third_party_libs_is_rejected(tool: ModuleType, tmp_path: Path) -> None:
     deps = dict(_WITHIN_BUDGET)
     deps["dexpace-sdk-http-httpx"] = ["dexpace-sdk-core>=0.1,<0.2", "httpx>=0.27", "anyio>=4.0"]
@@ -104,6 +109,7 @@ def test_adapter_with_two_third_party_libs_is_rejected(tool: ModuleType, tmp_pat
     )
 
 
+@pytest.mark.req("NFR-2")
 def test_adapter_without_core_is_rejected(tool: ModuleType, tmp_path: Path) -> None:
     deps = dict(_WITHIN_BUDGET)
     deps["dexpace-sdk-http-requests"] = ["requests>=2.32,<3.0"]

@@ -75,6 +75,7 @@ def test_explicit_boundary() -> None:
     assert b"--my-boundary--" in drained
 
 
+@pytest.mark.req("HTTP-51")
 def test_quotes_in_name_escaped() -> None:
     body = MultipartRequestBody(
         [MultipartField(name='odd"name', value="x")],

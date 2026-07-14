@@ -72,10 +72,12 @@ class _RecordingAsyncClient(AsyncHttpClient):
         return AsyncResponse(request=request, protocol=Protocol.HTTP_1_1, status=Status.OK)
 
 
+@pytest.mark.req("NFR-15")
 def test_default_user_agent_shape() -> None:
     assert _DEFAULT_UA.match(default_user_agent()) is not None
 
 
+@pytest.mark.req("NFR-15")
 def test_default_user_agent_never_blank() -> None:
     ua = default_user_agent()
     assert ua.strip()
@@ -91,6 +93,7 @@ def test_stamps_default_user_agent() -> None:
     assert _DEFAULT_UA.match(ua) is not None
 
 
+@pytest.mark.req("RECOV-33")
 def test_append_preserves_caller_value() -> None:
     client = _RecordingClient()
     policy = ClientIdentityPolicy(user_agent="my-token")
@@ -99,6 +102,7 @@ def test_append_preserves_caller_value() -> None:
     assert client.calls[0].headers.get(_UA) == "caller/1.0 my-token"
 
 
+@pytest.mark.req("RECOV-33")
 def test_replace_overwrites_caller_value() -> None:
     client = _RecordingClient()
     policy = ClientIdentityPolicy(user_agent="my-token", replace=True)
@@ -115,6 +119,7 @@ def test_append_with_no_caller_value_uses_token_alone() -> None:
     assert client.calls[0].headers.get(_UA) == "my-token"
 
 
+@pytest.mark.req("RECOV-33")
 def test_blank_caller_value_replaced_not_appended() -> None:
     client = _RecordingClient()
     policy = ClientIdentityPolicy(user_agent="my-token")
@@ -129,6 +134,7 @@ def test_blank_token_rejected(bad: str) -> None:
         ClientIdentityPolicy(user_agent=bad)
 
 
+@pytest.mark.req("NFR-15")
 def test_sdk_version_falls_back_when_metadata_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

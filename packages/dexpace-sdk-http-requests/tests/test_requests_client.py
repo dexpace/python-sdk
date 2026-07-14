@@ -424,6 +424,7 @@ def test_known_length_body_is_framed_not_chunked() -> None:
     assert captured["body"] == payload
 
 
+@pytest.mark.req("TRANSPORT-28")
 def test_file_body_is_length_framed(tmp_path: pathlib.Path) -> None:
     """A FileRequestBody (replayable, known length) frames with Content-Length."""
     path = tmp_path / "payload.bin"
@@ -545,6 +546,7 @@ def test_caller_content_length_never_rides_with_chunked() -> None:
         assert has_length is expect_length and has_chunked is expect_chunked, f"{body!r}"
 
 
+@pytest.mark.req("TRANSPORT-15")
 def test_shared_session_is_not_closed_on_close() -> None:
     """A caller-supplied Session is left open when the adapter closes."""
     session = requests.Session()
@@ -562,6 +564,7 @@ def test_shared_session_is_not_closed_on_close() -> None:
     assert not calls["closed"], "shared session must not be closed by client.close()"
 
 
+@pytest.mark.req("TRANSPORT-15")
 def test_owned_session_is_closed_on_close() -> None:
     """A session the client created is closed on the adapter's close."""
     client = RequestsHttpClient()
@@ -713,6 +716,7 @@ class _RaisingAdapter(requests.adapters.BaseAdapter):
         pass
 
 
+@pytest.mark.req("TRANSPORT-3")
 def test_interrupted_error_maps_to_request_cancelled_error() -> None:
     """An ``InterruptedError`` (an aborted blocking call) is terminal, not retryable."""
     session = requests.Session()
@@ -758,6 +762,7 @@ class _TimeoutCapturingAdapter(requests.adapters.BaseAdapter):
         pass
 
 
+@pytest.mark.req("TRANSPORT-5")
 def test_per_call_timeout_overrides_client_default() -> None:
     """A ``Request.timeout`` overrides the client's constructor-level default."""
     captured: dict[str, object] = {}
@@ -770,6 +775,7 @@ def test_per_call_timeout_overrides_client_default() -> None:
     assert captured["timeout"] == 0.25
 
 
+@pytest.mark.req("TRANSPORT-5")
 def test_no_override_falls_back_to_client_default_timeout() -> None:
     """Without a per-call override, the client's constructor-level default is used."""
     captured: dict[str, object] = {}
@@ -810,6 +816,7 @@ def test_byo_session_trust_env_left_untouched(initial_trust_env: bool) -> None:
         assert client._session.trust_env is initial_trust_env
 
 
+@pytest.mark.req("TRANSPORT-2")
 def test_owned_session_adapters_have_zero_retries() -> None:
     """A session the client creates mounts zero-retry adapters on both schemes."""
     client = RequestsHttpClient()
@@ -894,6 +901,7 @@ def flaky_server() -> Iterator[tuple[str, _TestServer]]:
         server.server_close()
 
 
+@pytest.mark.req("TRANSPORT-1")
 def test_native_redirects_are_disabled_behaviorally(
     redirect_server: tuple[str, _TestServer],
 ) -> None:
@@ -915,6 +923,7 @@ def test_native_redirects_are_disabled_behaviorally(
     assert server.hits == 1
 
 
+@pytest.mark.req("TRANSPORT-2")
 def test_native_retries_are_disabled_behaviorally(
     flaky_server: tuple[str, _TestServer],
 ) -> None:

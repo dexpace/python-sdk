@@ -51,7 +51,7 @@ def test_pure_render_matches_golden(vector: QueryCodecVector) -> None:
     assert render_query(_decoded_params(vector)) == vector.query.decode("ascii")
 
 
-@pytest.mark.req("HTTP-29")
+@pytest.mark.req("HTTP-29", "HTTP-31")
 @pytest.mark.parametrize("vector", _PARSE_VECTORS, ids=lambda v: v.id)
 def test_pure_parse_matches_golden(vector: QueryCodecVector) -> None:
     """Lenient parse of the wire query equals the params (order preserved)."""
@@ -88,6 +88,7 @@ def test_queryparams_parse_matches_golden(vector: QueryCodecVector) -> None:
 # ----- named edge cases (the traps the codec must not fall into) -----------
 
 
+@pytest.mark.req("HTTP-29", "HTTP-32")
 def test_space_renders_as_pct20_never_plus() -> None:
     assert render_query([("q", "a b")]) == "q=a%20b"
     assert QueryParams([("q", "a b")]).encode() == "q=a%20b"
@@ -98,23 +99,27 @@ def test_literal_plus_renders_as_pct2b() -> None:
     assert QueryParams([("q", "a+b")]).encode() == "q=a%2Bb"
 
 
+@pytest.mark.req("HTTP-32", "PAGE-22")
 def test_wire_plus_parses_as_literal_plus_not_space() -> None:
     # RFC 3986 lenient parse: a wire '+' is a literal '+', NOT form-decoded.
     assert parse_query("q=a+b") == [("q", "a+b")]
     assert QueryParams.parse("q=a+b").get("q") == "a+b"
 
 
+@pytest.mark.req("PAGE-22")
 def test_pct20_parses_as_space() -> None:
     assert parse_query("q=a%20b") == [("q", "a b")]
     assert QueryParams.parse("q=a%20b").get("q") == "a b"
 
 
+@pytest.mark.req("PAGE-22")
 def test_valueless_flag_is_present_empty_string() -> None:
     # A present-but-empty value renders 'flag=' and is distinct from absent.
     assert render_query([("flag", "")]) == "flag="
     assert parse_query("flag=") == [("flag", "")]
 
 
+@pytest.mark.req("HTTP-28", "HTTP-31")
 def test_bare_flag_parses_to_present_empty_string() -> None:
     # A bare flag with no '=' is a present empty string, distinct from absent.
     assert parse_query("flag") == [("flag", "")]
@@ -127,6 +132,7 @@ def test_reserved_chars_in_value_are_percent_encoded() -> None:
     assert render_query([("q", "a/b?c#d&e=f")]) == "q=a%2Fb%3Fc%23d%26e%3Df"
 
 
+@pytest.mark.req("HTTP-32")
 def test_unreserved_set_is_emitted_verbatim() -> None:
     assert render_query([("q", "AZaz09-._~")]) == "q=AZaz09-._~"
 
@@ -138,11 +144,13 @@ def test_non_ascii_is_utf8_then_percent_encoded() -> None:
 # ----- order sensitivity ---------------------------------------------------
 
 
+@pytest.mark.req("HTTP-29")
 def test_render_preserves_insertion_order_verbatim() -> None:
     assert render_query([("a", "1"), ("b", "2")]) == "a=1&b=2"
     assert render_query([("b", "2"), ("a", "1")]) == "b=2&a=1"
 
 
+@pytest.mark.req("HTTP-30")
 def test_queryparams_equality_is_order_sensitive() -> None:
     ab = QueryParams([("a", "1"), ("b", "2")])
     ba = QueryParams([("b", "2"), ("a", "1")])
@@ -201,6 +209,7 @@ def test_ipv6_brackets_and_userinfo_survive_serialisation() -> None:
 # ----- textual (DNS-free) URL equality -------------------------------------
 
 
+@pytest.mark.req("HTTP-46")
 def test_url_equality_is_textual_not_dns_resolved() -> None:
     # Structural field equality: no host resolution is performed. A trailing-dot
     # FQDN and a differing port are textually distinct even if they would

@@ -187,6 +187,7 @@ def test_decode_body_codec_failure_is_chained_not_swallowed() -> None:
     assert excinfo.value.__cause__ is not None
 
 
+@pytest.mark.req("SERDE-12")
 def test_decode_body_propagates_genuine_oserror_unwrapped() -> None:
     resp, closes = _tracking_response(Status.OK, body=_IoErrorBody())
     with pytest.raises(OSError) as excinfo:
@@ -216,6 +217,7 @@ class _NotFoundError(_ServiceError):
     """The example service's 404 error."""
 
 
+@pytest.mark.req("SERDE-28")
 def test_decode_success_decodes_2xx_body() -> None:
     resp, closes = _tracking_response(Status.OK, body=_json_body(b'{"name":"Rex","age":3}'))
     handler = DecodeSuccess(StatusErrorMap())
@@ -231,6 +233,7 @@ def test_decode_success_2xx_without_body_names_target() -> None:
     assert closes == [1]
 
 
+@pytest.mark.req("SERDE-28")
 def test_decode_success_raises_mapped_error_for_client_error() -> None:
     errors = StatusErrorMap(by_status={Status.NOT_FOUND: _NotFoundError})
     resp, closes = _tracking_response(Status.NOT_FOUND, body=_json_body(b'{"error":"missing"}'))
@@ -240,6 +243,7 @@ def test_decode_success_raises_mapped_error_for_client_error() -> None:
     assert closes == [1]
 
 
+@pytest.mark.req("SERDE-28")
 def test_decode_success_error_carries_bounded_replayable_body() -> None:
     # The 4xx/5xx path buffers a bounded, replayable copy of the body via
     # StatusErrorMap.raise_for.
@@ -254,6 +258,7 @@ def test_decode_success_error_carries_bounded_replayable_body() -> None:
     assert err.read_body() == first  # replayable
 
 
+@pytest.mark.req("SERDE-28")
 @pytest.mark.parametrize(
     "status",
     [Status.CONTINUE, Status.SWITCHING_PROTOCOLS, Status.MOVED_PERMANENTLY, Status.NOT_MODIFIED],

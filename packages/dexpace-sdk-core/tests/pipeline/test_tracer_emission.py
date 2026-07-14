@@ -401,6 +401,7 @@ class _RedirectThenRaiseClient(HttpClient):
 
 
 class TestOperationEventsFireOncePerOperation:
+    @pytest.mark.req("OBS-29")
     def test_retry_emits_operation_lifecycle_once_across_attempts(self) -> None:
         # TracingPolicy sits *inside* RetryPolicy (retry is outer), so it is
         # re-entered once per attempt. The operation_* events must still fire
@@ -427,6 +428,7 @@ class TestOperationEventsFireOncePerOperation:
         assert names[0] == "operation_started"
         assert names.index("operation_started") < names.index("operation_succeeded")
 
+    @pytest.mark.req("OBS-29")
     def test_retry_exhaustion_emits_operation_failed_once(self) -> None:
         tracer = _RecordingHttpTracer()
         instr = _instr(tracer)
@@ -499,6 +501,7 @@ class TestOperationEventsFireOncePerOperation:
         # request_sent still fires per attempt (the failed one and the retry).
         assert names.count("request_sent") == 2
 
+    @pytest.mark.req("OBS-29")
     def test_redirect_then_failure_reports_operation_failed(self) -> None:
         # When a later redirect hop fails, the operation outcome is the failure
         # that escapes — not the success of the earlier 3xx hop.

@@ -12,10 +12,13 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
+import pytest
+
 from dexpace.sdk.core.http.sse import SseEvent, parse_async_events, parse_events
 from dexpace.sdk.core.http.sse.parser import SseParser
 
 
+@pytest.mark.req("SSE-2")
 def test_crlf_split_across_chunk_boundary_yields_single_event() -> None:
     # CR ends the first chunk; LF begins the second. The two halves form one
     # CRLF terminator, so the two data lines join into a single event.
@@ -24,6 +27,7 @@ def test_crlf_split_across_chunk_boundary_yields_single_event() -> None:
     assert events == [SseEvent(data="a\nb")]
 
 
+@pytest.mark.req("SSE-2")
 def test_cr_held_until_next_byte_disambiguates_lone_cr() -> None:
     # A lone CR (next byte is not LF) is still a terminator once the next byte
     # arrives, so the two data lines join into one event.
@@ -32,6 +36,7 @@ def test_cr_held_until_next_byte_disambiguates_lone_cr() -> None:
     assert events == [SseEvent(data="a\nb")]
 
 
+@pytest.mark.req("SSE-14", "SSE-2")
 def test_trailing_cr_at_eos_is_a_terminator_not_literal_carriage_return() -> None:
     # A CR that is the final byte of the whole stream terminates the line; it
     # must not leak into the decoded field value as a literal '\r'.

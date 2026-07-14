@@ -38,7 +38,7 @@ def _splice_url(base: str, name: str, value: str) -> str:
 # ----- golden corpus: PAGE-21 byte-for-byte -------------------------------
 
 
-@pytest.mark.req("PAGE-21")
+@pytest.mark.req("PAGE-21", "PAGE-24")
 @pytest.mark.parametrize("vector", _VECTORS, ids=lambda v: v.id)
 def test_splice_matches_golden_byte_for_byte(vector: PaginationSpliceVector) -> None:
     """The production splice reproduces every corpus vector byte for byte."""
@@ -76,6 +76,7 @@ def test_splice_appends_absent_key_with_ampersand() -> None:
     assert splice_query("limit=50", "cursor", "c1") == "limit=50&cursor=c1"
 
 
+@pytest.mark.req("PAGE-21")
 def test_splice_replaces_first_occurrence_in_place() -> None:
     # Position is preserved: the replaced key keeps its slot; trailing params
     # do not shift, and a second occurrence is left untouched by a "set".
@@ -85,6 +86,7 @@ def test_splice_replaces_first_occurrence_in_place() -> None:
     )
 
 
+@pytest.mark.req("PAGE-21", "PAGE-22")
 def test_splice_leaves_a_literal_plus_untouched() -> None:
     # A literal '+' in an untouched param is neither re-encoded to %2B nor
     # decoded to a space — the token is copied through byte for byte.
@@ -95,6 +97,7 @@ def test_splice_leaves_pre_encoded_bytes_untouched() -> None:
     assert splice_query("q=a%20b&sort=desc", "cursor", "c2") == "q=a%20b&sort=desc&cursor=c2"
 
 
+@pytest.mark.req("PAGE-22")
 def test_splice_encodes_only_the_new_pair() -> None:
     # The freshly-spliced value is strictly RFC 3986 encoded (space -> %20),
     # while the untouched neighbour keeps its own raw bytes.

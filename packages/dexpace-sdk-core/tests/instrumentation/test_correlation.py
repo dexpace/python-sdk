@@ -83,6 +83,7 @@ def _clear_correlation() -> Iterator[None]:
     set_span_id(None)
 
 
+@pytest.mark.req("ASYNC-11")
 def test_getters_default_to_none() -> None:
     assert get_trace_id() is None
     assert get_span_id() is None
@@ -103,7 +104,6 @@ def test_set_returns_token_that_resets() -> None:
     assert get_trace_id() == "outer"
 
 
-@pytest.mark.req("TRACING-01")
 def test_bind_correlation_scopes_and_restores() -> None:
     set_trace_id("outer-trace")
     set_span_id("outer-span")
@@ -195,7 +195,6 @@ def test_correlation_filter_installed_once_under_concurrency() -> None:
     assert len(installed) == 1
 
 
-@pytest.mark.req("TRACING-01")
 def test_ids_propagate_across_await() -> None:
     async def _run() -> tuple[str | None, str | None]:
         with bind_correlation(trace_id="async-trace", span_id="async-span"):
@@ -210,7 +209,7 @@ def test_ids_propagate_across_await() -> None:
 # ----- contextvars bridge across threads (OBS-24, ASYNC-8..12) --------------
 
 
-@pytest.mark.req("OBS-24")
+@pytest.mark.req("ASYNC-12", "ASYNC-8", "OBS-24")
 def test_capture_context_propagates_submission_snapshot_across_threads() -> None:
     # Capture on the ORIGINATING side (submission time), reinstall on a worker
     # thread. The worker observes the value as it was AT CAPTURE, not the value
@@ -240,6 +239,7 @@ def test_capture_context_propagates_submission_snapshot_across_threads() -> None
     assert get_trace_id() == "after-submission"
 
 
+@pytest.mark.req("ASYNC-10", "ASYNC-11", "ASYNC-9")
 def test_bind_to_context_captures_at_submission_not_at_thread_start() -> None:
     set_trace_id("submission")
     bound = bind_to_context(_read_then_mutate)  # snapshot captured HERE
@@ -260,6 +260,7 @@ def _read_then_mutate() -> str | None:
     return observed
 
 
+@pytest.mark.req("ASYNC-9", "OBS-24")
 def test_capture_context_isolates_mutations_from_caller() -> None:
     set_trace_id("caller")
     snapshot = capture_context()
@@ -279,6 +280,7 @@ def test_get_current_span_defaults_to_noop() -> None:
     assert get_current_span() is NOOP_SPAN
 
 
+@pytest.mark.req("OBS-22")
 def test_activate_span_restores_prior_span_including_on_throw() -> None:
     outer = _FakeRecordingSpan(_recording_context("t-o", "s-o"))
     inner = _FakeRecordingSpan(_recording_context("t-i", "s-i"))
@@ -294,6 +296,7 @@ def test_activate_span_restores_prior_span_including_on_throw() -> None:
 # ----- log-correlation scope, skipped for non-recording spans (OBS-23) ------
 
 
+@pytest.mark.req("OBS-23")
 def test_correlation_scope_binds_recording_span_ids() -> None:
     span = _FakeRecordingSpan(_recording_context("rec-trace", "rec-span"))
     set_trace_id("outer-t")
@@ -305,6 +308,7 @@ def test_correlation_scope_binds_recording_span_ids() -> None:
     assert get_span_id() == "outer-s"
 
 
+@pytest.mark.req("OBS-23")
 def test_correlation_scope_restores_ids_on_throw() -> None:
     span = _FakeRecordingSpan(_recording_context("rec-trace", "rec-span"))
     set_trace_id("outer-t")
@@ -316,6 +320,7 @@ def test_correlation_scope_restores_ids_on_throw() -> None:
     assert get_span_id() == "outer-s"
 
 
+@pytest.mark.req("OBS-23")
 def test_correlation_scope_is_noop_for_non_recording_span() -> None:
     # A span that isn't recording must NOT overwrite the ambient ids: the
     # inherited correlation context is left untouched for the block.

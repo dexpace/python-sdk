@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from dexpace.sdk.core.instrumentation import (
     SpanId,
     TraceFlags,
@@ -16,17 +18,20 @@ from dexpace.sdk.core.instrumentation import (
 _GENERATIONS = 10_000
 
 
+@pytest.mark.req("CTX-15", "OBS-26")
 def test_trace_id_invalid_sentinel_is_all_zero() -> None:
     # The documented INVALID sentinel is the all-zero id.
     assert TraceId.NOOP.value == "0" * 32
     assert TraceId.NOOP.is_valid is False
 
 
+@pytest.mark.req("OBS-26")
 def test_span_id_invalid_sentinel_is_all_zero() -> None:
     assert SpanId.NOOP.value == "0" * 16
     assert SpanId.NOOP.is_valid is False
 
 
+@pytest.mark.req("CTX-15", "OBS-26")
 def test_flags_and_state_sentinels() -> None:
     assert TraceFlags.NOOP.value == "00"
     assert TraceState.NOOP.value == ""
@@ -81,6 +86,7 @@ def test_ids_are_frozen_value_objects() -> None:
     assert hash(a) == hash(b)
 
 
+@pytest.mark.req("CTX-14")
 def test_trace_id_type_members() -> None:
     assert set(TraceIdType) == {TraceIdType.NOOP, TraceIdType.W3C, TraceIdType.DATADOG}
     assert str(TraceIdType.W3C) == "w3c"

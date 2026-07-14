@@ -25,6 +25,7 @@ profile registered in ``tests/conftest.py``.
 
 from __future__ import annotations
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -50,6 +51,7 @@ def _payload_and_chunks(draw: st.DrawFn) -> list[bytes]:
     return chunks
 
 
+@pytest.mark.req("SSE-40")
 @given(chunks=_payload_and_chunks())
 def test_events_invariant_under_chunk_resplits(chunks: list[bytes]) -> None:
     """Chunk boundaries do not change the parsed SSE event sequence."""

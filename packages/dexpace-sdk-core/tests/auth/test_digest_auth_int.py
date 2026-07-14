@@ -92,6 +92,7 @@ class TestQopNegotiation:
         assert result is not None
         assert _parse_auth(result[1])["qop"] == "auth"
 
+    @pytest.mark.req("AUTH-15")
     def test_auth_int_only_challenge_declines(self) -> None:
         # ``auth-int`` alone cannot be satisfied (no body available), so the
         # handler declines rather than emitting an unverifiable header.

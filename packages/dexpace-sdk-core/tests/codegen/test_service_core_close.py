@@ -31,6 +31,7 @@ def _reply() -> list[Reply]:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("XCUT-22")
 def test_byo_pipeline_survives_close_sync() -> None:
     transport = ScriptTransport(_reply())
     with ServiceCore(base_url=_BASE, pipeline=Pipeline(transport)) as core:
@@ -38,6 +39,7 @@ def test_byo_pipeline_survives_close_sync() -> None:
     assert transport.close_calls == 0  # the BYO pipeline (and its transport) is untouched
 
 
+@pytest.mark.req("XCUT-22")
 async def test_byo_pipeline_survives_close_async() -> None:
     transport = AsyncScriptTransport(_reply())
     async with AsyncServiceCore(base_url=_BASE, pipeline=AsyncPipeline(transport)) as core:
@@ -50,6 +52,7 @@ async def test_byo_pipeline_survives_close_async() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("XCUT-22")
 def test_constructed_transport_closed_on_exit_sync() -> None:
     transport = ScriptTransport(_reply())
     with ServiceCore(base_url=_BASE, transport=transport):
@@ -69,6 +72,7 @@ async def test_constructed_transport_closed_on_exit_async() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("XCUT-13")
 def test_double_close_is_a_noop_sync() -> None:
     transport = ScriptTransport(_reply())
     core = ServiceCore(base_url=_BASE, transport=transport)
@@ -77,6 +81,7 @@ def test_double_close_is_a_noop_sync() -> None:
     assert transport.close_calls == 1
 
 
+@pytest.mark.req("XCUT-13")
 async def test_double_close_is_a_noop_async() -> None:
     transport = AsyncScriptTransport(_reply())
     core = AsyncServiceCore(base_url=_BASE, transport=transport)

@@ -32,6 +32,7 @@ def _drain(body: RequestBody) -> bytes:
 # --- Shared framing: wire bytes == preview bytes ---------------------------
 
 
+@pytest.mark.req("HTTP-51")
 def test_wire_bytes_equal_shared_framing_preview() -> None:
     # The wire path and the preview both consume ``iter_frames`` via the same
     # module, so a full render must equal a full drain byte for byte.
@@ -49,6 +50,7 @@ def test_wire_bytes_equal_shared_framing_preview() -> None:
     assert wire == preview
 
 
+@pytest.mark.req("BODY-17")
 def test_tap_snapshot_equals_wire_via_shared_framing() -> None:
     # The logging tap captures exactly what goes on the wire; asserting the tap
     # snapshot against the shared-framing render ties the two together.
@@ -92,6 +94,7 @@ def _replayable_request_body(tmp_path: Path) -> RequestBody:
     return RequestBody.from_file(path)
 
 
+@pytest.mark.req("BODY-2", "BODY-3")
 def test_all_replayable_fields_make_body_replayable(tmp_path: Path) -> None:
     fields = [
         MultipartField(name="s", value="str"),
@@ -106,6 +109,7 @@ def test_all_replayable_fields_make_body_replayable(tmp_path: Path) -> None:
     assert body.to_replayable() is body
 
 
+@pytest.mark.req("BODY-2")
 @pytest.mark.parametrize(
     "single_use_factory",
     [
@@ -193,6 +197,7 @@ def test_nested_request_body_streams_into_part() -> None:
 # --- content_length --------------------------------------------------------
 
 
+@pytest.mark.req("BODY-35", "HTTP-51")
 def test_content_length_matches_drain_for_known_fields(tmp_path: Path) -> None:
     fields = [
         MultipartField(name="s", value="hello"),
@@ -203,6 +208,7 @@ def test_content_length_matches_drain_for_known_fields(tmp_path: Path) -> None:
     assert body.content_length() == len(_drain(body))
 
 
+@pytest.mark.req("BODY-2", "BODY-35")
 def test_content_length_unknown_when_stream_field_present() -> None:
     fields = [
         MultipartField(name="ok", value="known"),

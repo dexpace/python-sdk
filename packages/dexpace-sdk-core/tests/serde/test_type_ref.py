@@ -41,6 +41,7 @@ def codec() -> Codec:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SEAM-22")
 def test_subscripted_generic_witness_exposes_origin_and_args() -> None:
     ref = TypeRef(list[_Pet])
     assert ref.origin is list
@@ -54,6 +55,7 @@ def test_mapping_witness_exposes_key_and_value_args() -> None:
     assert ref.args == (str, _Pet)
 
 
+@pytest.mark.req("SEAM-21", "SERDE-5", "SERDE-6", "SERDE-7")
 def test_decode_through_type_ref_recovers_element_models(codec: Codec) -> None:
     # The whole point: the element type survives through to decoding, so each
     # wire object is reconstructed as a ``_Pet`` rather than left as a dict.
@@ -69,6 +71,7 @@ def test_decode_through_dict_witness_recovers_values(codec: Codec) -> None:
     assert decoded == {"a": _Pet("rex")}
 
 
+@pytest.mark.req("SERDE-6")
 def test_plain_class_witness_decodes_single_model(codec: Codec) -> None:
     ref = TypeRef(_Pet)
     assert codec.decode({"name": "rex"}, ref) == _Pet("rex")
@@ -86,6 +89,7 @@ def test_plain_scalar_witness_is_accepted() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SEAM-22", "SERDE-8")
 def test_bare_typevar_is_rejected_naming_it() -> None:
     Elem = TypeVar("Elem")
     with pytest.raises(TypeError, match="Elem") as info:
@@ -93,6 +97,7 @@ def test_bare_typevar_is_rejected_naming_it() -> None:
     assert "type parameter" in str(info.value)
 
 
+@pytest.mark.req("SERDE-8")
 def test_bare_paramspec_is_rejected() -> None:
     PS = ParamSpec("PS")  # noqa: N806
     with pytest.raises(TypeError, match="PS"):
@@ -110,6 +115,7 @@ def test_bare_typevartuple_is_rejected() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SERDE-6", "SERDE-8")
 def test_unparameterized_typing_alias_is_rejected() -> None:
     with pytest.raises(TypeError, match="List") as info:
         TypeRef(typing.List)  # noqa: UP006

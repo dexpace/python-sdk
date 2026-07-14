@@ -160,6 +160,7 @@ def _finite_pages(n: int) -> dict[str | None, dict[str, object]]:
 # --- laziness / exchange counting -----------------------------------------
 
 
+@pytest.mark.req("PAGE-6")
 def test_no_exchange_until_consumption_starts() -> None:
     source = _Source(_three_pages())
     paginator: Paginator[int] = Paginator(source, _strategy(), _first_request())
@@ -167,6 +168,7 @@ def test_no_exchange_until_consumption_starts() -> None:
     assert source.calls == []
 
 
+@pytest.mark.req("PAGE-6")
 def test_by_page_does_not_fetch_until_iterated() -> None:
     source = _Source(_three_pages())
     paginator: Paginator[int] = Paginator(source, _strategy(), _first_request())
@@ -174,6 +176,7 @@ def test_by_page_does_not_fetch_until_iterated() -> None:
     assert source.calls == []
 
 
+@pytest.mark.req("PAGE-6", "PAGE-7")
 def test_exactly_one_exchange_per_page_and_no_overrun() -> None:
     source = _Source(_three_pages())
     paginator: Paginator[int] = Paginator(source, _strategy(), _first_request())
@@ -183,6 +186,7 @@ def test_exactly_one_exchange_per_page_and_no_overrun() -> None:
     assert len(source.calls) == 3
 
 
+@pytest.mark.req("PAGE-7")
 def test_end_of_pagination_probe_is_idempotent() -> None:
     source = _Source(_three_pages())
     paginator: Paginator[int] = Paginator(source, _strategy(), _first_request())
@@ -197,6 +201,7 @@ def test_end_of_pagination_probe_is_idempotent() -> None:
         assert len(source.calls) == 3
 
 
+@pytest.mark.req("PAGE-8")
 def test_each_iter_restarts_pagination_from_the_start() -> None:
     source = _Source(_three_pages())
     paginator: Paginator[int] = Paginator(source, _strategy(), _first_request())
@@ -209,6 +214,7 @@ def test_each_iter_restarts_pagination_from_the_start() -> None:
 # --- page metadata survives response close --------------------------------
 
 
+@pytest.mark.req("PAGE-2")
 def test_page_metadata_survives_after_response_close() -> None:
     source = _Source(_three_pages())
     paginator: Paginator[int] = Paginator(source, _strategy(), _first_request())
@@ -233,6 +239,7 @@ def test_flat_iteration_closes_each_response_exactly_once() -> None:
     assert [body.closes for body in source.bodies] == [1, 1, 1]
 
 
+@pytest.mark.req("PAGE-11")
 def test_flat_item_view_closes_page_before_yielding_its_items() -> None:
     source = _Source(_three_pages())
     paginator: Paginator[int] = Paginator(source, _strategy(), _first_request())
@@ -243,6 +250,7 @@ def test_flat_item_view_closes_page_before_yielding_its_items() -> None:
     assert source.bodies[0].closes == 1
 
 
+@pytest.mark.req("PAGE-12")
 def test_by_page_context_exit_closes_each_page_once() -> None:
     source = _Source(_three_pages())
     paginator: Paginator[int] = Paginator(source, _strategy(), _first_request())
@@ -253,6 +261,7 @@ def test_by_page_context_exit_closes_each_page_once() -> None:
     assert [body.closes for body in source.bodies] == [1, 1, 1]
 
 
+@pytest.mark.req("PAGE-12")
 def test_by_page_early_break_releases_held_page_once() -> None:
     source = _Source(_three_pages())
     paginator: Paginator[int] = Paginator(source, _strategy(), _first_request())
@@ -264,6 +273,7 @@ def test_by_page_early_break_releases_held_page_once() -> None:
     assert source.bodies[0].closes == 1
 
 
+@pytest.mark.req("PAGE-3")
 def test_by_page_exhaustion_closes_every_page_once() -> None:
     source = _Source(_three_pages())
     paginator: Paginator[int] = Paginator(source, _strategy(), _first_request())
@@ -273,6 +283,7 @@ def test_by_page_exhaustion_closes_every_page_once() -> None:
     assert [body.closes for body in source.bodies] == [1, 1, 1]
 
 
+@pytest.mark.req("PAGE-3")
 def test_fetcher_does_not_close_pages_it_yields() -> None:
     # by_page yields live pages; closing is the caller's / page's job, never
     # the fetcher's. Without a close from the caller the responses stay open.
@@ -286,6 +297,7 @@ def test_fetcher_does_not_close_pages_it_yields() -> None:
 # --- single-use, context-managed page view --------------------------------
 
 
+@pytest.mark.req("PAGE-14")
 def test_by_page_is_single_use() -> None:
     source = _Source(_three_pages())
     paginator: Paginator[int] = Paginator(source, _strategy(), _first_request())
@@ -297,6 +309,7 @@ def test_by_page_is_single_use() -> None:
 # --- pagination cap --------------------------------------------------------
 
 
+@pytest.mark.req("PAGE-9")
 @pytest.mark.parametrize("bad_cap", [0, -1, -100])
 def test_non_positive_cap_raises_at_construction(bad_cap: int) -> None:
     source = _Source(_three_pages())
@@ -304,6 +317,7 @@ def test_non_positive_cap_raises_at_construction(bad_cap: int) -> None:
         Paginator(source, _strategy(), _first_request(), max_pages=bad_cap)
 
 
+@pytest.mark.req("PAGE-9")
 def test_non_advancing_server_stops_at_exactly_the_cap() -> None:
     source = _Source(_looping_pages())
     paginator: Paginator[int] = Paginator(
@@ -317,6 +331,7 @@ def test_non_advancing_server_stops_at_exactly_the_cap() -> None:
     assert items == [0, 0, 0, 0]
 
 
+@pytest.mark.req("PAGE-10")
 def test_default_cap_is_effectively_unbounded() -> None:
     source = _Source(_finite_pages(50))
     paginator: Paginator[int] = Paginator(source, _strategy(), _first_request())
@@ -327,6 +342,7 @@ def test_default_cap_is_effectively_unbounded() -> None:
 # --- error / __context__ chaining -----------------------------------------
 
 
+@pytest.mark.req("PAGE-13")
 def test_parse_failure_closes_inline_with_parse_error_primary() -> None:
     parse_error = RuntimeError("parse boom")
     close_error = OSError("close boom")
@@ -347,6 +363,7 @@ def test_parse_failure_closes_inline_with_parse_error_primary() -> None:
     assert info.value.__context__ is close_error
 
 
+@pytest.mark.req("PAGE-15")
 def test_held_page_close_error_wraps_the_original_failure() -> None:
     close_error = OSError("close boom")
     body = json.dumps({"data": [1], "next_cursor": None}).encode()

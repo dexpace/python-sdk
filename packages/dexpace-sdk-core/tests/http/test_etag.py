@@ -58,6 +58,7 @@ def test_parse_embedded_space_raises() -> None:
         ETag.parse('"a b"')
 
 
+@pytest.mark.req("HTTP-48")
 def test_parse_empty_strong_etag_raises() -> None:
     with pytest.raises(ValueError, match="empty"):
         ETag.parse('""')
@@ -157,11 +158,13 @@ class TestEqualityDistinctFromComparison:
 class TestParseCharacterSet:
     """RFC 7232 §2.3: etagc = %x21 / %x23-7E / obs-text (%x80-FF)."""
 
+    @pytest.mark.req("HTTP-48")
     def test_obs_text_high_bytes_permitted(self) -> None:
         # 0x80 and 0xFF are obs-text and stay valid inside the opaque tag.
         tag = ETag.parse('"a\x80\xffb"')
         assert tag.value == "a\x80\xffb"
 
+    @pytest.mark.req("HTTP-48")
     def test_del_char_rejected(self) -> None:
         with pytest.raises(ValueError):
             ETag.parse('"a\x7fb"')

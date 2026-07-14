@@ -29,6 +29,8 @@ from collections.abc import AsyncIterator, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+import pytest
+
 from dexpace.sdk.core.client.async_http_client import AsyncHttpClient
 from dexpace.sdk.core.client.http_client import HttpClient
 from dexpace.sdk.core.http.common import Protocol, Url
@@ -361,6 +363,7 @@ class _AsyncEchoClient(AsyncHttpClient):
 class TestSupersedeCloseOrdering:
     """A superseding policy closes each superseded response once; final stays open."""
 
+    @pytest.mark.req("PIPE-16", "PIPE-40")
     def test_sync_superseded_closed_once_final_open(self) -> None:
         client = _ScriptClient(
             [(Status.IM_A_TEAPOT, None), (Status.IM_A_TEAPOT, None), (Status.OK, None)]
@@ -396,6 +399,7 @@ class TestSupersedeCloseOrdering:
 class TestForkCounter:
     """Each re-drive re-runs the full downstream chain with its substitution."""
 
+    @pytest.mark.req("PIPE-13", "PIPE-14", "PIPE-15", "PIPE-16", "PIPE-36")
     def test_sync_full_rerun_and_substitution_sticks(self) -> None:
         client = _ScriptClient(
             [(Status.IM_A_TEAPOT, None), (Status.IM_A_TEAPOT, None), (Status.OK, None)]
@@ -430,6 +434,7 @@ class TestForkCounter:
 class TestAbandonPathsReturnOpen:
     """Loop / max-hops / exhausted-budget hand the in-flight response back open."""
 
+    @pytest.mark.req("PIPE-40")
     def test_sync_retry_budget_exhausted_returns_open(self) -> None:
         # ``status_retries=1`` exhausts the status sub-budget on the second 503
         # while ``total`` is still positive, forcing the explicit
@@ -447,6 +452,7 @@ class TestAbandonPathsReturnOpen:
         assert client.bodies[-1].closed is False  # abandoned response returned open
         response.close()
 
+    @pytest.mark.req("PIPE-40")
     def test_sync_redirect_loop_returns_open(self) -> None:
         client = _ScriptClient(
             [
@@ -512,6 +518,7 @@ class TestAbandonPathsReturnOpen:
 class TestTransportNeverClosedByRun:
     """The ``send`` path never closes the transport; only ``__exit__`` opts in."""
 
+    @pytest.mark.req("PIPE-8")
     def test_sync_run_walk_never_closes_transport(self) -> None:
         # A full retry -> redirect walk driven WITHOUT the context manager.
         client = _ScriptClient(
@@ -582,6 +589,7 @@ class TestOptionsIdentityAcrossForks:
         (Status.OK, None),  # final
     ]
 
+    @pytest.mark.req("PIPE-10", "PIPE-17")
     def test_sync_options_identity_stable(self) -> None:
         seen: list[dict[str, Any]] = []
         client = _ScriptClient(self._SCRIPT)
@@ -629,6 +637,7 @@ class TestConcurrentSendsNoCrossTalk:
 
     _N = 100
 
+    @pytest.mark.req("PIPE-10", "PIPE-11")
     def test_sync_100_parallel_sends(self) -> None:
         client = _EchoClient()
         pipeline = Pipeline(client, policies=[_CrossTalkProbe()])

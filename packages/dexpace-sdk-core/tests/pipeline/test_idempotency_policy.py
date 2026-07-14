@@ -88,7 +88,6 @@ def test_stage_runs_before_retry() -> None:
     assert AsyncIdempotencyPolicy.STAGE < Stage.RETRY
 
 
-@pytest.mark.req("IDEMPOTENCY-05")
 def test_key_added_to_post() -> None:
     client = _RecordingClient()
     with Pipeline(client, policies=[IdempotencyPolicy()]) as p:
@@ -104,6 +103,7 @@ def test_key_added_to_write_methods(method: Method) -> None:
     assert client.calls[0].headers.get(_HEADER) is not None
 
 
+@pytest.mark.req("RECOV-32")
 @pytest.mark.parametrize("method", [Method.GET, Method.DELETE, Method.HEAD, Method.OPTIONS])
 def test_key_not_added_to_non_write_methods(method: Method) -> None:
     client = _RecordingClient()
@@ -112,6 +112,7 @@ def test_key_not_added_to_non_write_methods(method: Method) -> None:
     assert client.calls[0].headers.get(_HEADER) is None
 
 
+@pytest.mark.req("RECOV-32")
 def test_caller_set_key_preserved() -> None:
     client = _RecordingClient()
     with Pipeline(client, policies=[IdempotencyPolicy()]) as p:
@@ -131,6 +132,7 @@ def test_default_key_is_uuid4_shaped() -> None:
     assert parsed.version == 4
 
 
+@pytest.mark.req("RECOV-32")
 def test_existing_key_not_regenerated() -> None:
     """A request that already carries a key is forwarded untouched.
 
@@ -220,7 +222,6 @@ class _FlakyAsyncClient(AsyncHttpClient):
         return AsyncResponse(request=request, protocol=Protocol.HTTP_1_1, status=status)
 
 
-@pytest.mark.req("IDEMPOTENCY-05")
 def test_key_stable_across_retry_attempts() -> None:
     """One retried call carries a single key across every attempt.
 

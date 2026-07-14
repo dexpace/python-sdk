@@ -130,6 +130,7 @@ class _ChunkedResponseBody(ResponseBody):
 
 
 class TestResponseErrorPath:
+    @pytest.mark.req("BODY-26")
     def test_iter_bytes_reraises_stored_error_on_every_call(self) -> None:
         boom = ConnectionError("network dropped")
         inner = _FailingResponseBody([b"abc", b"def"], boom)
@@ -144,6 +145,7 @@ class TestResponseErrorPath:
             list(body.iter_bytes())
         assert second.value is boom
 
+    @pytest.mark.req("BODY-26", "IO-27")
     def test_snapshot_returns_partial_bytes_not_empty(self) -> None:
         inner = _FailingResponseBody([b"abc", b"def"], ConnectionError("drop"))
         body = LoggableResponseBody(inner)
@@ -199,6 +201,7 @@ class TestResponseBaseExceptionPath:
 
 
 class TestResponseThreadSafety:
+    @pytest.mark.req("BODY-22")
     def test_concurrent_first_read_drains_exactly_once(self) -> None:
         threads_count = 8
         start = threading.Barrier(threads_count)
@@ -238,6 +241,7 @@ class TestResponseBoundedSnapshot:
         body = LoggableResponseBody(inner)
         assert body.snapshot(max_bytes=4) == b"0123"
 
+    @pytest.mark.req("BODY-32")
     def test_snapshot_max_bytes_larger_than_body(self) -> None:
         inner = ResponseBody.from_bytes(b"abc")
         body = LoggableResponseBody(inner)
@@ -248,6 +252,7 @@ class TestResponseBoundedSnapshot:
         body = LoggableResponseBody(inner)
         assert body.snapshot() == b"abcde"
 
+    @pytest.mark.req("BODY-32")
     def test_snapshot_negative_max_bytes_rejected(self) -> None:
         inner = ResponseBody.from_bytes(b"abc")
         body = LoggableResponseBody(inner)
@@ -289,6 +294,7 @@ class TestRequestBoundedSnapshot:
 class TestRequestTapResetOnReplay:
     """A replayed loggable request body captures one copy, not body+body."""
 
+    @pytest.mark.req("BODY-18")
     def test_second_iteration_does_not_double_the_capture(self) -> None:
         # A replayable inner body iterated twice (retry / 307 redirect) must
         # not accumulate ``body + body`` in the tap. Each iter_bytes resets
@@ -299,6 +305,7 @@ class TestRequestTapResetOnReplay:
         assert body.snapshot() == b"payload"
         assert body.captured_size == len(b"payload")
 
+    @pytest.mark.req("BODY-18")
     def test_capture_reflects_only_the_latest_attempt(self) -> None:
         # After many replays the capture is still one copy, never N copies.
         body = LoggableRequestBody(RequestBody.from_bytes(b"abc"))
@@ -307,6 +314,7 @@ class TestRequestTapResetOnReplay:
         assert body.snapshot() == b"abc"
         assert body.captured_size == 3
 
+    @pytest.mark.req("BODY-18", "IO-27")
     def test_tap_reset_is_eager_before_first_chunk(self) -> None:
         # The reset happens at call time, so a fresh (undrained) iterator from
         # a replay already shows an empty capture rather than the prior copy.
@@ -326,6 +334,7 @@ _CAP = 8
 class TestResponseRegimeBoundary:
     """Regime detection at exactly cap-1, cap, and cap+1 bytes."""
 
+    @pytest.mark.req("BODY-23")
     def test_below_cap_is_fully_captured_and_repeatable(self) -> None:
         data = b"x" * (_CAP - 1)
         inner = _ChunkedResponseBody([data])
@@ -349,6 +358,7 @@ class TestResponseRegimeBoundary:
         assert body.captured_size == _CAP
         assert inner.closed is True
 
+    @pytest.mark.req("BODY-24", "OBS-36")
     def test_above_cap_is_single_use_and_replays_prefix_then_tail(self) -> None:
         data = b"x" * (_CAP + 1)
         inner = _ChunkedResponseBody([data])
@@ -365,6 +375,7 @@ class TestResponseRegimeBoundary:
 
 
 class TestResponseExceedsCapRegime:
+    @pytest.mark.req("BODY-24")
     def test_drain_leaves_delegate_open_for_the_tail(self) -> None:
         inner = _ChunkedResponseBody([b"0123456789"])
         body = LoggableResponseBody(inner, max_capture_bytes=4)
@@ -387,6 +398,7 @@ class TestResponseExceedsCapRegime:
 
 
 class TestResponseCloseOnce:
+    @pytest.mark.req("BODY-27", "BODY-28")
     def test_full_capture_survives_failing_delegate_close(self) -> None:
         # Fits-cap closes the delegate during the drain; a close failure after
         # a successful capture is swallowed, not surfaced.
@@ -397,6 +409,7 @@ class TestResponseCloseOnce:
         assert inner.closed is True
         assert body.error() is None
 
+    @pytest.mark.req("BODY-27", "BODY-28")
     def test_snapshot_still_works_after_wrapper_close(self) -> None:
         inner = _ChunkedResponseBody([b"payload"], close_error=OSError("close boom"))
         body = LoggableResponseBody(inner)
@@ -409,6 +422,7 @@ class TestResponseCloseOnce:
 
 
 class TestResponseContentLengthRegime:
+    @pytest.mark.req("BODY-29")
     def test_reports_captured_size_when_fully_captured(self) -> None:
         inner = _ChunkedResponseBody([b"abcdef"], declared_length=-1)
         body = LoggableResponseBody(inner)
@@ -419,6 +433,7 @@ class TestResponseContentLengthRegime:
         # After a full capture, the captured size is authoritative.
         assert body.content_length() == 6
 
+    @pytest.mark.req("BODY-29")
     def test_reports_declared_length_when_exceeds_cap(self) -> None:
         inner = _ChunkedResponseBody([b"0123456789"], declared_length=10)
         body = LoggableResponseBody(inner, max_capture_bytes=4)
@@ -438,6 +453,7 @@ class TestResponseErrorAccessor:
         assert body.error() is None
         assert inner.closed is True
 
+    @pytest.mark.req("BODY-22", "BODY-26")
     def test_surfaces_cached_error_without_a_second_drain(self) -> None:
         boom = ConnectionError("drop")
         inner = _FailingResponseBody([b"ab"], boom)
@@ -473,6 +489,7 @@ class TestResponseZeroByteNotEof:
 
 
 class TestRequestFullPayloadDespiteCap:
+    @pytest.mark.req("BODY-17", "BODY-19", "IO-25", "IO-26")
     def test_downstream_gets_full_payload_while_tap_is_capped(self) -> None:
         # The primary write path always forwards the full payload; only the
         # in-memory tap honours the (independently configurable) cap.

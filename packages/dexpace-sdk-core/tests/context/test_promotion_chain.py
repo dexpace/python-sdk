@@ -50,6 +50,7 @@ def _response(request: Request) -> Response:
     return Response(request=request, protocol=Protocol.HTTP_1_1, status=Status.OK)
 
 
+@pytest.mark.req("CTX-1", "CTX-3")
 def test_promotion_registers_in_context_store() -> None:
     instr = _instrumentation("0" * 16 + "1")
     dispatch = DispatchContext(instrumentation_context=instr)
@@ -67,6 +68,7 @@ def test_promotion_registers_in_context_store() -> None:
         request_ctx.close()
 
 
+@pytest.mark.req("CTX-18")
 def test_close_removes_from_store() -> None:
     instr = _instrumentation("0" * 16 + "2")
     dispatch = DispatchContext(instrumentation_context=instr)
@@ -78,6 +80,7 @@ def test_close_removes_from_store() -> None:
     assert ContextStore.get(key) is None
 
 
+@pytest.mark.req("CTX-17", "CTX-18")
 def test_close_is_idempotent() -> None:
     instr = _instrumentation("0" * 16 + "3")
     dispatch = DispatchContext(instrumentation_context=instr)
@@ -86,6 +89,7 @@ def test_close_is_idempotent() -> None:
     request_ctx.close()
 
 
+@pytest.mark.req("CTX-8")
 def test_context_store_rejects_duplicate_put() -> None:
     instr = _instrumentation("0" * 16 + "4")
     dispatch = DispatchContext(instrumentation_context=instr)
@@ -97,6 +101,7 @@ def test_context_store_rejects_duplicate_put() -> None:
         ContextStore.remove(instr.trace_id.value)
 
 
+@pytest.mark.req("CTX-15")
 def test_dispatch_noop_factory() -> None:
     dispatch = DispatchContext.noop()
     # No-op trace id is invalid, but the context is constructible.
@@ -104,6 +109,7 @@ def test_dispatch_noop_factory() -> None:
     assert not dispatch.instrumentation_context.is_valid
 
 
+@pytest.mark.req("CTX-7")
 def test_context_store_concurrent_get_with_writes() -> None:
     """``ContextStore.get`` must be safe under concurrent ``set``/``remove``.
 
@@ -148,6 +154,7 @@ def test_context_store_concurrent_get_with_writes() -> None:
         ContextStore.remove(trace_id)
 
 
+@pytest.mark.req("CTX-1", "CTX-2")
 def test_exchange_context_carries_request_and_response() -> None:
     instr = _instrumentation("0" * 16 + "5")
     dispatch = DispatchContext(instrumentation_context=instr)
@@ -165,6 +172,7 @@ def test_exchange_context_carries_request_and_response() -> None:
         request_ctx.close()
 
 
+@pytest.mark.req("CTX-4", "CTX-6")
 def test_concurrent_same_trace_id_both_register_and_resolve() -> None:
     """Two calls sharing a trace id must not collide in the store.
 
@@ -218,6 +226,7 @@ def test_prefix_scan_by_trace_id_returns_all_live_contexts() -> None:
         rc2.close()
 
 
+@pytest.mark.req("CTX-15", "CTX-4", "CTX-6", "CTX-7")
 def test_context_store_stress_no_lost_or_corrupted_entries() -> None:
     """Many threads registering/closing calls that share a trace id.
 
@@ -264,6 +273,7 @@ _CONTEXT_CLASSES: tuple[type[CallContext], ...] = (
 )
 
 
+@pytest.mark.req("CTX-1")
 def test_all_links_are_call_contexts() -> None:
     """Every link in the chain is a `CallContext` subclass."""
     assert issubclass(DispatchContext, CallContext)
@@ -278,6 +288,7 @@ def test_all_links_are_context_managers() -> None:
         assert hasattr(cls, "__exit__")
 
 
+@pytest.mark.req("CTX-14")
 def test_every_link_carries_instrumentation_context() -> None:
     """Each concrete context exposes an `InstrumentationContext`."""
     instr = _instrumentation("0" * 16 + "7")
@@ -291,6 +302,7 @@ def test_every_link_carries_instrumentation_context() -> None:
         request_ctx.close()
 
 
+@pytest.mark.req("CTX-2")
 def test_promotion_shares_one_bundle_not_three_copies() -> None:
     """Promotion reuses the same payload object; it never copies it.
 
@@ -316,7 +328,7 @@ def test_promotion_shares_one_bundle_not_three_copies() -> None:
         request_ctx.close()
 
 
-@pytest.mark.req("CTX-4")
+@pytest.mark.req("CTX-17", "CTX-4")
 def test_registration_happens_at_promotion_not_construction() -> None:
     """Constructing a `DispatchContext` does not touch the store.
 

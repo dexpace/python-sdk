@@ -44,6 +44,7 @@ def _expected(events: tuple[SseExpectedEvent, ...]) -> list[SseEvent]:
     ]
 
 
+@pytest.mark.req("SSE-5")
 @pytest.mark.parametrize("vector", _SSE_VECTORS, ids=_VECTOR_IDS)
 def test_golden_corpus_whole_stream(vector: SseVector) -> None:
     """Parsing the whole stream reproduces the corpus events byte-for-byte."""

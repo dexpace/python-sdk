@@ -56,6 +56,7 @@ def test_band_classification_matches_arithmetic(code: int) -> None:
     assert status.is_error == (status.is_client_error or status.is_server_error)
 
 
+@pytest.mark.req("HTTP-12")
 @given(left=_in_range, right=_in_range)
 def test_equality_is_by_code(left: int, right: int) -> None:
     """Two ``Status`` values are equal iff their integer codes are equal."""

@@ -58,6 +58,7 @@ def codec() -> Codec:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SERDE-22")
 @pytest.mark.parametrize(
     ("wire", "target", "expected", "expected_type"),
     [
@@ -84,6 +85,7 @@ def test_coercion_matrix(
     assert type(result) is expected_type
 
 
+@pytest.mark.req("SERDE-22")
 def test_int_into_float_field_is_widened(codec: Codec) -> None:
     @dataclass(frozen=True, slots=True)
     class HasFloat:
@@ -94,6 +96,7 @@ def test_int_into_float_field_is_widened(codec: Codec) -> None:
     assert type(decoded.ratio) is float
 
 
+@pytest.mark.req("SERDE-22")
 def test_bool_into_float_is_not_widened(codec: Codec) -> None:
     # ``bool`` is only nominally an ``int``; widening it to ``float`` would be a
     # coercion, so it passes through untouched.
@@ -101,11 +104,13 @@ def test_bool_into_float_is_not_widened(codec: Codec) -> None:
     assert result is True
 
 
+@pytest.mark.req("SERDE-23")
 def test_unknown_wire_fields_are_ignored(codec: Codec) -> None:
     decoded = codec.decode({"x": 1, "future_field": "ignored"}, _Inner)
     assert decoded == _Inner(1)
 
 
+@pytest.mark.req("SERDE-24")
 def test_iso8601_datetime_round_trips(codec: Codec) -> None:
     model = _Event("launch", datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC))
     document = codec.encode(model)
@@ -119,6 +124,7 @@ def test_iso8601_datetime_round_trips(codec: Codec) -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SERDE-13")
 @pytest.mark.parametrize("target", [str, int, float, bool, _Inner])
 def test_null_into_non_optional_type_target_names_target(codec: Codec, target: type) -> None:
     # The direct type-target path: decoding ``null`` against a concrete,
@@ -128,6 +134,7 @@ def test_null_into_non_optional_type_target_names_target(codec: Codec, target: t
     assert target.__name__ in str(info.value)
 
 
+@pytest.mark.req("SERDE-13")
 def test_null_into_non_optional_dataclass_field_names_target(codec: Codec) -> None:
     @dataclass(frozen=True, slots=True)
     class HasName:
@@ -138,6 +145,7 @@ def test_null_into_non_optional_dataclass_field_names_target(codec: Codec) -> No
     assert "str" in str(info.value)
 
 
+@pytest.mark.req("SERDE-13")
 def test_null_into_non_optional_list_element_names_target(codec: Codec) -> None:
     with pytest.raises(CodecError) as info:
         codec.decode([None], list[str])
@@ -156,6 +164,7 @@ def test_null_into_non_optional_set_element_names_target(codec: Codec) -> None:
     assert "str" in str(info.value)
 
 
+@pytest.mark.req("SERDE-13")
 def test_null_into_non_optional_mapping_value_names_target(codec: Codec) -> None:
     with pytest.raises(CodecError) as info:
         codec.decode({"a": None}, dict[str, int])
@@ -175,6 +184,7 @@ def test_null_into_optional_field_is_accepted(codec: Codec) -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SEAM-23", "SERDE-10")
 def test_serde_error_roots_the_taxonomy() -> None:
     assert issubclass(SerializationError, SerdeError)
     assert issubclass(DeserializationError, SerdeError)
@@ -184,17 +194,20 @@ def test_serde_error_roots_the_taxonomy() -> None:
     assert issubclass(CodecError, DeserializationError)
 
 
+@pytest.mark.req("SERDE-10")
 def test_serde_error_subtypes_are_directional() -> None:
     assert not issubclass(SerializationError, DeserializationError)
     assert not issubclass(DeserializationError, SerializationError)
 
 
+@pytest.mark.req("SEAM-23", "SERDE-11")
 def test_serde_errors_are_unchecked() -> None:
     # "Unchecked" in the Python sense: an ordinary exception nothing forces a
     # caller to catch.
     assert issubclass(SerdeError, Exception)
 
 
+@pytest.mark.req("SERDE-10")
 def test_catching_serde_error_catches_both_directions() -> None:
     caught: list[str] = []
     try:
@@ -208,18 +221,21 @@ def test_catching_serde_error_catches_both_directions() -> None:
     assert caught == ["decode", "encode"]
 
 
+@pytest.mark.req("SEAM-21", "SERDE-9")
 def test_deserialization_error_chains_cause() -> None:
     with pytest.raises(DeserializationError) as info:
         JSON_SERDE.deserializer.deserialize("{not json")
     assert isinstance(info.value.__cause__, json.JSONDecodeError)
 
 
+@pytest.mark.req("SEAM-20", "SERDE-9")
 def test_serialization_error_chains_cause() -> None:
     with pytest.raises(SerializationError) as info:
         JsonSerializer().serialize({"k": b"\xff\xfe"})
     assert info.value.__cause__ is not None
 
 
+@pytest.mark.req("SEAM-23", "SERDE-9")
 def test_unserializable_value_is_wrapped_not_leaked() -> None:
     # A stdlib TypeError from json must not escape the serde boundary unwrapped.
     with pytest.raises(SerializationError):
@@ -241,12 +257,14 @@ class _BoomStream:
         raise OSError("simulated write failure")
 
 
+@pytest.mark.req("SEAM-20", "SERDE-12")
 def test_serialize_to_stream_propagates_oserror_unwrapped() -> None:
     with pytest.raises(OSError) as info:
         JsonSerializer().serialize_to_stream({"a": 1}, _BoomStream())  # type: ignore[arg-type]
     assert not isinstance(info.value, SerdeError)
 
 
+@pytest.mark.req("SEAM-21", "SERDE-12")
 def test_deserialize_stream_propagates_oserror_unwrapped() -> None:
     with pytest.raises(OSError) as info:
         JsonDeserializer().deserialize_stream(_BoomStream())  # type: ignore[arg-type]
@@ -258,6 +276,7 @@ def test_deserialize_stream_propagates_oserror_unwrapped() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SERDE-1")
 def test_round_trip_through_serde_pair() -> None:
     serde = JsonSerde()
     payload = {"name": "alice", "nums": [1, 2, 3], "nested": {"ok": True}}
@@ -286,6 +305,7 @@ def test_round_trip_through_bytes_pair() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SERDE-26")
 def test_serializing_does_not_mutate_caller_supplied_codec() -> None:
     codec = Codec(tolerate_unknown=False)
     before = codec._tolerate_unknown
@@ -298,6 +318,7 @@ def test_serializing_does_not_mutate_caller_supplied_codec() -> None:
     assert Codec.__slots__ == ("_tolerate_unknown",)
 
 
+@pytest.mark.req("SERDE-25")
 def test_distinct_codec_instances_do_not_share_state() -> None:
     tolerant = Codec(tolerate_unknown=True)
     strict = Codec(tolerate_unknown=False)
@@ -307,6 +328,7 @@ def test_distinct_codec_instances_do_not_share_state() -> None:
         strict.decode({"x": 1, "extra": 2}, _Inner)
 
 
+@pytest.mark.req("SERDE-25")
 def test_json_serde_factory_returns_independent_bundles() -> None:
     one = JsonSerde()
     two = JsonSerde()
@@ -315,6 +337,7 @@ def test_json_serde_factory_returns_independent_bundles() -> None:
     assert one.deserializer is not two.deserializer
 
 
+@pytest.mark.req("SERDE-29")
 def test_configured_codec_is_thread_safe() -> None:
     codec = Codec()
     doc = {"x": 7}
@@ -332,10 +355,12 @@ def test_configured_codec_is_thread_safe() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SEAM-19", "SERDE-2")
 def test_json_serde_declares_application_json_media_type() -> None:
     assert JsonSerde().media_type is common_media_types.APPLICATION_JSON
 
 
+@pytest.mark.req("SERDE-2")
 def test_singleton_serde_declares_media_type() -> None:
     assert JSON_SERDE.media_type is common_media_types.APPLICATION_JSON
 
@@ -345,6 +370,7 @@ def test_singleton_serde_declares_media_type() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SEAM-20", "SERDE-3")
 def test_serialize_to_stream_does_not_close_stream() -> None:
     stream = BytesIO()
     JsonSerializer().serialize_to_stream({"a": 1}, stream)
@@ -353,6 +379,7 @@ def test_serialize_to_stream_does_not_close_stream() -> None:
     assert stream.getvalue() == b'{"a":1}!'
 
 
+@pytest.mark.req("SERDE-4")
 def test_serialize_into_writes_and_returns_length() -> None:
     buffer = bytearray(32)
     written = JsonSerializer().serialize_into({"a": 1}, buffer)
@@ -360,6 +387,7 @@ def test_serialize_into_writes_and_returns_length() -> None:
     assert bytes(buffer[:written]) == b'{"a":1}'
 
 
+@pytest.mark.req("SERDE-3", "SERDE-4")
 def test_serialize_into_honors_offset() -> None:
     buffer = bytearray(b"HEAD" + b"\x00" * 16)
     written = JsonSerializer().serialize_into({"a": 1}, buffer, offset=4)
@@ -373,6 +401,7 @@ def test_serialize_into_accepts_writable_memoryview() -> None:
     assert bytes(backing[:written]) == b'{"a":1}'
 
 
+@pytest.mark.req("SEAM-20", "SERDE-4")
 def test_serialize_into_overflow_raises_range_error_not_serde_error() -> None:
     buffer = bytearray(3)
     with pytest.raises(ValueError) as info:
@@ -381,6 +410,7 @@ def test_serialize_into_overflow_raises_range_error_not_serde_error() -> None:
     assert not isinstance(info.value, SerdeError)
 
 
+@pytest.mark.req("SERDE-4")
 def test_serialize_into_negative_offset_raises_value_error() -> None:
     with pytest.raises(ValueError):
         JsonSerializer().serialize_into({"a": 1}, bytearray(16), offset=-1)

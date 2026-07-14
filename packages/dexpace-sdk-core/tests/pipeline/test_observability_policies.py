@@ -113,6 +113,7 @@ class TestLoggingPolicy:
             for rec in caplog.records
         )
 
+    @pytest.mark.req("BODY-34")
     def test_opt_out_via_options(self, caplog: LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
         with Pipeline(_OkClient(), policies=[LoggingPolicy()]) as p:
@@ -123,6 +124,7 @@ class TestLoggingPolicy:
             )
         assert not caplog.records
 
+    @pytest.mark.req("XCUT-19")
     def test_default_preview_size_is_8_kib(self) -> None:
         # The logging policy defaults to a small, bounded 8 KiB body preview.
         assert LoggingPolicy().preview_bytes == 8 * 1024
@@ -134,6 +136,7 @@ class TestLoggingPolicy:
         with pytest.raises(ValueError, match="positive"):
             LoggingPolicy(preview_bytes=0)
 
+    @pytest.mark.req("BODY-34", "OBS-36", "XCUT-24")
     def test_full_body_forwarded_uncut_while_preview_truncates(
         self, caplog: LogCaptureFixture
     ) -> None:
@@ -150,6 +153,7 @@ class TestLoggingPolicy:
         preview = responses[0].split("request_body_preview=")[1]
         assert len(preview) == 8 * 1024
 
+    @pytest.mark.req("OBS-38")
     def test_binary_body_preview_never_throws(self, caplog: LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
         payload = bytes(range(256)) * 40  # invalid UTF-8 sequences, > 8 KiB

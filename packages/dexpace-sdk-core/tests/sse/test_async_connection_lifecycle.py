@@ -89,6 +89,7 @@ def _conn(responses: list[AsyncResponse]) -> AsyncSseConnection:
     )
 
 
+@pytest.mark.req("SSE-25")
 async def test_release_once_on_partial_consumption() -> None:
     body = _AsyncLedgerBody([b"data: one\n\n"])
     conn = _conn([_response(body)])
@@ -134,6 +135,7 @@ async def test_release_once_on_transient_mid_stream_failure() -> None:
     assert resumed.closes == 1
 
 
+@pytest.mark.req("SSE-28")
 async def test_aclose_is_idempotent() -> None:
     body = _AsyncLedgerBody([b"data: one\n\n"])
     conn = _conn([_response(body)])
@@ -145,6 +147,7 @@ async def test_aclose_is_idempotent() -> None:
     assert body.closes == 1
 
 
+@pytest.mark.req("SSE-26")
 async def test_second_iterator_raises() -> None:
     conn = _conn([_response(_AsyncLedgerBody([b"data: one\n\n"]))])
     events = aiter(conn)
@@ -156,6 +159,7 @@ async def test_second_iterator_raises() -> None:
     await conn.aclose()
 
 
+@pytest.mark.req("SSE-27")
 async def test_iteration_after_close_raises() -> None:
     conn = _conn([])
     await conn.aclose()
@@ -189,6 +193,7 @@ class _AsyncMaskingBody(AsyncResponseBody):
         raise _SecondaryError("teardown failed")
 
 
+@pytest.mark.req("SSE-29")
 async def test_close_time_error_is_demoted_onto_context() -> None:
     conn = _conn([_response(_AsyncMaskingBody())])
 

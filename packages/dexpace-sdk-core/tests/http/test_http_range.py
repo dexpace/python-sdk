@@ -72,12 +72,14 @@ def test_format_many_empty_raises() -> None:
 class TestFormatShapes:
     """``format`` renders the value portion; ``to_header_value`` adds ``bytes=``."""
 
+    @pytest.mark.req("HTTP-49")
     def test_bounded_format_omits_prefix(self) -> None:
         assert HttpRange(0, 100).format() == "0-99"
 
     def test_open_ended_format(self) -> None:
         assert HttpRange(50).format() == "50-"
 
+    @pytest.mark.req("HTTP-49")
     def test_suffix_format(self) -> None:
         assert HttpRange.suffix(20).format() == "-20"
 
@@ -110,6 +112,7 @@ class TestConstructionValidation:
         with pytest.raises(ValueError):
             HttpRange(is_suffix=True)
 
+    @pytest.mark.req("HTTP-49")
     def test_negative_count_raises(self) -> None:
         with pytest.raises(ValueError):
             HttpRange(0, -3)

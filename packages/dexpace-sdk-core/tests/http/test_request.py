@@ -67,12 +67,14 @@ def _post_request() -> Request:
     return Request(method=Method.POST, url=Url.parse("https://example.com/"))
 
 
+@pytest.mark.req("HTTP-6")
 def test_with_body() -> None:
     body = RequestBody.from_string("payload")
     r = _post_request().with_body(body)
     assert r.body is body
 
 
+@pytest.mark.req("HTTP-1", "XCUT-15")
 def test_frozen() -> None:
     from dataclasses import FrozenInstanceError
 
@@ -81,6 +83,7 @@ def test_frozen() -> None:
         r.url = Url.parse("https://x/")  # type: ignore[misc]
 
 
+@pytest.mark.req("HTTP-6")
 def test_default_headers_are_empty() -> None:
     r = _request()
     assert isinstance(r.headers, Headers)
@@ -90,11 +93,13 @@ def test_default_headers_are_empty() -> None:
 # --- Validation grammar -----------------------------------------------------
 
 
+@pytest.mark.req("HTTP-4")
 def test_missing_url_raises_field_named_error() -> None:
     with pytest.raises(ValueError, match=r"^url is required$"):
         Request(method=Method.GET, url=None)  # type: ignore[arg-type]
 
 
+@pytest.mark.req("HTTP-4")
 def test_missing_method_raises_field_named_error() -> None:
     with pytest.raises(ValueError, match=r"^method is required$"):
         Request(method=None, url=Url.parse("https://example.com/"))  # type: ignore[arg-type]
@@ -146,6 +151,7 @@ def test_with_method_between_body_methods_keeps_body() -> None:
 # --- Per-call boundary ------------------------------------------------------
 
 
+@pytest.mark.req("HTTP-35")
 def test_timeout_zero_is_rejected() -> None:
     with pytest.raises(ValueError, match="timeout must be positive"):
         Request(method=Method.GET, url=Url.parse("https://example.com/"), timeout=0)
@@ -161,11 +167,13 @@ def test_positive_timeout_is_accepted() -> None:
     assert r.timeout == 2.5
 
 
+@pytest.mark.req("HTTP-35")
 def test_negative_retries_is_rejected() -> None:
     with pytest.raises(ValueError, match="retries must not be negative"):
         Request(method=Method.GET, url=Url.parse("https://example.com/"), retries=-1)
 
 
+@pytest.mark.req("HTTP-35")
 def test_zero_retries_means_no_retries() -> None:
     r = Request(method=Method.GET, url=Url.parse("https://example.com/"), retries=0)
     assert r.retries == 0

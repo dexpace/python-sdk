@@ -98,6 +98,7 @@ class _StoreCoupledContext(CallContext):
 # --- reject-on-duplicate ------------------------------------------------------
 
 
+@pytest.mark.req("CTX-8")
 def test_put_rejects_duplicate_key_deterministically() -> None:
     """A second `put` under a registered key loses with a `ValueError`."""
     store = _ContextStore()
@@ -150,6 +151,7 @@ def test_identity_conditional_remove_coexists_with_shared_key_close() -> None:
     assert ContextStore.get(shared_key) is None  # cleared despite identity mismatch
 
 
+@pytest.mark.req("CTX-18", "CTX-8")
 def test_remove_is_unconditional_pop_by_key() -> None:
     """`remove` clears a key regardless of which object occupies it."""
     store = _ContextStore()
@@ -164,6 +166,7 @@ def test_remove_is_unconditional_pop_by_key() -> None:
 # --- strong references --------------------------------------------------------
 
 
+@pytest.mark.req("CTX-19")
 def test_store_holds_strong_reference() -> None:
     """A stored context is retained by strong reference, not a weak one."""
     store = _ContextStore()
@@ -179,12 +182,14 @@ def test_store_holds_strong_reference() -> None:
 # --- post-insert drain-to-cap -------------------------------------------------
 
 
+@pytest.mark.req("CTX-11")
 def test_nonpositive_cap_is_rejected() -> None:
     """A store must be bounded by at least one entry."""
     with pytest.raises(ValueError, match="max_entries"):
         _ContextStore(max_entries=0)
 
 
+@pytest.mark.req("CTX-11", "CTX-13", "XCUT-14")
 def test_set_drains_to_cap_oldest_first() -> None:
     """Inserting past the cap evicts the oldest entries first."""
     store = _ContextStore(max_entries=3)
@@ -202,6 +207,7 @@ def test_set_drains_to_cap_oldest_first() -> None:
     assert not contexts["k4"].closed
 
 
+@pytest.mark.req("CTX-11", "XCUT-14")
 def test_put_also_drains_to_cap() -> None:
     """`put`, like `set`, enforces the cap after inserting."""
     store = _ContextStore(max_entries=2)
@@ -215,6 +221,7 @@ def test_put_also_drains_to_cap() -> None:
     assert a.closed
 
 
+@pytest.mark.req("CTX-12", "NFR-11", "XCUT-11", "XCUT-14")
 def test_cap_drain_converges_under_concurrent_inserts() -> None:
     """Concurrent inserts converge to exactly the cap, with no lost lock."""
     cap = 64
@@ -236,6 +243,7 @@ def test_cap_drain_converges_under_concurrent_inserts() -> None:
     assert len(store._contexts) == cap
 
 
+@pytest.mark.req("NFR-11")
 def test_drain_close_side_effect_reenters_store_without_deadlock() -> None:
     """An evicted entry's `close` may re-enter the store without deadlocking.
 

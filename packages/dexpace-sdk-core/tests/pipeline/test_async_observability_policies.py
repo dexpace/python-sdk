@@ -212,6 +212,7 @@ class TestAsyncLoggingPolicy:
         assert responses
         assert "response_body_preview=" in responses[0]
 
+    @pytest.mark.req("OBS-36")
     async def test_response_full_body_forwarded_while_preview_truncates(
         self, caplog: LogCaptureFixture
     ) -> None:
@@ -228,6 +229,7 @@ class TestAsyncLoggingPolicy:
         preview = responses[0].split("response_body_preview=")[1].split()[0]
         assert len(preview) == 256
 
+    @pytest.mark.req("OBS-37")
     async def test_response_capture_skipped_for_unknown_length(
         self, caplog: LogCaptureFixture
     ) -> None:
@@ -243,6 +245,7 @@ class TestAsyncLoggingPolicy:
         # No preview for a body whose size was not declared.
         assert "response_body_preview=" not in responses[0]
 
+    @pytest.mark.req("OBS-38")
     async def test_binary_response_body_preview_never_throws(
         self, caplog: LogCaptureFixture
     ) -> None:

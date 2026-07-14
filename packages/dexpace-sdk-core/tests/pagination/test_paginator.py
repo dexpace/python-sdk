@@ -88,6 +88,7 @@ def _three_page_pipeline() -> _MockPipeline:
     )
 
 
+@pytest.mark.req("PAGE-1")
 def test_iterates_items_across_all_pages() -> None:
     pipeline = _three_page_pipeline()
     paginator: Paginator[int] = Paginator(pipeline, _strategy(), _first_request())
@@ -103,6 +104,7 @@ def test_drives_the_pipeline_once_per_page() -> None:
     assert pipeline.calls[2].url.query.get("cursor") == "c2"
 
 
+@pytest.mark.req("PAGE-1")
 def test_by_page_yields_pages_with_raw_response() -> None:
     pipeline = _three_page_pipeline()
     paginator: Paginator[int] = Paginator(pipeline, _strategy(), _first_request())
@@ -147,6 +149,7 @@ def test_single_page_sequence_terminates() -> None:
     assert len(pipeline.calls) == 1
 
 
+@pytest.mark.req("PAGE-35", "PAGE-36")
 def test_same_options_instance_threads_through_every_page_fetch() -> None:
     # The paginator uses the caller's fetcher verbatim: the first fetch runs it
     # once, later fetches send whatever ``next_request`` the strategy returned,

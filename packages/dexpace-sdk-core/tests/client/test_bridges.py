@@ -112,6 +112,7 @@ class _RecordingSyncClient(HttpClient):
 
 
 class TestSyncToAsyncConstruction:
+    @pytest.mark.req("SEAM-18")
     def test_missing_executor_raises_at_construction(self) -> None:
         # Omitting the required keyword-only executor fails immediately, before
         # any call — the SDK never fabricates a shared pool.
@@ -124,6 +125,7 @@ class TestSyncToAsyncConstruction:
 
 
 class TestSyncToAsyncExecute:
+    @pytest.mark.req("ASYNC-19")
     async def test_runs_on_supplied_executor(self) -> None:
         client = _RecordingSyncClient()
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -138,6 +140,7 @@ class TestSyncToAsyncExecute:
             assert response.body is not None
             assert await response.body.bytes() == b"hello"
 
+    @pytest.mark.req("ASYNC-10", "ASYNC-8", "SEAM-24")
     async def test_contextvars_captured_at_submission(self) -> None:
         client = _RecordingSyncClient()
         token = set_trace_id("trace-sync-to-async")
@@ -184,6 +187,7 @@ class _RaisingAsyncClient(AsyncHttpClient):
 
 
 class TestAsyncToSyncExecute:
+    @pytest.mark.req("ASYNC-19")
     def test_runs_async_client_on_background_thread(self) -> None:
         client = _RecordingAsyncClient()
         with AsyncToSyncHttpClient(client) as bridge:
@@ -208,6 +212,7 @@ class TestAsyncToSyncExecute:
             set_trace_id(None)
             del token
 
+    @pytest.mark.req("ASYNC-14", "SEAM-17", "SEAM-18")
     def test_sdk_exception_surfaces_with_exact_type(self) -> None:
         # A caller catching the specific SDK type must see that exact type, not
         # a generic threading/future wrapper.
@@ -217,6 +222,7 @@ class TestAsyncToSyncExecute:
                 bridge.execute(_get())
             assert excinfo.value is boom
 
+    @pytest.mark.req("ASYNC-16")
     def test_context_manager_shuts_down_background_thread(self) -> None:
         bridge = AsyncToSyncHttpClient(_RecordingAsyncClient())
         with bridge:
@@ -225,6 +231,7 @@ class TestAsyncToSyncExecute:
 
 
 class TestAsyncToSyncCancellation:
+    @pytest.mark.req("ASYNC-14", "ASYNC-6", "SEAM-18")
     def test_keyboard_interrupt_cancels_then_reraises(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -252,6 +259,7 @@ class TestAsyncToSyncCancellation:
             # The in-flight async operation was cancelled, not left dangling.
             assert cancelled.wait(2)
 
+    @pytest.mark.req("ASYNC-5", "SEAM-30")
     def test_orphaned_response_closed_exactly_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
         body = _CloseTrackingAsyncBody()
         client = _RecordingAsyncClient(body=body)
@@ -272,6 +280,7 @@ class TestAsyncToSyncCancellation:
 class TestBridgedCallOwnership:
     """White-box ownership contract of the per-call handshake object."""
 
+    @pytest.mark.req("ASYNC-20", "SEAM-16")
     def test_delivered_response_not_closed_on_late_abandon(self) -> None:
         body = _CloseTrackingAsyncBody()
         with AsyncToSyncHttpClient(_RecordingAsyncClient()) as bridge:
@@ -292,10 +301,12 @@ class TestBridgedCallOwnership:
 
 
 class TestUnwrapException:
+    @pytest.mark.req("ASYNC-13")
     def test_passes_through_sdk_error_unchanged(self) -> None:
         boom = ServiceRequestError("boom")
         assert _unwrap_exception(boom) is boom
 
+    @pytest.mark.req("ASYNC-13", "ASYNC-14")
     def test_translates_concurrent_cancelled_to_asyncio(self) -> None:
         original = asyncio.CancelledError()
         wrapper = concurrent.futures.CancelledError()
@@ -308,6 +319,7 @@ class TestUnwrapException:
         result = _unwrap_exception(concurrent.futures.CancelledError())
         assert isinstance(result, asyncio.CancelledError)
 
+    @pytest.mark.req("ASYNC-13")
     def test_cycle_in_cause_chain_terminates(self) -> None:
         # A self-referential __cause__/__context__ cycle must not spin forever.
         wrapper = concurrent.futures.CancelledError()

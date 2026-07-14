@@ -25,6 +25,7 @@ def test_noop_tracer_returns_the_shared_noop_span() -> None:
     assert NOOP_TRACER.start_span("op", parent=None) is NOOP_SPAN
 
 
+@pytest.mark.req("OBS-30")
 def test_tracer_exception_is_not_wrapped_or_suppressed() -> None:
     # Tracer/meter callbacks are contractually never-throwing; when one does
     # raise, the SDK does NOT wrap or swallow it — the original propagates.

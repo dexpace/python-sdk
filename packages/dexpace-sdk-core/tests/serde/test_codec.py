@@ -112,6 +112,7 @@ def test_decode_raises_when_dataclass_target_is_not_a_mapping(codec: Codec) -> N
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SERDE-23")
 def test_decode_tolerates_unknown_keys_by_default(codec: Codec) -> None:
     model = codec.decode({**_BASE_DOC, "future_field": 1}, _Model)
     assert model.name == "alice"
@@ -129,6 +130,7 @@ def test_decode_rejects_unknown_keys_when_configured() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SERDE-16", "SERDE-17")
 def test_decode_missing_tristate_key_uses_default_absent(codec: Codec) -> None:
     model = codec.decode(_BASE_DOC, _Model)
     assert model.note is ABSENT
@@ -139,16 +141,19 @@ def test_decode_present_tristate_value_wraps_in_present(codec: Codec) -> None:
     assert model.note == Present("hi")
 
 
+@pytest.mark.req("SERDE-16")
 def test_decode_null_tristate_value_becomes_null(codec: Codec) -> None:
     model = codec.decode({**_BASE_DOC, "note": None}, _Model)
     assert model.note is NULL
 
 
+@pytest.mark.req("SERDE-15")
 def test_encode_omits_absent_tristate_field(codec: Codec) -> None:
     model = codec.decode(_BASE_DOC, _Model)
     assert "note" not in codec.encode(model)  # type: ignore[operator]
 
 
+@pytest.mark.req("SERDE-15")
 def test_encode_writes_null_for_null_tristate_field(codec: Codec) -> None:
     model = codec.decode({**_BASE_DOC, "note": None}, _Model)
     encoded = codec.encode(model)
@@ -156,6 +161,7 @@ def test_encode_writes_null_for_null_tristate_field(codec: Codec) -> None:
     assert encoded["note"] is None
 
 
+@pytest.mark.req("SERDE-15")
 def test_encode_writes_value_for_present_tristate_field(codec: Codec) -> None:
     model = codec.decode({**_BASE_DOC, "note": "hi"}, _Model)
     encoded = codec.encode(model)
@@ -163,6 +169,7 @@ def test_encode_writes_value_for_present_tristate_field(codec: Codec) -> None:
     assert encoded["note"] == "hi"
 
 
+@pytest.mark.req("SERDE-16")
 def test_decode_tristate_recurses_into_inner_type() -> None:
     @dataclass(frozen=True, slots=True)
     class Wrapped:
@@ -203,6 +210,7 @@ def test_encode_uses_wire_name_for_aliased_field(codec: Codec) -> None:
     assert "nick" not in encoded
 
 
+@pytest.mark.req("SERDE-24")
 def test_encode_emits_iso_string_for_datetime(codec: Codec) -> None:
     model = codec.decode(_BASE_DOC, _Model)
     encoded = codec.encode(model)
@@ -244,6 +252,7 @@ def test_encode_non_utf8_bytes_raises_serialization_error(codec: Codec) -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SERDE-5", "SERDE-7")
 def test_decode_list_of_models(codec: Codec) -> None:
     decoded = codec.decode([{"x": 1}, {"x": 2}], list[_Inner])
     assert decoded == [_Inner(1), _Inner(2)]
@@ -839,6 +848,7 @@ def test_duplicate_wire_alias_across_fields_raises(codec: Codec) -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SERDE-17")
 def test_tristate_field_without_default_is_absent_when_key_omitted(codec: Codec) -> None:
     @dataclass(frozen=True, slots=True)
     class HasTristate:
@@ -858,6 +868,7 @@ def test_tristate_field_without_default_round_trips_null_and_present(codec: Code
     assert codec.decode({"note": "hi"}, HasTristate).note == Present("hi")
 
 
+@pytest.mark.req("SERDE-17")
 def test_defaultless_annotated_tristate_field_is_absent_when_key_omitted(codec: Codec) -> None:
     # An ``Annotated[Tristate[X], meta]`` field with no default must still
     # decode to ABSENT on an omitted key, exactly like the bare Tristate form.

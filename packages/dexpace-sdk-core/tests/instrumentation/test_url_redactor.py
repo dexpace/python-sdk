@@ -17,6 +17,8 @@ import random
 import string
 from typing import Self
 
+import pytest
+
 from dexpace.sdk.core.client.http_client import HttpClient
 from dexpace.sdk.core.http.common import Protocol, Url
 from dexpace.sdk.core.http.common.url import QueryParams
@@ -39,6 +41,7 @@ _MALFORMED = "[malformed url]"
 class TestUserinfo:
     """Userinfo (embedded credentials) is always redacted."""
 
+    @pytest.mark.req("OBS-11", "XCUT-19")
     def test_strips_userinfo_from_string(self) -> None:
         redacted = UrlRedactor().redact("https://alice:s3cr3t@api.example.com/path")
         assert "alice" not in redacted
@@ -52,6 +55,7 @@ class TestUserinfo:
         assert "s3cr3t" not in redacted
         assert "api.example.com" in redacted
 
+    @pytest.mark.req("OBS-11")
     def test_strips_userinfo_with_at_in_password(self) -> None:
         # The last '@' delimits userinfo, so an '@' inside the password does not
         # leave credential fragments behind.
@@ -62,6 +66,7 @@ class TestUserinfo:
 class TestQueryParameters:
     """Query values are redacted unless explicitly allow-listed."""
 
+    @pytest.mark.req("OBS-12", "XCUT-19")
     def test_allowlisted_query_kept_others_redacted(self) -> None:
         out = UrlRedactor().redact("https://api.example.com/v1?api-version=1.0&token=hunter2")
         assert "api-version=1.0" in out
@@ -96,12 +101,14 @@ class TestQueryParameters:
 class TestMultiValueAtomicRedaction:
     """A multi-value parameter is redacted all-or-nothing, per key."""
 
+    @pytest.mark.req("OBS-12")
     def test_non_allowlisted_multivalue_all_redacted(self) -> None:
         out = UrlRedactor(allowed_query_keys=set()).redact("https://example.com/?a=1&a=2")
         assert out.count("REDACTED=REDACTED") == 2
         assert "a=" not in out
         assert "1" not in out and "2" not in out
 
+    @pytest.mark.req("OBS-12")
     def test_allowlisted_multivalue_all_kept(self) -> None:
         # The allow-list decision is atomic at the key level: every value of an
         # allow-listed key survives, none are dropped or partially redacted.
@@ -122,6 +129,7 @@ class TestFragment:
         assert "abc" not in out
         assert out.endswith("#REDACTED=REDACTED")
 
+    @pytest.mark.req("OBS-13")
     def test_multi_segment_fragment_scrubs_only_pairs(self) -> None:
         out = UrlRedactor().redact("https://x/p#access_token=abc&state=xyz&plainpart")
         assert "abc" not in out
@@ -129,6 +137,7 @@ class TestFragment:
         # The plain, non-key/value segment survives verbatim.
         assert out == "https://x/p#REDACTED=REDACTED&REDACTED=REDACTED&plainpart"
 
+    @pytest.mark.req("OBS-13")
     def test_plain_fragment_preserved_as_is(self) -> None:
         out = UrlRedactor().redact("https://x/page#section-heading")
         assert out == "https://x/page#section-heading"
@@ -141,6 +150,7 @@ class TestFragment:
 class TestComponentPreservation:
     """Scheme, host, port, and path survive redaction unchanged."""
 
+    @pytest.mark.req("OBS-14")
     def test_scheme_host_port_path_preserved(self) -> None:
         out = UrlRedactor().redact("https://api.example.com:8443/v1/users/42")
         assert out == "https://api.example.com:8443/v1/users/42"
@@ -159,6 +169,7 @@ class TestComponentPreservation:
 class TestNoSpuriousQuerySeparator:
     """A literal '?' inside a fragment must not be re-split as a query."""
 
+    @pytest.mark.req("OBS-14")
     def test_question_mark_in_fragment_stays_in_fragment(self) -> None:
         out = UrlRedactor().redact("https://x/path#section?still-fragment")
         # Exactly one '?', and it sits after the '#' (i.e. inside the fragment).
@@ -166,6 +177,7 @@ class TestNoSpuriousQuerySeparator:
         assert out.count("?") == 1
         assert out.index("#") < out.index("?")
 
+    @pytest.mark.req("OBS-14")
     def test_real_query_plus_question_mark_in_fragment(self) -> None:
         out = UrlRedactor(allowed_query_keys={"a"}).redact("https://x/p?a=1#frag?x")
         # The query '?' and the fragment '?' both survive; no third is injected.
@@ -175,6 +187,7 @@ class TestNoSpuriousQuerySeparator:
 class TestMalformedInput:
     """Malformed input redacts to a literal placeholder and never throws."""
 
+    @pytest.mark.req("XCUT-20")
     def test_not_a_url(self) -> None:
         assert UrlRedactor().redact("not a url") == _MALFORMED
 
@@ -258,6 +271,7 @@ class TestNeverThrows:
         "a" * 5000,
     )
 
+    @pytest.mark.req("OBS-15", "XCUT-20")
     def test_adversarial_corpus_never_raises(self) -> None:
         redactor = UrlRedactor()
         for raw in self._ADVERSARIAL:

@@ -112,6 +112,7 @@ def test_auth_requirement_rejects_blank_scheme() -> None:
         AuthRequirement(scheme="")
 
 
+@pytest.mark.req("AUTH-5")
 def test_auth_scheme_satisfies_by_name_and_scope_subset() -> None:
     scheme = _scheme("oauth2", scopes=frozenset({"read", "write"}))
     assert scheme.satisfies(AuthRequirement("oauth2", ("read",)))
@@ -125,6 +126,7 @@ def test_auth_scheme_satisfies_by_name_and_scope_subset() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("AUTH-4", "AUTH-7")
 def test_select_tier_prefers_most_specific_present() -> None:
     per_call, operation, client = _desc("a"), _desc("b"), _desc("c")
     assert select_tier(per_call=per_call, operation=operation, client=client) == (
@@ -144,6 +146,7 @@ def test_select_tier_prefers_most_specific_present() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("AUTH-7")
 def test_resolve_uses_per_call_tier_when_present() -> None:
     registry = AuthRegistry(schemes=(_scheme("bearer"), _scheme("apikey")))
     resolved = resolve_auth(
@@ -182,6 +185,7 @@ def test_resolve_returns_none_when_no_tier_present() -> None:
     assert resolve_auth(per_call=None, operation=None, client=None, registry=registry) is None
 
 
+@pytest.mark.req("AUTH-5")
 def test_resolve_first_satisfiable_requirement_in_ordered_list() -> None:
     # The descriptor lists two alternatives; only the second is registered, so
     # resolution picks it — the ordered list is an OR of alternatives.
@@ -197,6 +201,7 @@ def test_resolve_first_satisfiable_requirement_in_ordered_list() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("AUTH-4")
 def test_unsatisfiable_per_call_does_not_fall_through_to_client() -> None:
     # per-call names a scheme the registry cannot satisfy; the client tier IS
     # satisfiable. Resolution MUST fail against the selected (per-call) tier and
@@ -212,6 +217,7 @@ def test_unsatisfiable_per_call_does_not_fall_through_to_client() -> None:
     assert excinfo.value.tier is AuthTier.PER_CALL
 
 
+@pytest.mark.req("AUTH-4")
 def test_unsatisfiable_operation_does_not_fall_through_to_client() -> None:
     registry = AuthRegistry(schemes=(_scheme("apikey"),))
     with pytest.raises(AuthResolutionError) as excinfo:

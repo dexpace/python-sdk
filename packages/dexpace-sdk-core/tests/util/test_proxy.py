@@ -13,6 +13,7 @@ from dexpace.sdk.core.config.configuration import Configuration
 from dexpace.sdk.core.util import ProxyOptions, ProxyType
 
 
+@pytest.mark.req("CFG-22")
 def test_proxy_options_basic() -> None:
     """A bare ``ProxyOptions`` exposes its constructor arguments verbatim."""
     options = ProxyOptions(type=ProxyType.HTTP, host="proxy.corp", port=8080)
@@ -49,6 +50,7 @@ def test_bypasses_proxy_exact_match() -> None:
     assert options.bypasses_proxy("api.internal.example.com") is True
 
 
+@pytest.mark.req("CFG-23")
 def test_bypasses_proxy_case_insensitive() -> None:
     """Glob matching ignores case on both pattern and candidate host."""
     options = ProxyOptions(
@@ -135,6 +137,7 @@ def test_bypasses_proxy_ipv6_literal_with_port() -> None:
     assert options.bypasses_proxy("[::1]:443") is True
 
 
+@pytest.mark.req("CFG-23")
 def test_bypasses_proxy_explicit_glob_still_works() -> None:
     """Explicit ``*`` globs keep their fnmatch semantics."""
     options = ProxyOptions(
@@ -191,6 +194,7 @@ def test_from_configuration_https_proxy_url() -> None:
     assert options.password == "pw"
 
 
+@pytest.mark.req("CFG-24")
 def test_from_configuration_https_wins_over_http() -> None:
     """When both env vars are set, HTTPS_PROXY takes precedence."""
     config = (
@@ -205,6 +209,7 @@ def test_from_configuration_https_wins_over_http() -> None:
     assert options.port == 8443
 
 
+@pytest.mark.req("CFG-27")
 def test_from_configuration_no_proxy_wildcard() -> None:
     """``NO_PROXY=*`` short-circuits to ``None``."""
     config = (
@@ -427,6 +432,7 @@ class TestStringFormsMaskCredentials:
         assert _SECRET not in rendered
         assert "alice" not in rendered
 
+    @pytest.mark.req("CFG-22")
     def test_str_masks_password(self) -> None:
         # ``str`` must mask too — it is a distinct string form from ``repr``.
         rendered = str(self._with_creds())
@@ -449,6 +455,7 @@ class TestStringFormsMaskCredentials:
 class TestBypassAllShortCircuit:
     """A single bare ``*`` bypass entry short-circuits to bypass-everything."""
 
+    @pytest.mark.req("CFG-22")
     def test_bare_star_bypasses_every_host(self) -> None:
         options = ProxyOptions(
             type=ProxyType.HTTP,
@@ -461,6 +468,7 @@ class TestBypassAllShortCircuit:
         assert options.bypasses_proxy("10.0.0.1") is True
         assert options.bypasses_proxy("") is True
 
+    @pytest.mark.req("CFG-23", "CFG-27")
     def test_bare_star_short_circuits_without_running_matchers(self) -> None:
         # "Don't process ``*`` as a literal glob needing host matching": the
         # bare-``*`` entry is not compiled into a per-host matcher at all.
@@ -504,6 +512,7 @@ class TestSameLayerHostAndPort:
         assert options.host == "override-host"
         assert options.port == 2222
 
+    @pytest.mark.req("CFG-24")
     def test_single_url_ties_host_and_port_together(self) -> None:
         # Both parts derive from one resolved URL string, so a port-less URL
         # yields the URL's host and a ``None`` port — never a port borrowed
@@ -540,6 +549,7 @@ def _forbid_proxy_env_reads(monkeypatch: pytest.MonkeyPatch) -> None:
 class TestOptInEnvironmentResolution:
     """Env resolution is opt-in and hermetic — never an implicit os.environ read."""
 
+    @pytest.mark.req("CFG-28")
     def test_plain_construction_never_reads_proxy_env(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -557,6 +567,7 @@ class TestOptInEnvironmentResolution:
         assert options.bypasses_proxy("api.internal") is True
         assert options.bypasses_proxy("elsewhere.org") is False
 
+    @pytest.mark.req("CFG-28")
     def test_from_environment_uses_injected_seam_only(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -591,6 +602,7 @@ class TestOptInEnvironmentResolution:
 class TestResolutionNeverThrows:
     """Malformed proxy configuration degrades to ``None`` — it never raises."""
 
+    @pytest.mark.req("CFG-24")
     @pytest.mark.parametrize(
         "value",
         [

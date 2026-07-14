@@ -159,6 +159,7 @@ def _run(client: _ScriptedClient, policy: RedirectPolicy, request: Request) -> R
 
 
 class TestResourceLifecycle:
+    @pytest.mark.req("REDIR-22")
     def test_superseded_responses_closed_before_each_hop(self) -> None:
         # Two intermediate 301 responses precede the terminal 200. Each
         # intermediate body must be closed as the policy moves off it; the
@@ -179,6 +180,7 @@ class TestResourceLifecycle:
         assert not final.closed
         assert response.status is Status.OK
 
+    @pytest.mark.req("REDIR-16", "REDIR-22")
     def test_loop_abandon_leaves_final_response_open(self) -> None:
         final = _TrackingBody()
         client = _ScriptedClient(
@@ -191,6 +193,7 @@ class TestResourceLifecycle:
         assert response.status is Status.MOVED_PERMANENTLY
         assert not final.closed
 
+    @pytest.mark.req("REDIR-17")
     def test_max_hops_abandon_leaves_final_response_open(self) -> None:
         final = _TrackingBody()
         client = _ScriptedClient(
@@ -205,6 +208,7 @@ class TestResourceLifecycle:
         assert not final.closed
         assert len(client.requests) == 2
 
+    @pytest.mark.req("REDIR-19")
     def test_missing_location_abandon_leaves_final_response_open(self) -> None:
         final = _TrackingBody()
         client = _ScriptedClient([_Hop(Status.MOVED_PERMANENTLY, None, body=final)])
@@ -242,6 +246,7 @@ class TestResourceLifecycle:
         assert not final.closed
         assert len(client.requests) == 1
 
+    @pytest.mark.req("REDIR-22", "REDIR-6")
     def test_non_replayable_body_closes_intermediate_then_raises(self) -> None:
         # A body-preserving reissue with a single-use body cannot be replayed.
         # The in-hand 3xx response is closed before the RuntimeError escapes so
@@ -329,7 +334,7 @@ _VECTOR_IDS: list[str] = [vector.id for vector in _REDIRECT_VECTORS]
 
 
 class TestGoldenLocationResolution:
-    @pytest.mark.req("REDIR-12")
+    @pytest.mark.req("REDIR-12", "REDIR-13")
     @pytest.mark.parametrize("vector", _REDIRECT_VECTORS, ids=_VECTOR_IDS)
     def test_golden_location_resolves_wire_exact(self, vector: RedirectVector) -> None:
         # Drive each golden vector end-to-end: a GET seed at ``base`` gets a 302
@@ -343,7 +348,7 @@ class TestGoldenLocationResolution:
         assert len(client.requests) == 2
         assert str(client.requests[1].url) == vector.resolved.decode()
 
-    @pytest.mark.req("REDIR-12")
+    @pytest.mark.req("REDIR-12", "REDIR-13")
     def test_golden_percent_encoding_preserved(self) -> None:
         by_id = {vector.id: vector for vector in _REDIRECT_VECTORS}
         vector = by_id["preserve-percent-encoding"]
@@ -354,7 +359,7 @@ class TestGoldenLocationResolution:
         reissued = str(client.requests[1].url)
         assert "%2F" in reissued and "%20" in reissued  # never decoded/normalised
 
-    @pytest.mark.req("REDIR-12")
+    @pytest.mark.req("REDIR-12", "REDIR-13")
     @pytest.mark.parametrize(
         "vector_id", ["ipv6-brackets-kept-absolute", "ipv6-brackets-kept-relative"]
     )

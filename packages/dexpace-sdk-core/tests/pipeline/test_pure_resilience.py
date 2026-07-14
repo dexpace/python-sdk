@@ -58,6 +58,7 @@ class TestStatusIsRetryable:
     def test_none_status_is_never_retryable(self) -> None:
         assert status_is_retryable(None, DEFAULT_RETRYABLE_STATUS) is False
 
+    @pytest.mark.req("RECOV-17")
     def test_configurable_set_is_the_authority(self) -> None:
         # The passed-in set is consulted, not a hard-coded literal: a bespoke
         # set flips both directions relative to the default.
@@ -108,6 +109,7 @@ class TestIsRetryable:
         outer.__context__ = _FlaggedError("inner", retryable=True)
         assert is_retryable(outer) is True
 
+    @pytest.mark.req("RETRY-2")
     def test_retryable_deep_in_chain(self) -> None:
         deepest = _FlaggedError("deepest", retryable=True)
         middle = ValueError("middle")
@@ -116,11 +118,13 @@ class TestIsRetryable:
         top.__cause__ = middle
         assert is_retryable(top) is True
 
+    @pytest.mark.req("RETRY-2", "XCUT-9")
     def test_self_referential_chain_terminates(self) -> None:
         exc = ValueError("loop")
         exc.__cause__ = exc
         assert is_retryable(exc) is False
 
+    @pytest.mark.req("RETRY-2", "XCUT-9")
     def test_two_node_cycle_terminates(self) -> None:
         first = ValueError("first")
         second = ValueError("second")
@@ -128,6 +132,7 @@ class TestIsRetryable:
         second.__cause__ = first
         assert is_retryable(first) is False
 
+    @pytest.mark.req("XCUT-9")
     def test_cycle_with_retryable_node_returns_true(self) -> None:
         retryable = _FlaggedError("retryable", retryable=True)
         other = ValueError("other")
@@ -149,9 +154,11 @@ class TestComputeBackoff:
         assert compute_backoff(3, base=1.0, cap=1000.0, multiplier=2.0) == 4.0
         assert compute_backoff(4, base=1.0, cap=1000.0, multiplier=2.0) == 8.0
 
+    @pytest.mark.req("RETRY-11")
     def test_cap_saturates(self) -> None:
         assert compute_backoff(20, base=1.0, cap=8.0, multiplier=2.0) == 8.0
 
+    @pytest.mark.req("RETRY-43")
     def test_fixed_mode_is_constant(self) -> None:
         assert compute_backoff(1, base=0.5, cap=100.0, fixed=True) == 0.0
         assert compute_backoff(2, base=0.5, cap=100.0, fixed=True) == 0.5
@@ -169,6 +176,7 @@ class TestComputeBackoff:
         assert delays[0] == 0.0
         assert delays[-1] == 8.0  # saturated at the cap
 
+    @pytest.mark.req("RETRY-11")
     @given(
         attempt=st.integers(min_value=1, max_value=40),
         base=st.floats(min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False),
@@ -202,9 +210,11 @@ class TestApplyJitter:
             result = apply_jitter(10.0, rng, full_jitter=True)
             assert 5.0 <= result <= 10.0
 
+    @pytest.mark.req("RETRY-10")
     def test_symmetric_zero_returns_delay_unchanged(self) -> None:
         assert apply_jitter(4.0, random.Random(1), full_jitter=False, symmetric=0.0) == 4.0
 
+    @pytest.mark.req("RETRY-10")
     def test_symmetric_band(self) -> None:
         rng = random.Random(3)
         for _ in range(200):
@@ -241,6 +251,7 @@ class TestParseRetryAfter:
             pytest.approx(60.0)
         )
 
+    @pytest.mark.req("CFG-30")
     def test_http_date_tolerates_zone_aliases_and_informational_weekday(self) -> None:
         # The date grammar is shared with util.http_date: tolerant on the
         # weekday name / zone alias, strict on the numeric structure.
@@ -253,6 +264,7 @@ class TestParseRetryAfter:
             pytest.approx(10.0)
         )
 
+    @pytest.mark.req("RECOV-23", "RETRY-17")
     def test_past_http_date_floors_to_zero_not_none(self) -> None:
         # NOTE (past-date -> 0 vs malformed -> None): a date already in the past
         # is a *valid* signal meaning "retry now" and floors to 0.0; only an
@@ -260,12 +272,14 @@ class TestParseRetryAfter:
         assert parse_retry_after("Mon, 01 Jan 1990 00:00:00 GMT", now=2_000_000_000.0) == 0.0
         assert parse_retry_after("not-a-date", now=2_000_000_000.0) is None
 
+    @pytest.mark.req("RECOV-23", "RETRY-16")
     def test_invalid_and_missing_return_none(self) -> None:
         assert parse_retry_after("not-a-date", now=0.0) is None
         assert parse_retry_after("", now=0.0) is None
         assert parse_retry_after("   ", now=0.0) is None
         assert parse_retry_after(None, now=0.0) is None
 
+    @pytest.mark.req("RETRY-19")
     @pytest.mark.parametrize(
         "token",
         # float() would accept every one of these; the strict pre-screen must not.
@@ -280,6 +294,7 @@ class TestParseRetryAfter:
         assert parse_retry_after("1.2.3", now=0.0) is None
         assert parse_retry_after("30d", now=0.0) is None
 
+    @pytest.mark.req("RECOV-26", "RETRY-18")
     def test_365_day_clamp_caps_absurd_delta(self) -> None:
         # NOTE (365-day clamp): a hint far in the future is capped, not obeyed.
         assert parse_retry_after("999999999", now=0.0) == pytest.approx(_365_DAYS_SECONDS)
@@ -297,6 +312,7 @@ class TestParseRateLimitReset:
     def test_future_epoch_positive_delay(self) -> None:
         assert parse_rate_limit_reset("150", now=100.0) == 50.0
 
+    @pytest.mark.req("RETRY-17")
     def test_past_epoch_floors_at_zero(self) -> None:
         assert parse_rate_limit_reset("90", now=100.0) == 0.0
 
@@ -309,12 +325,14 @@ class TestParseRateLimitReset:
         for token in ("nan", "inf", "1_000", "+150", "1e3"):
             assert parse_rate_limit_reset(token, now=0.0) is None
 
+    @pytest.mark.req("RETRY-18")
     def test_365_day_clamp_caps_absurd_reset(self) -> None:
         # A reset epoch absurdly far in the future is capped at the 365-day ceiling.
         assert parse_rate_limit_reset("999999999999", now=0.0) == pytest.approx(_365_DAYS_SECONDS)
 
 
 class TestPacingPrecedence:
+    @pytest.mark.req("RETRY-21")
     def test_retry_after_is_authoritative_over_rate_limit_reset(self) -> None:
         # NOTE (precedence order): the resolution order is Retry-After (seconds
         # or HTTP-date), then X-RateLimit-Reset. Enforced in
@@ -378,6 +396,7 @@ class TestPacingGoldenCorpus:
 class TestPacingTotality:
     """The parsers are total: they return None or a sane delay, never raise."""
 
+    @pytest.mark.req("RECOV-23", "RECOV-26", "RECOV-29", "RETRY-16", "RETRY-22")
     @given(
         value=st.one_of(
             st.none(),

@@ -89,6 +89,7 @@ class _CapturingClient(HttpClient):
         )
 
 
+@pytest.mark.req("AUTH-26")
 def test_key_credential_policy_stamps_header() -> None:
     client = _CapturingClient()
     policy = KeyCredentialPolicy(KeyCredential("hunter2"), "X-API-Key")
@@ -97,6 +98,7 @@ def test_key_credential_policy_stamps_header() -> None:
     assert client.calls[0].headers.get("x-api-key") == "hunter2"
 
 
+@pytest.mark.req("AUTH-26")
 def test_key_credential_policy_prefix() -> None:
     client = _CapturingClient()
     policy = KeyCredentialPolicy(KeyCredential("k"), "Authorization", prefix="SharedKey")
@@ -138,6 +140,7 @@ class _RedirectingClient(HttpClient):
         return Response(request=request, protocol=Protocol.HTTP_1_1, status=Status.OK)
 
 
+@pytest.mark.req("AUTH-29")
 def test_key_credential_policy_withholds_credential_cross_origin() -> None:
     from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
 
@@ -191,7 +194,7 @@ class _StaticCredential:
         return None
 
 
-@pytest.mark.req("AUTH-02")
+@pytest.mark.req("AUTH-34")
 def test_bearer_token_policy_stamps_header() -> None:
     client = _CapturingClient()
     cred = _StaticCredential()
@@ -228,6 +231,7 @@ def test_bearer_policy_refreshes_when_clock_advances_past_expiry() -> None:
     assert cred.calls == 2
 
 
+@pytest.mark.req("XCUT-16")
 def test_bearer_token_policy_enforces_https() -> None:
     client = _CapturingClient()
     cred = _StaticCredential()
@@ -239,6 +243,7 @@ def test_bearer_token_policy_enforces_https() -> None:
         )
 
 
+@pytest.mark.req("AUTH-33")
 def test_bearer_token_policy_surfaces_401_without_challenge() -> None:
     """A 401 without ``WWW-Authenticate`` is surfaced unchanged, hook untouched."""
     client = _CapturingClient(status=Status.UNAUTHORIZED)
@@ -252,6 +257,7 @@ def test_bearer_token_policy_surfaces_401_without_challenge() -> None:
     assert cred.calls == 1
 
 
+@pytest.mark.req("AUTH-30")
 def test_bearer_token_policy_on_challenge_hook() -> None:
     """Subclass that authorizes one replay; the still-401 result is surfaced."""
 
@@ -271,6 +277,7 @@ def test_bearer_token_policy_on_challenge_hook() -> None:
     assert len(client.calls) == 2
 
 
+@pytest.mark.req("AUTH-29")
 def test_bearer_token_policy_withholds_token_cross_origin() -> None:
     """A redirect to a foreign host must not receive the bearer token."""
     from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
@@ -286,6 +293,7 @@ def test_bearer_token_policy_withholds_token_cross_origin() -> None:
     assert cred.calls == 1
 
 
+@pytest.mark.req("AUTH-29", "XCUT-16")
 def test_bearer_token_policy_skips_https_enforcement_cross_origin() -> None:
     """A cross-origin reissue to http:// forwards unchanged, no HTTPS error."""
     from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
@@ -326,6 +334,7 @@ class _SlowCredential:
         return None
 
 
+@pytest.mark.req("XCUT-12")
 def test_bearer_token_policy_serializes_concurrent_refresh() -> None:
     """Concurrent sync sends must issue exactly one token fetch."""
 
@@ -353,6 +362,7 @@ def test_bearer_token_policy_serializes_concurrent_refresh() -> None:
     assert cred.calls == 1
 
 
+@pytest.mark.req("AUTH-34", "XCUT-11", "XCUT-12")
 def test_bearer_token_policy_single_flight_under_thread_pool() -> None:
     """The sync pillar collapses N concurrent misses into one fetch (pool)."""
 
@@ -867,6 +877,7 @@ def test_challenge_handler_closes_discarded_401_response() -> None:
     assert not client.bodies[1].closed, "final response handed to caller must stay open"
 
 
+@pytest.mark.req("AUTH-30")
 def test_on_challenge_closes_discarded_401_response() -> None:
     """The on_challenge retry path also releases the rejected 401."""
     client = _BodyScriptedClient([(Status.UNAUTHORIZED, 'Bearer realm="x"'), (Status.OK, None)])
@@ -946,6 +957,7 @@ def test_bearer_replays_replayable_body_after_challenge() -> None:
     assert len(client.calls) == 2
 
 
+@pytest.mark.req("AUTH-31", "BODY-4")
 def test_bearer_surfaces_401_for_nonreplayable_body() -> None:
     """A single-use body surfaces the 401 un-replayed instead of resending it."""
     client = _ScriptedClient([(Status.UNAUTHORIZED, 'Bearer realm="x"')])
@@ -972,6 +984,7 @@ async def test_async_bearer_replays_replayable_body_after_challenge() -> None:
     assert len(client.calls) == 2
 
 
+@pytest.mark.req("AUTH-31")
 async def test_async_bearer_surfaces_401_for_nonreplayable_body() -> None:
     """Async twin: a single-use body surfaces the 401 un-replayed."""
     client = _ScriptedAsyncClient([(Status.UNAUTHORIZED, "WWW-Authenticate", 'Bearer realm="x"')])
@@ -985,6 +998,7 @@ async def test_async_bearer_surfaces_401_for_nonreplayable_body() -> None:
     assert not body.is_replayable()
 
 
+@pytest.mark.req("AUTH-33")
 async def test_async_bearer_surfaces_401_without_challenge() -> None:
     """Async twin: a 401 without ``WWW-Authenticate`` is surfaced unchanged."""
     client = _CapturingAsyncClient(status=Status.UNAUTHORIZED)
@@ -1002,6 +1016,7 @@ async def test_async_bearer_surfaces_401_without_challenge() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("AUTH-32")
 def test_sync_on_challenge_throw_closes_401_before_propagating() -> None:
     """A raising sync hook releases the open 401 before re-raising."""
     client = _BodyScriptedClient([(Status.UNAUTHORIZED, 'Bearer realm="x"')])
@@ -1020,6 +1035,7 @@ def test_sync_on_challenge_throw_closes_401_before_propagating() -> None:
     assert client.bodies[0].closed, "throwing on_challenge leaked the 401 body"
 
 
+@pytest.mark.req("AUTH-32")
 async def test_async_on_challenge_coroutine_throw_closes_401() -> None:
     """A raising async coroutine hook releases the open 401 before re-raising."""
     client = _AsyncBodyScriptedClient([(Status.UNAUTHORIZED, 'Bearer realm="x"')])
@@ -1036,6 +1052,7 @@ async def test_async_on_challenge_coroutine_throw_closes_401() -> None:
     assert client.bodies[0].closed, "throwing async on_challenge leaked the 401 body"
 
 
+@pytest.mark.req("AUTH-32", "AUTH-38")
 async def test_async_on_challenge_synchronous_throw_closes_401() -> None:
     """A hook that throws synchronously (before a coroutine exists) still closes."""
     client = _AsyncBodyScriptedClient([(Status.UNAUTHORIZED, 'Bearer realm="x"')])
@@ -1061,6 +1078,7 @@ async def test_async_on_challenge_synchronous_throw_closes_401() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("AUTH-36")
 def test_bearer_eviction_matches_stamped_token_only() -> None:
     """A stale 401 must not evict a token a concurrent refresh already replaced."""
     cache = InMemoryTokenCache()
@@ -1094,6 +1112,7 @@ def test_bearer_eviction_matches_stamped_token_only() -> None:
     assert surviving.token == "fresh"
 
 
+@pytest.mark.req("AUTH-36")
 async def test_async_bearer_eviction_matches_stamped_token_only() -> None:
     """Async twin: a stale 401 leaves a concurrently-refreshed token intact."""
     cache = InMemoryTokenCache()
@@ -1211,6 +1230,7 @@ class _RecordingBasicCredential(BasicAuthCredential):
         return self._encoded
 
 
+@pytest.mark.req("AUTH-28", "XCUT-16")
 def test_bearer_policy_https_guard_precedes_fetch_and_dial() -> None:
     """An http:// URL errors before the credential is fetched or transport dialed."""
     client = _NeverDialClient()
@@ -1225,6 +1245,7 @@ def test_bearer_policy_https_guard_precedes_fetch_and_dial() -> None:
     assert client.dialed is False, "transport was dialed before the HTTPS guard fired"
 
 
+@pytest.mark.req("AUTH-38")
 async def test_async_bearer_policy_https_guard_precedes_fetch_and_dial() -> None:
     """Async twin: http:// errors before the async fetch or async dial."""
     client = _NeverDialAsyncClient()
@@ -1240,6 +1261,7 @@ async def test_async_bearer_policy_https_guard_precedes_fetch_and_dial() -> None
     assert client.dialed is False, "transport was dialed before the HTTPS guard fired"
 
 
+@pytest.mark.req("AUTH-28")
 def test_key_credential_policy_https_guard_precedes_stamp_and_dial() -> None:
     """An http:// URL errors before the key is read or the transport dialed."""
     client = _NeverDialClient()
@@ -1254,6 +1276,7 @@ def test_key_credential_policy_https_guard_precedes_stamp_and_dial() -> None:
     assert client.dialed is False, "transport was dialed before the HTTPS guard fired"
 
 
+@pytest.mark.req("AUTH-28")
 def test_basic_auth_policy_https_guard_precedes_stamp_and_dial() -> None:
     """An http:// URL errors before the payload is read or the transport dialed."""
     client = _NeverDialClient()
@@ -1299,6 +1322,7 @@ def test_basic_auth_policy_https_opt_out_stamps_over_http() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("AUTH-8")
 def test_credentialed_policy_reprs_redact_secrets() -> None:
     """Render every credentialed policy and grep for the literal secrets."""
     secret_key = "hunter2-key"
@@ -1353,6 +1377,7 @@ def test_key_credential_policy_rejects_non_key_credential() -> None:
         KeyCredentialPolicy(object(), "X-API-Key")  # type: ignore[arg-type]
 
 
+@pytest.mark.req("AUTH-26")
 def test_key_credential_policy_no_prefix_by_default() -> None:
     client = _CapturingClient()
     policy = KeyCredentialPolicy(KeyCredential("k"), "X-API-Key")
@@ -1375,11 +1400,13 @@ def test_key_style_policies_use_identity_equality() -> None:
     assert a != b
 
 
+@pytest.mark.req("AUTH-8")
 def test_key_style_credentials_use_identity_equality() -> None:
     assert KeyCredential("same") != KeyCredential("same")
     assert BasicAuthCredential("u", "p") != BasicAuthCredential("u", "p")
 
 
+@pytest.mark.req("AUTH-8")
 def test_bearer_style_access_token_uses_value_equality() -> None:
     a = AccessTokenInfo(token="t", expires_on=100, token_type="Bearer")
     b = AccessTokenInfo(token="t", expires_on=100, token_type="Bearer")

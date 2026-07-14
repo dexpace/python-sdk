@@ -94,6 +94,7 @@ class TestCharsetAccessor:
     def test_charset_case_preserved(self) -> None:
         assert MediaType.parse("text/plain; charset=UTF-8").charset == "UTF-8"
 
+    @pytest.mark.req("HTTP-24")
     def test_absent_charset_is_none(self) -> None:
         assert MediaType.of("application", "json").charset is None
 
@@ -120,6 +121,7 @@ class TestFullTypeAndWildcards:
         mt = MediaType.of("application", "json")
         assert mt.includes(mt)
 
+    @pytest.mark.req("HTTP-27")
     def test_includes_ignores_parameters(self) -> None:
         a = MediaType.of("text", "plain", {"charset": "utf-8"})
         b = MediaType.of("text", "plain", {"charset": "ascii"})
@@ -139,6 +141,7 @@ class TestQuotedStringRendering:
             "text/plain;charset=utf-8"
         )
 
+    @pytest.mark.req("HTTP-25")
     @pytest.mark.parametrize(
         "value",
         ["foo bar", "a;b", "a,b", "a/b", "a=b c", "a\tb", "café", "π", 'has"quote', "back\\slash"],
@@ -184,6 +187,7 @@ def _corpus() -> list[str]:
 class TestParseRenderRoundTripProperty:
     """HTTP-23: enumerated property — ``parse(str(mt)) == mt`` and str is a fixed point."""
 
+    @pytest.mark.req("HTTP-23")
     @pytest.mark.parametrize("value", _corpus())
     def test_single_parameter_round_trip(self, value: str) -> None:
         mt = MediaType.of("multipart", "mixed", {"boundary": value})
@@ -225,6 +229,7 @@ class TestParseEdgeCases:
         mt = MediaType.parse("text/plain; charset = utf-8")
         assert mt.charset == "utf-8"
 
+    @pytest.mark.req("HTTP-53")
     def test_empty_parameter_value_raises(self) -> None:
         with pytest.raises(ValueError):
             MediaType.parse("text/plain; charset=")

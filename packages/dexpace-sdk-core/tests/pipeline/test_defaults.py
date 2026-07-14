@@ -8,6 +8,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+import pytest
+
 from dexpace.sdk.core.http.auth.credentials import KeyCredential
 from dexpace.sdk.core.http.auth.policies import KeyCredentialPolicy
 from dexpace.sdk.core.http.common import Protocol, Url
@@ -252,6 +254,7 @@ def test_default_pipeline_returns_builder() -> None:
     assert isinstance(builder, StagedPipelineBuilder)
 
 
+@pytest.mark.req("PIPE-24", "PIPE-39")
 def test_default_pipeline_wires_canonical_stack() -> None:
     pipeline = default_pipeline(_StubTransport()).build()
     stages = _stages_of(pipeline)
@@ -270,6 +273,7 @@ def test_default_pipeline_wires_canonical_stack() -> None:
     ]
 
 
+@pytest.mark.req("PIPE-2", "PIPE-25", "REDIR-24", "REDIR-25")
 def test_default_pipeline_exact_policy_order() -> None:
     # Introspect the concrete policy types (stronger than stage-only): the
     # fixed order is operation-tracing -> redirect -> idempotency -> retry ->
@@ -287,6 +291,7 @@ def test_default_pipeline_exact_policy_order() -> None:
     ]
 
 
+@pytest.mark.req("AUTH-27")
 def test_default_pipeline_with_auth_exact_policy_order() -> None:
     # Auth slots between client-identity and logging — i.e. INSIDE the retry
     # wrapper (Stage.AUTH > Stage.RETRY), so a 401 refresh replays the request.
@@ -305,6 +310,7 @@ def test_default_pipeline_with_auth_exact_policy_order() -> None:
     ]
 
 
+@pytest.mark.req("AUTH-27")
 def test_default_pipeline_idempotency_outside_retry_auth_inside() -> None:
     # Idempotency wraps retry so a write's key is minted once and stays stable
     # across attempts; auth sits inside retry so a 401 refresh can replay.
@@ -382,6 +388,7 @@ def test_default_async_pipeline_wires_operation_tracing() -> None:
     assert isinstance(builder._pillars[Stage.OPERATION], AsyncOperationTracingPolicy)
 
 
+@pytest.mark.req("PIPE-28", "PIPE-32", "REDIR-25")
 def test_default_async_pipeline_exact_policy_order() -> None:
     # The async default omits redirect (opt-in only) — the shared resolution
     # core isn't yet certified against the full redirect security battery
@@ -450,6 +457,7 @@ def test_default_async_pipeline_logging_tracing_overrides_replace_defaults() -> 
     assert builder._pillars[Stage.LOGGING] is logging
 
 
+@pytest.mark.req("PIPE-32")
 def test_default_async_pipeline_omits_redirect_by_default() -> None:
     # Gate: the async redirect twin is not certified against the full redirect
     # security battery (see test_async_redirect_battery.py and docs/deviations.md),
@@ -469,6 +477,7 @@ def test_default_async_pipeline_opt_in_redirect_wires_at_redirect_stage() -> Non
     assert Stage.REDIRECT in _async_stages_of(builder.build())
 
 
+@pytest.mark.req("PIPE-17")
 def test_default_pipeline_options_identity_across_retry_and_redirect() -> None:
     # Force a retry (503) then a redirect (301) then success through the full
     # default stack. The per-call options mapping must be the same object at

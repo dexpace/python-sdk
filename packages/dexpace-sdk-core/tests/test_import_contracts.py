@@ -56,12 +56,14 @@ def _run_lint_imports() -> subprocess.CompletedProcess[str]:
     )
 
 
+@pytest.mark.req("NFR-7")
 def test_config_declares_the_expected_contracts() -> None:
     configuration = read_configuration(str(_CONFIG_PATH))
     names = {contract["name"] for contract in configuration["contracts_options"]}
     assert names == _EXPECTED_CONTRACTS
 
 
+@pytest.mark.req("NFR-1", "NFR-7", "SEAM-1", "SEAM-2")
 def test_real_tree_satisfies_all_contracts() -> None:
     result = _run_lint_imports()
     assert result.returncode == 0, (
@@ -71,6 +73,7 @@ def test_real_tree_satisfies_all_contracts() -> None:
     assert "Contracts: 4 kept, 0 broken." in result.stdout
 
 
+@pytest.mark.req("NFR-7")
 def test_seeded_furl_violation_breaks_the_build() -> None:
     # A module importing furl anywhere but the Url implementation must break the
     # furl-confinement contract. Seed one directly in the source tree, confirm

@@ -59,6 +59,7 @@ async def _execute_error(harness: AsyncTransportHarness, request: Request) -> Ba
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("ASYNC-1", "SEAM-16", "TRANSPORT-23")
 async def test_success_yields_a_response_never_none(async_harness: AsyncTransportHarness) -> None:
     async_harness.expect_response(200, body=b"ok")
     response = await async_harness.new_async_client().execute(_get())
@@ -69,6 +70,7 @@ async def test_success_yields_a_response_never_none(async_harness: AsyncTranspor
         assert await resp.body.bytes() == b"ok"
 
 
+@pytest.mark.req("TRANSPORT-1")
 async def test_adapter_does_not_follow_redirects(async_harness: AsyncTransportHarness) -> None:
     async_harness.expect_response(302, headers=[("Location", "http://service.test/moved")])
     async with await async_harness.new_async_client().execute(_get()) as response:
@@ -76,6 +78,7 @@ async def test_adapter_does_not_follow_redirects(async_harness: AsyncTransportHa
     assert async_harness.attempt_count() == 1
 
 
+@pytest.mark.req("TRANSPORT-2")
 async def test_adapter_does_not_retry_on_failure(async_harness: AsyncTransportHarness) -> None:
     async_harness.expect_connect_error()
     await _execute_error(async_harness, _get())
@@ -87,6 +90,7 @@ async def test_adapter_does_not_retry_on_failure(async_harness: AsyncTransportHa
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("ASYNC-1", "TRANSPORT-20")
 async def test_connection_failure_maps_to_retryable_network_error(
     async_harness: AsyncTransportHarness,
 ) -> None:
@@ -114,6 +118,7 @@ async def test_read_timeout_maps_to_response_timeout(
     assert isinstance(err, ServiceResponseTimeoutError)
 
 
+@pytest.mark.req("ASYNC-2", "SEAM-17", "TRANSPORT-21", "TRANSPORT-23")
 async def test_pre_dispatch_failure_surfaces_through_awaitable(
     async_harness: AsyncTransportHarness,
 ) -> None:
@@ -160,6 +165,7 @@ async def test_empty_body_bearing_method_sends_zero_length(
     assert async_harness.sent_requests()[0].content_length == "0"
 
 
+@pytest.mark.req("TRANSPORT-17")
 async def test_single_use_body_written_exactly_once(
     async_harness: AsyncTransportHarness,
 ) -> None:
@@ -176,6 +182,7 @@ async def test_single_use_body_written_exactly_once(
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("TRANSPORT-12")
 async def test_native_rejected_header_dropped_counted_and_logged(
     async_harness: AsyncTransportHarness,
     caplog: pytest.LogCaptureFixture,
@@ -213,6 +220,7 @@ async def test_malformed_inbound_header_dropped_obs_text_preserved(
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("ASYNC-5", "TRANSPORT-22")
 async def test_adaptation_failure_closes_native_response(
     async_harness: AsyncTransportHarness,
 ) -> None:
@@ -222,6 +230,7 @@ async def test_adaptation_failure_closes_native_response(
     assert async_harness.native_responses()[-1].closed is True
 
 
+@pytest.mark.req("TRANSPORT-25")
 async def test_streamed_response_close_cascades_to_native(
     async_harness: AsyncTransportHarness,
 ) -> None:
@@ -233,6 +242,7 @@ async def test_streamed_response_close_cascades_to_native(
     assert async_harness.native_responses()[-1].closed is True
 
 
+@pytest.mark.req("ASYNC-6", "ASYNC-7", "SEAM-13", "SEAM-30", "TRANSPORT-7")
 async def test_cancellation_releases_native_via_shielded_close(
     async_harness: AsyncTransportHarness,
 ) -> None:
@@ -262,6 +272,7 @@ async def test_cancellation_releases_native_via_shielded_close(
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("ASYNC-22", "SEAM-12", "TRANSPORT-29")
 async def test_concurrent_execute_is_safe(async_harness: AsyncTransportHarness) -> None:
     count = 16
     for _ in range(count):
@@ -279,6 +290,7 @@ async def test_concurrent_execute_is_safe(async_harness: AsyncTransportHarness) 
     assert async_harness.attempt_count() == count
 
 
+@pytest.mark.req("TRANSPORT-24")
 async def test_out_of_range_status_surfaces_with_body(
     async_harness: AsyncTransportHarness,
 ) -> None:
@@ -289,6 +301,7 @@ async def test_out_of_range_status_surfaces_with_body(
         assert await response.body.bytes() == b"vendor code"
 
 
+@pytest.mark.req("ASYNC-15")
 async def test_byo_client_survives_adapter_close(async_harness: AsyncTransportHarness) -> None:
     if not async_harness.supports_byo:
         pytest.skip("harness cannot build over a caller-supplied client")
@@ -302,6 +315,7 @@ async def test_byo_client_survives_adapter_close(async_harness: AsyncTransportHa
     await async_harness.aclose_client(client)  # idempotent
 
 
+@pytest.mark.req("ASYNC-2", "SEAM-15")
 async def test_execute_after_close_raises(async_harness: AsyncTransportHarness) -> None:
     client = async_harness.new_async_client()
     await async_harness.aclose_client(client)

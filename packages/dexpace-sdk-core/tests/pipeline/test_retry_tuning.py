@@ -133,6 +133,7 @@ class TestRateLimitResetParsing:
 
 
 class TestRateLimitResetHonored:
+    @pytest.mark.req("RECOV-25")
     def test_never_wakes_before_reset(self) -> None:
         clock = FakeClock(start=1_000.0)
         client = _ScriptedClient(
@@ -147,6 +148,7 @@ class TestRateLimitResetHonored:
         # 40s until reset, jitter * 1.0 -> waits to the reset instant, never before.
         assert clock.monotonic() == pytest.approx(1_040.0)
 
+    @pytest.mark.req("RECOV-25")
     def test_reset_jitter_only_lengthens_the_wait(self) -> None:
         clock = FakeClock(start=1_000.0)
         client = _ScriptedClient(
@@ -159,6 +161,7 @@ class TestRateLimitResetHonored:
             p.run(_get(), DispatchContext(_instr("0" * 16 + "1")))
         assert clock.monotonic() == pytest.approx(1_044.0)
 
+    @pytest.mark.req("RECOV-22", "RETRY-21")
     def test_retry_after_takes_precedence_over_reset(self) -> None:
         clock = FakeClock(start=1_000.0)
         client = _ScriptedClient(

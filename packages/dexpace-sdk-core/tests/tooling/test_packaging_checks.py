@@ -102,6 +102,7 @@ def test_namespace_main_reports_exit_codes(tmp_path: Path, monkeypatch: pytest.M
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("NFR-13")
 def test_real_repo_headers_present() -> None:
     assert header_check.find_header_violations(_REPO_ROOT) == []
 
@@ -114,6 +115,7 @@ def test_file_with_header_passes(tmp_path: Path) -> None:
     assert header_check.find_header_violations(tmp_path) == []
 
 
+@pytest.mark.req("NFR-13")
 def test_file_missing_header_is_flagged(tmp_path: Path) -> None:
     bad = tmp_path / "mod.py"
     _write(bad, '"""No licence header here."""\n')
@@ -129,6 +131,7 @@ def test_shebang_before_header_is_allowed(tmp_path: Path) -> None:
     assert header_check.file_has_header(script) is True
 
 
+@pytest.mark.req("NFR-13")
 def test_wrong_second_line_is_flagged(tmp_path: Path) -> None:
     bad = tmp_path / "mod.py"
     _write(bad, "# Copyright (c) 2026 dexpace and Omar Aljarrah.\n# Wrong second line\n")

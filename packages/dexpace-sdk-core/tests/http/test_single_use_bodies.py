@@ -83,6 +83,7 @@ class TestOnceGuard:
         with pytest.raises(RuntimeError, match="boom"):
             guard.claim("boom")
 
+    @pytest.mark.req("BODY-7", "HTTP-37")
     def test_race_yields_exactly_one_winner(self) -> None:
         # N threads race the very first claim. The lock — not GIL atomicity —
         # guarantees exactly one winner and N-1 RuntimeErrors.
@@ -126,7 +127,7 @@ _SYNC_REQUEST_SINGLE_USE: list[tuple[str, _SyncReqFactory]] = [
 
 
 class TestSyncRequestSingleUse:
-    @pytest.mark.req("BODY-08")
+    @pytest.mark.req("BODY-6", "HTTP-37")
     @pytest.mark.parametrize(("_name", "factory"), _SYNC_REQUEST_SINGLE_USE)
     def test_double_consume_raises_documented_message(
         self, _name: str, factory: _SyncReqFactory
@@ -147,6 +148,7 @@ class TestSyncRequestSingleUse:
         # The single valid iterator still drains end to end.
         assert b"".join(first) == _PAYLOAD
 
+    @pytest.mark.req("BODY-1")
     @pytest.mark.parametrize(("_name", "factory"), _SYNC_REQUEST_SINGLE_USE)
     def test_contracts_present_and_consistent(self, _name: str, factory: _SyncReqFactory) -> None:
         body = factory()
@@ -154,13 +156,14 @@ class TestSyncRequestSingleUse:
         assert body.content_length() == 7
         assert body.media_type() is None
 
+    @pytest.mark.req("BODY-35", "HTTP-36")
     def test_content_length_unknown_is_minus_one(self) -> None:
         stream = RequestBody.from_stream(BytesIO(_PAYLOAD))
         iters = RequestBody.from_iter([_PAYLOAD])
         assert stream.content_length() == -1
         assert iters.content_length() == -1
 
-    @pytest.mark.req("BODY-21")
+    @pytest.mark.req("BODY-21", "BODY-3")
     @pytest.mark.parametrize(("_name", "factory"), _SYNC_REQUEST_SINGLE_USE)
     def test_to_replayable_before_consumption_round_trips(
         self, _name: str, factory: _SyncReqFactory
@@ -171,6 +174,7 @@ class TestSyncRequestSingleUse:
         # Identical bytes on replay.
         assert _drain(replayable) == _PAYLOAD
 
+    @pytest.mark.req("BODY-3", "HTTP-37")
     @pytest.mark.parametrize(("_name", "factory"), _SYNC_REQUEST_SINGLE_USE)
     def test_to_replayable_after_consumption_errors(
         self, _name: str, factory: _SyncReqFactory
@@ -180,6 +184,7 @@ class TestSyncRequestSingleUse:
         with pytest.raises(RuntimeError, match="already called"):
             body.to_replayable()
 
+    @pytest.mark.req("BODY-7")
     def test_n_threads_racing_first_consume_one_winner(self) -> None:
         n = 32
         body = RequestBody.from_stream(BytesIO(_PAYLOAD))
@@ -293,6 +298,7 @@ class TestFileRequestBodyOwnership:
         path.write_bytes(b"second-content")
         assert _drain(body) == b"second-content"
 
+    @pytest.mark.req("BODY-8")
     def test_holds_no_descriptor_open_across_reads(self, tmp_path: Path) -> None:
         # After a full read the file can be deleted and recreated — proof that
         # no caller-supplied descriptor is held open across reads.

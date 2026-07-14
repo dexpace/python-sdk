@@ -205,6 +205,7 @@ class _AsyncDeadlineClient(AsyncHttpClient):
 
 
 class TestIntermediateResponseClosed:
+    @pytest.mark.req("RETRY-35", "RETRY-36")
     def test_sync_status_retry_closes_intermediate_response(self) -> None:
         client = _BodyTrackingClient([Status.SERVICE_UNAVAILABLE, Status.OK])
         retry = RetryPolicy(clock=FakeClock())
@@ -221,6 +222,7 @@ class TestIntermediateResponseClosed:
         response.close()
         assert client.bodies[1].closed is True
 
+    @pytest.mark.req("RETRY-33")
     async def test_async_status_retry_closes_intermediate_response(self) -> None:
         client = _AsyncBodyTrackingClient([Status.SERVICE_UNAVAILABLE, Status.OK])
         retry = AsyncRetryPolicy(clock=_AsyncFakeClock())
@@ -243,6 +245,7 @@ class TestStatusPathDeadlinePropagates:
     very first attempt, matching the async twin.
     """
 
+    @pytest.mark.req("RETRY-20", "RETRY-27")
     def test_sync_propagates_after_single_attempt(self) -> None:
         # ``backoff_factor=0`` makes the buggy swallow-and-retry path sleep zero
         # seconds (which skips the deadline check), so the regression would keep
@@ -258,6 +261,7 @@ class TestStatusPathDeadlinePropagates:
             p.run(_get(), DispatchContext(_instr("0" * 16 + "3")))
         assert client.attempts == 1
 
+    @pytest.mark.req("RETRY-27", "RETRY-33")
     async def test_async_propagates_after_single_attempt(self) -> None:
         client = _AsyncDeadlineClient(retry_after="100")
         retry = AsyncRetryPolicy(timeout=1.0, backoff_factor=0.0, clock=_AsyncFakeClock())
@@ -291,6 +295,7 @@ class TestStatusPathDeadlinePropagates:
         assert sync_client.attempts == async_client.attempts == 1
 
 
+@pytest.mark.req("RETRY-35")
 def test_returned_response_not_closed_on_no_retry() -> None:
     """A non-retryable response is handed back open; the close fix is scoped
     to the status-retry path only."""

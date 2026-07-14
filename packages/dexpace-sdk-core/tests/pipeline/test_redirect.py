@@ -122,7 +122,7 @@ def _run(client: _ScriptedClient, policy: RedirectPolicy, request: Request) -> R
 
 
 class TestStatusCodeMatrix:
-    @pytest.mark.req("REDIRECT-03")
+    @pytest.mark.req("REDIR-1", "REDIR-3")
     def test_301_follows_get(self) -> None:
         client = _ScriptedClient(
             [_Hop(Status.MOVED_PERMANENTLY, "https://example.com/new"), _Hop(Status.OK)],
@@ -134,6 +134,7 @@ class TestStatusCodeMatrix:
         assert client.requests[1].method is Method.GET
         assert str(client.requests[1].url) == "https://example.com/new"
 
+    @pytest.mark.req("REDIR-3")
     def test_301_does_not_follow_post_when_not_allowed(self) -> None:
         client = _ScriptedClient(
             [_Hop(Status.MOVED_PERMANENTLY, "https://example.com/new")],
@@ -143,6 +144,7 @@ class TestStatusCodeMatrix:
         assert response.status is Status.MOVED_PERMANENTLY
         assert len(client.requests) == 1
 
+    @pytest.mark.req("REDIR-3")
     def test_302_follows_with_original_method(self) -> None:
         client = _ScriptedClient(
             [_Hop(Status.FOUND, "https://example.com/new"), _Hop(Status.OK)],
@@ -178,6 +180,7 @@ class TestStatusCodeMatrix:
         assert response.status is Status.SEE_OTHER
         assert len(client.requests) == 1
 
+    @pytest.mark.req("REDIR-4")
     def test_307_follows_with_original_method_and_body(self) -> None:
         body = RequestBody.from_bytes(b"payload")
         request = _request(method=Method.POST, body=body).with_header(
@@ -197,6 +200,7 @@ class TestStatusCodeMatrix:
         assert reissued.body is not None
         assert b"".join(reissued.body.iter_bytes()) == b"payload"
 
+    @pytest.mark.req("BODY-4", "REDIR-6")
     def test_307_with_non_replayable_body_raises(self) -> None:
         body = RequestBody.from_iter(iter([b"chunk"]))
         request = _request(method=Method.POST, body=body)
@@ -233,6 +237,7 @@ class TestStatusCodeMatrix:
             _run(client, policy, request)
         assert tracking_body.closed
 
+    @pytest.mark.req("REDIR-4")
     def test_308_follows_with_original_method_and_body(self) -> None:
         body = RequestBody.from_bytes(b"payload")
         request = _request(method=Method.PUT, body=body)
@@ -249,6 +254,7 @@ class TestStatusCodeMatrix:
         assert reissued.body is not None
         assert b"".join(reissued.body.iter_bytes()) == b"payload"
 
+    @pytest.mark.req("REDIR-1", "REDIR-21")
     def test_non_3xx_pass_through(self) -> None:
         client = _ScriptedClient([_Hop(Status.OK)])
         policy = RedirectPolicy()
@@ -256,6 +262,7 @@ class TestStatusCodeMatrix:
         assert response.status is Status.OK
         assert len(client.requests) == 1
 
+    @pytest.mark.req("REDIR-1", "REDIR-2")
     def test_other_3xx_not_followed(self) -> None:
         # 304 NOT MODIFIED is 3xx but not in the redirect matrix.
         client = _ScriptedClient([_Hop(Status.NOT_MODIFIED)])
@@ -266,7 +273,7 @@ class TestStatusCodeMatrix:
 
 
 class TestHopAndLoopGuards:
-    @pytest.mark.req("REDIRECT-03")
+    @pytest.mark.req("REDIR-17")
     def test_max_hops_respected(self) -> None:
         # Three redirects, but max_hops=2 — second redirect response is final.
         hops = [
@@ -282,6 +289,7 @@ class TestHopAndLoopGuards:
         assert len(client.requests) == 3
         assert response.status is Status.MOVED_PERMANENTLY
 
+    @pytest.mark.req("REDIR-16")
     def test_loop_detection_returns_current_response(self) -> None:
         # /a -> /b -> /a (already visited; stop without raising)
         hops = [
@@ -379,6 +387,7 @@ class TestSecurity:
         _run(client, policy, _request(auth="Bearer secret"))
         assert client.requests[1].headers.get("Authorization") == "Bearer secret"
 
+    @pytest.mark.req("REDIR-12")
     def test_userinfo_in_location_dropped(self) -> None:
         client = _ScriptedClient(
             [
@@ -393,6 +402,7 @@ class TestSecurity:
         assert reissued.url.host == "example.com"
         assert reissued.url.path == "/new"
 
+    @pytest.mark.req("REDIR-14")
     def test_relative_location_resolved(self) -> None:
         client = _ScriptedClient(
             [_Hop(Status.MOVED_PERMANENTLY, "/elsewhere"), _Hop(Status.OK)],
@@ -408,6 +418,7 @@ class TestStageDeclaration:
 
 
 class TestMissingLocation:
+    @pytest.mark.req("REDIR-19")
     def test_redirect_without_location_returns_response(self) -> None:
         # 301 with no Location header — nothing to redirect to.
         client = _ScriptedClient([_Hop(Status.MOVED_PERMANENTLY)])
@@ -418,6 +429,7 @@ class TestMissingLocation:
 
 
 class TestMalformedLocation:
+    @pytest.mark.req("REDIR-18")
     def test_malformed_location_returns_response_open_not_closed(self) -> None:
         # A Location that cannot be resolved to an absolute URL must not raise
         # (leaking the connection). The policy returns the current 3xx response

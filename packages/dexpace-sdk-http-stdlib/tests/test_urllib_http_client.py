@@ -160,6 +160,7 @@ def redirect_server() -> Iterator[str]:
         server.server_close()
 
 
+@pytest.mark.req("TRANSPORT-1")
 def test_redirect_is_not_followed(redirect_server: str) -> None:
     # A 302 must surface to the pipeline as a 302 Response, not be
     # transparently followed by the transport (which would also leak the
@@ -430,6 +431,7 @@ def test_content_type_derived_from_body_media_type(capturing_server: str) -> Non
     assert _sent_header("Content-Type") == "application/json"
 
 
+@pytest.mark.req("TRANSPORT-10")
 def test_explicit_content_type_is_authoritative(capturing_server: str) -> None:
     body = RequestBody.from_bytes(b"{}", MediaType.of("application", "json"))
     request = Request(
@@ -443,6 +445,7 @@ def test_explicit_content_type_is_authoritative(capturing_server: str) -> None:
     assert _sent_header("Content-Type") == "text/plain"
 
 
+@pytest.mark.req("TRANSPORT-11")
 def test_stale_content_length_header_is_recomputed(capturing_server: str) -> None:
     # A caller-supplied Content-Length that disagrees with the real body must
     # never reach the wire: trusting it would make the peer wait for bytes
@@ -530,6 +533,7 @@ class _MalformedNameHandler(socketserver.StreamRequestHandler):
         )
 
 
+@pytest.mark.req("TRANSPORT-14")
 def test_malformed_response_header_dropped_others_preserved() -> None:
     server = _TestServer(("127.0.0.1", 0), _MalformedNameHandler)
     port = int(server.server_address[1])

@@ -60,6 +60,7 @@ class _ExampleConflictError(_ExampleServiceError):
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("BODY-31", "XCUT-8")
 @pytest.mark.parametrize(
     "status",
     [Status.OK, Status.CREATED, Status.NO_CONTENT, Status.NOT_MODIFIED, Status.FOUND],
@@ -105,6 +106,7 @@ def test_specific_status_wins_over_default_in_for_status() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("BODY-31", "XCUT-8")
 @pytest.mark.parametrize(
     "status",
     [200, 201, 204, 100, 301, 302, 304, 399],
@@ -136,6 +138,7 @@ def test_for_status_accepts_plain_int_and_status_enum() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("XCUT-15")
 def test_map_defensively_copies_source_mapping() -> None:
     src: dict[int, type[_ExampleServiceError]] = {404: _ExampleNotFoundError}
     m = StatusErrorMap(by_status=src, default=_ExampleServiceError)
@@ -161,6 +164,7 @@ def test_map_instance_is_frozen() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("BODY-30")
 def test_raise_for_carries_bounded_replayable_body() -> None:
     payload = b"x" * (ERROR_BODY_MAX_BYTES + 4096)
     m = StatusErrorMap(by_status={Status.BAD_REQUEST: _ExampleNotFoundError})
@@ -173,6 +177,7 @@ def test_raise_for_carries_bounded_replayable_body() -> None:
     assert err.read_body() == first  # replayable: a second read matches
 
 
+@pytest.mark.req("BODY-30")
 def test_raise_for_buffers_body_eagerly_before_raising() -> None:
     # A single-use stream body is drained by raise_for's eager buffering; the
     # caught error still replays the captured copy even though the underlying

@@ -31,6 +31,7 @@ def _response(req: Request, *, headers: Headers | None = None) -> Response:
 
 
 class TestCursorStrategy:
+    @pytest.mark.req("PAGE-16")
     def test_extracts_items_and_builds_next_with_cursor_param(self) -> None:
         strategy: CursorStrategy[int] = CursorStrategy(
             items_field="data",
@@ -56,6 +57,7 @@ class TestCursorStrategy:
         assert page.next_request is not None
         assert page.next_request.url.query.get("page_token") == "tok"
 
+    @pytest.mark.req("PAGE-4")
     def test_absent_cursor_ends_sequence(self) -> None:
         strategy: CursorStrategy[int] = CursorStrategy(items_field="data")
         req = _request()
@@ -63,6 +65,7 @@ class TestCursorStrategy:
         assert page.next_request is None
         assert not page.has_next
 
+    @pytest.mark.req("PAGE-16")
     def test_empty_cursor_string_ends_sequence(self) -> None:
         strategy: CursorStrategy[int] = CursorStrategy(items_field="data")
         req = _request()
@@ -95,6 +98,7 @@ class TestCursorStrategy:
         assert page.next_request is not None
         assert page.next_request.url.query.get("cursor") == "0"
 
+    @pytest.mark.req("PAGE-16", "PAGE-4")
     def test_null_cursor_ends_sequence(self) -> None:
         strategy: CursorStrategy[int] = CursorStrategy(items_field="data")
         req = _request()
@@ -109,6 +113,7 @@ class TestCursorStrategy:
         page = strategy.parse(_response(req), {"data": [1], "next_cursor": True}, req)
         assert page.next_request is None
 
+    @pytest.mark.req("PAGE-5")
     def test_end_decision_reads_only_the_decoded_payload(self) -> None:
         # The null-vs-empty-cursor termination is decided from the single
         # pre-decoded payload the paginator already read; the strategy never
@@ -127,6 +132,7 @@ class TestCursorStrategy:
         page = strategy.parse(_BodyExplodes(), {"data": [1], "next_cursor": None}, req)
         assert page.next_request is None
 
+    @pytest.mark.req("PAGE-24")
     def test_next_request_preserves_untouched_encoded_param(self) -> None:
         # An unrelated, pre-encoded query parameter on the template request
         # survives verbatim into the next request when the cursor is spliced.
@@ -138,6 +144,7 @@ class TestCursorStrategy:
 
 
 class TestPageNumberStrategy:
+    @pytest.mark.req("PAGE-17")
     def test_increments_page_param_when_full_page(self) -> None:
         strategy: PageNumberStrategy[int] = PageNumberStrategy(
             items_field="data",
@@ -157,6 +164,7 @@ class TestPageNumberStrategy:
         page = strategy.parse(_response(req), {"data": [1]}, req)
         assert page.next_request is None
 
+    @pytest.mark.req("PAGE-17", "PAGE-4")
     def test_empty_page_ends_sequence(self) -> None:
         strategy: PageNumberStrategy[int] = PageNumberStrategy(items_field="data")
         req = _request("https://api.example.com/items?page=4")
@@ -176,6 +184,7 @@ class TestPageNumberStrategy:
         assert more.next_request is not None
         assert more.next_request.url.query.get("page") == "3"
 
+    @pytest.mark.req("PAGE-17")
     def test_defaults_to_start_page_when_param_absent(self) -> None:
         strategy: PageNumberStrategy[int] = PageNumberStrategy(
             items_field="data",
@@ -187,6 +196,7 @@ class TestPageNumberStrategy:
         assert page.next_request is not None
         assert page.next_request.url.query.get("page") == "2"
 
+    @pytest.mark.req("PAGE-17")
     def test_garbage_page_value_falls_back_to_start_page(self) -> None:
         # An unparseable ``page`` value must not raise; it falls back to the
         # documented start page so the next index is derived deterministically.
@@ -202,7 +212,7 @@ class TestPageNumberStrategy:
 
 
 class TestLinkHeaderStrategy:
-    @pytest.mark.req("PAGINATION-06")
+    @pytest.mark.req("PAGE-18")
     def test_follows_rel_next_target(self) -> None:
         strategy: LinkHeaderStrategy[int] = LinkHeaderStrategy(items_field="data")
         headers = Headers(
@@ -229,6 +239,7 @@ class TestLinkHeaderStrategy:
         assert page.prev_request is not None
         assert str(page.prev_request.url) == "https://api.example.com/items?page=1"
 
+    @pytest.mark.req("PAGE-20")
     def test_no_link_header_ends_sequence(self) -> None:
         strategy: LinkHeaderStrategy[int] = LinkHeaderStrategy(items_field="data")
         req = _request()
@@ -236,6 +247,7 @@ class TestLinkHeaderStrategy:
         assert page.next_request is None
         assert page.prev_request is None
 
+    @pytest.mark.req("PAGE-36")
     def test_next_request_preserves_method_and_headers(self) -> None:
         strategy: LinkHeaderStrategy[int] = LinkHeaderStrategy(items_field="data")
         headers = Headers([("Link", '<https://api.example.com/p2>; rel="next"')])
@@ -249,6 +261,7 @@ class TestLinkHeaderStrategy:
         assert page.next_request.method is Method.GET
         assert page.next_request.headers.get("authorization") == "Bearer t"
 
+    @pytest.mark.req("PAGE-19")
     def test_relative_target_is_resolved_against_request_url(self) -> None:
         # RFC 5988 permits a relative target; it must be resolved against the
         # request URL rather than raising on a missing scheme.
@@ -259,6 +272,7 @@ class TestLinkHeaderStrategy:
         assert page.next_request is not None
         assert str(page.next_request.url) == "https://api.example.com/items?page=2"
 
+    @pytest.mark.req("PAGE-20")
     def test_next_across_multiple_link_header_lines(self) -> None:
         # RFC 9110 permits the Link header to be split across separate header
         # lines; reading only the first line drops the rel="next" on the
@@ -293,6 +307,7 @@ class TestLinkHeaderStrategy:
         assert query.get("fields") == "a,b"
         assert query.get("page") == "2"
 
+    @pytest.mark.req("PAGE-19")
     def test_query_only_target_resolves_against_base_path(self) -> None:
         # A query-only reference (RFC 3986 §5.4) replaces only the query; the
         # base request's path is preserved rather than dropped.
@@ -317,6 +332,7 @@ class TestLinkHeaderStrategy:
         assert str(page.next_request.url) == "https://api.example.com/items?page=2"
         assert str(page.prev_request.url) == "https://api.example.com/items?page=2"
 
+    @pytest.mark.req("PAGE-19")
     def test_unparseable_target_ends_sequence_without_error(self) -> None:
         # A malformed ``rel="next"`` target (here one that resolves to a
         # scheme-only, host-less URI) must terminate pagination — never raise

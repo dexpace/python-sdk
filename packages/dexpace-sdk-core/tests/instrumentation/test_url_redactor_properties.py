@@ -17,6 +17,7 @@ profile registered in ``tests/conftest.py``.
 
 from __future__ import annotations
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -45,6 +46,7 @@ def test_redact_never_raises_on_arbitrary_strings(raw: str) -> None:
     assert isinstance(result, str)
 
 
+@pytest.mark.req("OBS-15")
 @given(
     raw=_any_input,
     redact_path=st.booleans(),

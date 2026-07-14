@@ -203,6 +203,7 @@ async def test_by_page_does_not_fetch_until_iterated() -> None:
     assert source.calls == []
 
 
+@pytest.mark.req("PAGE-29")
 async def test_exactly_one_exchange_per_page_and_no_overrun() -> None:
     source = _Source(_three_pages())
     paginator: AsyncPaginator[int] = AsyncPaginator(source, _strategy(), _first_request())
@@ -210,6 +211,7 @@ async def test_exactly_one_exchange_per_page_and_no_overrun() -> None:
     assert len(source.calls) == 3
 
 
+@pytest.mark.req("PAGE-8")
 async def test_each_aiter_restarts_pagination_from_the_start() -> None:
     source = _Source(_three_pages())
     paginator: AsyncPaginator[int] = AsyncPaginator(source, _strategy(), _first_request())
@@ -222,6 +224,7 @@ async def test_each_aiter_restarts_pagination_from_the_start() -> None:
 # --- close-once ledger over every abandon path ----------------------------
 
 
+@pytest.mark.req("PAGE-27")
 async def test_flat_iteration_closes_each_response_exactly_once() -> None:
     source = _Source(_three_pages())
     paginator: AsyncPaginator[int] = AsyncPaginator(source, _strategy(), _first_request())
@@ -293,6 +296,7 @@ async def test_by_page_is_single_use() -> None:
 # --- error / __context__ chaining -----------------------------------------
 
 
+@pytest.mark.req("PAGE-27", "PAGE-28", "PAGE-32")
 async def test_parse_failure_closes_inline_with_parse_error_primary() -> None:
     parse_error = RuntimeError("parse boom")
     close_error = OSError("close boom")
@@ -315,6 +319,7 @@ async def test_parse_failure_closes_inline_with_parse_error_primary() -> None:
     assert body.closes == 1
 
 
+@pytest.mark.req("PAGE-15")
 async def test_held_page_close_error_wraps_the_original_failure() -> None:
     close_error = OSError("close boom")
     payload = json.dumps({"data": [1], "next_cursor": None}).encode()
@@ -335,6 +340,7 @@ async def test_held_page_close_error_wraps_the_original_failure() -> None:
     assert info.value.__context__ is original
 
 
+@pytest.mark.req("PAGE-32")
 async def test_successful_path_close_error_is_surfaced() -> None:
     close_error = OSError("close boom")
     payload = json.dumps({"data": [1], "next_cursor": None}).encode()
@@ -356,6 +362,7 @@ async def test_successful_path_close_error_is_surfaced() -> None:
 # --- eager (pre-await) transport throw ------------------------------------
 
 
+@pytest.mark.req("PAGE-28")
 async def test_eager_transport_throw_surfaces_original_cause() -> None:
     boom = RuntimeError("eager transport boom")
 
@@ -371,6 +378,7 @@ async def test_eager_transport_throw_surfaces_original_cause() -> None:
 # --- cancellation matrix ---------------------------------------------------
 
 
+@pytest.mark.req("PAGE-25", "PAGE-33")
 async def test_mid_fetch_cancel_propagates_natively() -> None:
     gate = asyncio.Event()
 
@@ -386,6 +394,7 @@ async def test_mid_fetch_cancel_propagates_natively() -> None:
         await task
 
 
+@pytest.mark.req("PAGE-26", "PAGE-27", "PAGE-33")
 async def test_mid_parse_cancel_drops_and_closes_staged_page() -> None:
     gate = asyncio.Event()
     body = _BlockingReadBody(gate)
@@ -403,6 +412,7 @@ async def test_mid_parse_cancel_drops_and_closes_staged_page() -> None:
     assert body.closes == 1
 
 
+@pytest.mark.req("PAGE-28")
 async def test_cancelled_error_is_never_converted() -> None:
     async def source(request: Request) -> AsyncResponse:
         raise asyncio.CancelledError
@@ -418,6 +428,7 @@ async def test_cancelled_error_is_never_converted() -> None:
 # --- trampoline over many synchronously-completing pages ------------------
 
 
+@pytest.mark.req("PAGE-29", "PAGE-31")
 async def test_trampoline_over_many_pages_has_no_stack_growth() -> None:
     page_count = 8000
     depths: list[int] = []

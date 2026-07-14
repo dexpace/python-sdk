@@ -57,12 +57,14 @@ def test_noop_span_is_not_recording() -> None:
     assert NOOP_SPAN.is_recording is False
 
 
+@pytest.mark.req("OBS-21")
 def test_noop_span_end_is_idempotent() -> None:
     NOOP_SPAN.end()
     NOOP_SPAN.end()
     NOOP_SPAN.end(error=RuntimeError("boom"))
 
 
+@pytest.mark.req("OBS-21")
 def test_noop_span_mutators_return_self() -> None:
     assert NOOP_SPAN.set_attribute("k", "v") is NOOP_SPAN
     assert NOOP_SPAN.set_error("ValueError") is NOOP_SPAN
@@ -73,6 +75,7 @@ def test_noop_span_context_is_the_noop_context() -> None:
     assert NOOP_SPAN.context.is_valid is False
 
 
+@pytest.mark.req("OBS-21")
 def test_recording_span_end_records_error_once() -> None:
     span = _FakeSpan()
     err = RuntimeError("boom")
@@ -102,6 +105,7 @@ def test_make_current_activates_and_restores_prior_span() -> None:
     assert get_current_span() is NOOP_SPAN
 
 
+@pytest.mark.req("OBS-22")
 def test_make_current_restores_prior_span_on_throw() -> None:
     outer = _FakeSpan()
     inner = _FakeSpan()
@@ -116,6 +120,7 @@ def test_make_current_restores_prior_span_on_throw() -> None:
     assert get_current_span() is NOOP_SPAN
 
 
+@pytest.mark.req("OBS-22")
 def test_make_current_scope_close_is_idempotent() -> None:
     span = _FakeSpan()
     scope = span.make_current()
@@ -135,6 +140,7 @@ def test_make_current_returns_a_tracing_scope() -> None:
 # ----- No-op allocation / identity (OBS-25) --------------------------------
 
 
+@pytest.mark.req("OBS-25")
 def test_noop_span_make_current_reuses_the_shared_scope() -> None:
     first = NOOP_SPAN.make_current()
     second = NOOP_SPAN.make_current()

@@ -297,6 +297,7 @@ async def test_execute_after_aclose_raises() -> None:
         await client.execute(Request(method=Method.GET, url=Url.parse("http://example.test/")))
 
 
+@pytest.mark.req("ASYNC-15", "TRANSPORT-16")
 async def test_aclose_is_idempotent() -> None:
     """Calling aclose() twice is a no-op and stays in the closed state."""
     client = AiohttpHttpClient(timeout=5.0)

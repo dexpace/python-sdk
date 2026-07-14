@@ -154,12 +154,14 @@ def _async_response(
 
 
 class TestProduce:
+    @pytest.mark.req("RECOV-2")
     def test_success_wraps_response(self) -> None:
         response = _response()
         outcome = produce(lambda: response)
         assert isinstance(outcome, Success)
         assert outcome.value is response
 
+    @pytest.mark.req("RECOV-1", "RECOV-2")
     def test_exception_folds_to_failure_preserving_identity(self) -> None:
         boom = ValueError("boom")
 
@@ -177,6 +179,7 @@ class TestProduce:
         with pytest.raises(KeyboardInterrupt):
             produce(source)
 
+    @pytest.mark.req("RECOV-11")
     def test_cancelled_error_propagates_unconverted(self) -> None:
         def source() -> Response:
             raise asyncio.CancelledError
@@ -191,12 +194,14 @@ class TestProduce:
 
 
 class TestMapSuccess:
+    @pytest.mark.req("RECOV-4")
     def test_runs_on_success(self) -> None:
         stamped = _response(Status.ACCEPTED)
         outcome = map_success(Success(_response()), lambda _r: stamped)
         assert isinstance(outcome, Success)
         assert outcome.value is stamped
 
+    @pytest.mark.req("RECOV-4")
     def test_skips_a_failure(self) -> None:
         failure: Failure = Failure(ValueError("x"))
         called = False
@@ -209,6 +214,7 @@ class TestMapSuccess:
         assert map_success(failure, step) is failure
         assert called is False
 
+    @pytest.mark.req("RECOV-7")
     def test_exception_closes_held_response_and_folds(self) -> None:
         body = _Body()
         held = _response(body=body)
@@ -233,6 +239,7 @@ class TestMapSuccess:
             map_success(Success(held), step)
         assert body.close_count == 1  # held response closed FIRST
 
+    @pytest.mark.req("RECOV-12")
     def test_close_failure_during_error_handling_is_chained(self) -> None:
         body = _Body(fail_close=True)
         held = _response(body=body)
@@ -254,6 +261,7 @@ class TestMapSuccess:
 
 
 class TestRecover:
+    @pytest.mark.req("RECOV-5", "RECOV-9")
     def test_runs_on_both_outcomes(self) -> None:
         seen: list[object] = []
 
@@ -267,6 +275,7 @@ class TestRecover:
         assert recover(failure, cleanup) is failure
         assert seen == [success, failure]
 
+    @pytest.mark.req("RECOV-8", "RECOV-9")
     def test_exception_on_success_closes_held_and_folds(self) -> None:
         body = _Body()
         held = Success(_response(body=body))
@@ -287,10 +296,12 @@ class TestRecover:
 
 
 class TestUnwrap:
+    @pytest.mark.req("RECOV-10")
     def test_success_returns_response(self) -> None:
         response = _response()
         assert unwrap(Success(response)) is response
 
+    @pytest.mark.req("PIPE-31", "RECOV-1", "RECOV-10")
     def test_failure_reraises_original_instance(self) -> None:
         original = ValueError("the one true error")
         outcome = produce(_raise(original))
@@ -323,6 +334,7 @@ async def _async_error_body(error: HttpResponseError) -> bytes:
 
 
 class TestFromStatus:
+    @pytest.mark.req("PIPE-37", "RECOV-13", "RECOV-15")
     def test_success_status_passes_through_open(self) -> None:
         body = _Body(b"ok")
         response = _response(Status.OK, body)
@@ -331,10 +343,12 @@ class TestFromStatus:
         assert outcome.value is response
         assert body.close_count == 0  # success is handed back open
 
+    @pytest.mark.req("RECOV-15")
     def test_redirect_status_is_not_an_error(self) -> None:
         response = _response(Status.MOVED_PERMANENTLY, _Body())
         assert isinstance(from_status(response), Success)
 
+    @pytest.mark.req("RECOV-13", "RECOV-15")
     def test_client_error_folds_and_closes(self) -> None:
         body = _Body(b'{"detail": "nope"}')
         response = _response(Status.NOT_FOUND, body)
@@ -350,6 +364,7 @@ class TestFromStatus:
         assert isinstance(outcome, Failure)
         assert isinstance(outcome.error, HttpResponseError)
 
+    @pytest.mark.req("RECOV-16")
     def test_error_body_is_buffered_for_postmortem(self) -> None:
         response = _response(Status.BAD_REQUEST, _Body(b"the error detail"))
         outcome = from_status(response)
@@ -361,6 +376,7 @@ class TestFromStatus:
         assert isinstance(buffered.body, LoggableResponseBody)
         assert error.body_snapshot() == b"the error detail"
 
+    @pytest.mark.req("RECOV-16")
     def test_error_body_is_capped(self) -> None:
         response = _response(Status.BAD_REQUEST, _Body(b"x" * 50))
         outcome = from_status(response, max_body_bytes=8)
@@ -401,6 +417,7 @@ class TestAsyncRecovery:
         assert isinstance(outcome, Success)
         assert outcome.value is response
 
+    @pytest.mark.req("PIPE-29", "PIPE-30")
     async def test_aproduce_exception_folds(self) -> None:
         boom = ValueError("boom")
 
@@ -411,6 +428,7 @@ class TestAsyncRecovery:
         assert isinstance(outcome, Failure)
         assert outcome.error is boom
 
+    @pytest.mark.req("PIPE-30", "RECOV-11")
     async def test_amap_cancelled_closes_held_then_propagates(self) -> None:
         body = _AsyncBody()
         held = _async_response(body=body)
@@ -422,6 +440,7 @@ class TestAsyncRecovery:
             await amap_success(Success(held), step)
         assert body.close_count == 1  # held response closed FIRST, never folded
 
+    @pytest.mark.req("PIPE-31")
     async def test_amap_exception_closes_and_folds(self) -> None:
         body = _AsyncBody()
         held = _async_response(body=body)
@@ -435,6 +454,7 @@ class TestAsyncRecovery:
         assert outcome.error is boom
         assert body.close_count == 1
 
+    @pytest.mark.req("PIPE-31")
     async def test_amap_close_failure_chained(self) -> None:
         body = _AsyncBody(fail_close=True)
         held = _async_response(body=body)
@@ -500,6 +520,7 @@ class _Chain(_SansIOResponseRunner):
 
 
 class TestResponseRunnerCloseChaining:
+    @pytest.mark.req("RECOV-12")
     def test_sync_step_error_wins_over_close_failure(self) -> None:
         body = _Body(fail_close=True)
         response = _response(body=body)

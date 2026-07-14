@@ -79,6 +79,7 @@ def _execute_error(harness: SyncTransportHarness, request: Request) -> BaseExcep
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SEAM-11")
 def test_success_yields_a_response_never_none(sync_harness: SyncTransportHarness) -> None:
     sync_harness.expect_response(200, body=b"ok")
     client = sync_harness.new_client()
@@ -90,6 +91,7 @@ def test_success_yields_a_response_never_none(sync_harness: SyncTransportHarness
         assert resp.body.bytes() == b"ok"
 
 
+@pytest.mark.req("TRANSPORT-1")
 def test_adapter_does_not_follow_redirects(sync_harness: SyncTransportHarness) -> None:
     # A 3xx surfaces as an ordinary response; the SDK redirect policy — not the
     # adapter — owns following it. Exactly one exchange reaches the transport.
@@ -101,6 +103,7 @@ def test_adapter_does_not_follow_redirects(sync_harness: SyncTransportHarness) -
     assert sync_harness.attempt_count() == 1
 
 
+@pytest.mark.req("TRANSPORT-2")
 def test_adapter_does_not_retry_on_failure(sync_harness: SyncTransportHarness) -> None:
     # A native failure is mapped and raised once; retry is a pipeline policy,
     # never adapter magic. Only one exchange is attempted.
@@ -114,6 +117,7 @@ def test_adapter_does_not_retry_on_failure(sync_harness: SyncTransportHarness) -
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("TRANSPORT-20")
 def test_connection_failure_maps_to_retryable_network_error(
     sync_harness: SyncTransportHarness,
 ) -> None:
@@ -124,6 +128,7 @@ def test_connection_failure_maps_to_retryable_network_error(
     assert err.retryable is True
 
 
+@pytest.mark.req("TRANSPORT-20")
 def test_connect_timeout_maps_to_retryable_timeout_type(
     sync_harness: SyncTransportHarness,
 ) -> None:
@@ -144,6 +149,7 @@ def test_read_timeout_maps_to_response_timeout_type(sync_harness: SyncTransportH
     assert _classify(err) == "timeout"
 
 
+@pytest.mark.req("TRANSPORT-3")
 def test_cancellation_maps_to_terminal_cancelled(sync_harness: SyncTransportHarness) -> None:
     if not sync_harness.supports_cancellation:
         pytest.skip("harness cannot program a native cooperative-cancellation outcome")
@@ -157,6 +163,7 @@ def test_cancellation_maps_to_terminal_cancelled(sync_harness: SyncTransportHarn
     assert _classify(err) == "cancelled"
 
 
+@pytest.mark.req("TRANSPORT-3")
 def test_timeout_is_discriminated_before_cancellation(sync_harness: SyncTransportHarness) -> None:
     # Both a timeout and a cancellation are OSErrors, yet the type-ordered
     # classifier keeps them apart: timeout -> retryable, cancellation -> terminal.
@@ -182,6 +189,7 @@ def test_protocol_error_maps_to_request_error(sync_harness: SyncTransportHarness
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("TRANSPORT-10")
 def test_explicit_content_type_is_authoritative(sync_harness: SyncTransportHarness) -> None:
     sync_harness.expect_response(200)
     body = RequestBody.from_bytes(b"{}", MediaType.of("application", "json"))
@@ -190,6 +198,7 @@ def test_explicit_content_type_is_authoritative(sync_harness: SyncTransportHarne
     assert sync_harness.sent_requests()[0].content_type == "text/plain"
 
 
+@pytest.mark.req("TRANSPORT-10")
 def test_body_derived_content_type_used_when_absent(sync_harness: SyncTransportHarness) -> None:
     sync_harness.expect_response(200)
     body = RequestBody.from_bytes(b"{}", MediaType.of("application", "json"))
@@ -197,6 +206,7 @@ def test_body_derived_content_type_used_when_absent(sync_harness: SyncTransportH
     assert sync_harness.sent_requests()[0].content_type == "application/json"
 
 
+@pytest.mark.req("TRANSPORT-11")
 def test_content_length_is_computed_by_adapter(sync_harness: SyncTransportHarness) -> None:
     # A caller-set Content-Length that disagrees with the real body is not
     # trusted: the adapter recomputes it from the bytes it actually writes.
@@ -231,6 +241,7 @@ def test_unknown_length_body_is_chunked_without_content_length(
     assert sent.transfer_encoding == "chunked"
 
 
+@pytest.mark.req("TRANSPORT-26")
 def test_empty_body_bearing_method_sends_zero_length(sync_harness: SyncTransportHarness) -> None:
     sync_harness.expect_response(200)
     request = Request(method=Method.POST, url=Url.parse("http://service.test/x"))
@@ -238,6 +249,7 @@ def test_empty_body_bearing_method_sends_zero_length(sync_harness: SyncTransport
     assert sync_harness.sent_requests()[0].content_length == "0"
 
 
+@pytest.mark.req("TRANSPORT-26")
 def test_bodyless_get_has_no_content_length(sync_harness: SyncTransportHarness) -> None:
     sync_harness.expect_response(200)
     sync_harness.new_client().execute(_get()).close()
@@ -249,6 +261,7 @@ def test_bodyless_get_has_no_content_length(sync_harness: SyncTransportHarness) 
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("TRANSPORT-12", "TRANSPORT-13")
 def test_native_rejected_header_dropped_counted_and_logged(
     sync_harness: SyncTransportHarness,
     caplog: pytest.LogCaptureFixture,
@@ -269,6 +282,7 @@ def test_native_rejected_header_dropped_counted_and_logged(
     assert any("native-rejected" in message for message in caplog.messages)
 
 
+@pytest.mark.req("TRANSPORT-13")
 def test_native_rejected_drop_log_is_bounded(sync_harness: SyncTransportHarness) -> None:
     if not sync_harness.supports_native_header_rejection:
         pytest.skip("harness cannot inject a native-rejected header")
@@ -283,6 +297,7 @@ def test_native_rejected_drop_log_is_bounded(sync_harness: SyncTransportHarness)
     assert drop_log.distinct <= drop_log.capacity
 
 
+@pytest.mark.req("TRANSPORT-14")
 def test_malformed_inbound_header_dropped_obs_text_preserved(
     sync_harness: SyncTransportHarness,
 ) -> None:
@@ -297,6 +312,7 @@ def test_malformed_inbound_header_dropped_obs_text_preserved(
         assert response.headers.get("x-obs") == "caf\xe9"
 
 
+@pytest.mark.req("TRANSPORT-27")
 def test_malformed_inbound_content_length_downgraded(sync_harness: SyncTransportHarness) -> None:
     sync_harness.expect_response(200, headers=[("Content-Length", "not-a-number")], body=b"data")
     with sync_harness.new_client().execute(_get()) as response:
@@ -305,6 +321,7 @@ def test_malformed_inbound_content_length_downgraded(sync_harness: SyncTransport
         assert response.body.bytes() == b"data"
 
 
+@pytest.mark.req("TRANSPORT-27")
 def test_malformed_inbound_content_type_downgraded(sync_harness: SyncTransportHarness) -> None:
     sync_harness.expect_response(200, headers=[("Content-Type", "///bad")], body=b"data")
     with sync_harness.new_client().execute(_get()) as response:
@@ -317,6 +334,7 @@ def test_malformed_inbound_content_type_downgraded(sync_harness: SyncTransportHa
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("TRANSPORT-17")
 def test_single_use_body_written_exactly_once(sync_harness: SyncTransportHarness) -> None:
     sync_harness.expect_response(200)
     body = RequestBody.from_iter(iter([b"chunk-1;", b"chunk-2"]))
@@ -327,6 +345,7 @@ def test_single_use_body_written_exactly_once(sync_harness: SyncTransportHarness
         list(body.iter_bytes())
 
 
+@pytest.mark.req("TRANSPORT-17", "TRANSPORT-18")
 def test_replayable_body_replays_byte_identical(sync_harness: SyncTransportHarness) -> None:
     sync_harness.expect_response(200)
     sync_harness.expect_response(200)
@@ -338,6 +357,7 @@ def test_replayable_body_replays_byte_identical(sync_harness: SyncTransportHarne
     assert sent[0].body == sent[1].body == b"payload-bytes"
 
 
+@pytest.mark.req("TRANSPORT-28")
 def test_file_backed_body_is_replayable(sync_harness: SyncTransportHarness, tmp_path: Path) -> None:
     path = tmp_path / "payload.bin"
     path.write_bytes(b"file-payload")
@@ -351,6 +371,7 @@ def test_file_backed_body_is_replayable(sync_harness: SyncTransportHarness, tmp_
     assert sent[0].body == sent[1].body == b"file-payload"
 
 
+@pytest.mark.req("TRANSPORT-18")
 def test_replayable_buffering_failure_is_clean(sync_harness: SyncTransportHarness) -> None:
     # A body-producer whose buffering fails must fail loudly, not send a
     # truncated payload or a silent empty body.
@@ -367,6 +388,7 @@ def test_replayable_buffering_failure_is_clean(sync_harness: SyncTransportHarnes
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("TRANSPORT-22")
 def test_adaptation_failure_closes_native_response(sync_harness: SyncTransportHarness) -> None:
     # A non-numeric status models a native response the adapter cannot adapt.
     if not sync_harness.supports_adaptation_failure:
@@ -377,6 +399,7 @@ def test_adaptation_failure_closes_native_response(sync_harness: SyncTransportHa
     assert sync_harness.native_responses()[-1].closed is True
 
 
+@pytest.mark.req("SEAM-11", "TRANSPORT-25")
 def test_streamed_response_close_cascades_to_native(sync_harness: SyncTransportHarness) -> None:
     if not sync_harness.supports_streaming:
         pytest.skip("harness cannot produce a streamed response body")
@@ -386,6 +409,7 @@ def test_streamed_response_close_cascades_to_native(sync_harness: SyncTransportH
     assert sync_harness.native_responses()[-1].closed is True
 
 
+@pytest.mark.req("TRANSPORT-25")
 def test_abandoned_stream_releases_producer(sync_harness: SyncTransportHarness) -> None:
     if not sync_harness.supports_streaming:
         pytest.skip("harness cannot produce a streamed response body")
@@ -403,6 +427,7 @@ def test_abandoned_stream_releases_producer(sync_harness: SyncTransportHarness) 
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("TRANSPORT-6")
 def test_sub_resolution_timeout_clamped_up(sync_harness: SyncTransportHarness) -> None:
     sync_harness.expect_response(200)
     sync_harness.new_client().execute(_get(timeout=0.0001)).close()
@@ -412,6 +437,7 @@ def test_sub_resolution_timeout_clamped_up(sync_harness: SyncTransportHarness) -
     assert sent.timeout > 0
 
 
+@pytest.mark.req("SEAM-12", "TRANSPORT-29", "TRANSPORT-5")
 def test_per_call_timeout_isolation(sync_harness: SyncTransportHarness) -> None:
     sync_harness.expect_response(200)
     sync_harness.expect_response(200)
@@ -427,6 +453,7 @@ def test_per_call_timeout_isolation(sync_harness: SyncTransportHarness) -> None:
     assert {sent.timeout for sent in sync_harness.sent_requests()} == {0.5, 5.0}
 
 
+@pytest.mark.req("SEAM-12", "TRANSPORT-29")
 def test_concurrent_execute_is_safe(sync_harness: SyncTransportHarness) -> None:
     count = 16
     for _ in range(count):
@@ -450,6 +477,7 @@ def test_concurrent_execute_is_safe(sync_harness: SyncTransportHarness) -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("TRANSPORT-24")
 def test_out_of_range_status_surfaces_with_body(sync_harness: SyncTransportHarness) -> None:
     sync_harness.expect_response(999, body=b"vendor code")
     with sync_harness.new_client().execute(_get()) as response:
@@ -471,6 +499,7 @@ def test_in_range_unregistered_status_surfaces(sync_harness: SyncTransportHarnes
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SEAM-14", "TRANSPORT-15")
 def test_byo_client_survives_adapter_close(sync_harness: SyncTransportHarness) -> None:
     if not sync_harness.supports_byo:
         pytest.skip("harness cannot build over a caller-supplied client")
@@ -484,6 +513,7 @@ def test_byo_client_survives_adapter_close(sync_harness: SyncTransportHarness) -
     sync_harness.close_client(client)  # idempotent, non-blocking
 
 
+@pytest.mark.req("SEAM-15")
 def test_execute_after_close_raises(sync_harness: SyncTransportHarness) -> None:
     client = sync_harness.new_client()
     sync_harness.close_client(client)
@@ -496,6 +526,7 @@ def test_execute_after_close_raises(sync_harness: SyncTransportHarness) -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("TRANSPORT-30")
 def test_proxy_credentials_never_leak(sync_harness: SyncTransportHarness) -> None:
     if not sync_harness.supports_proxy_introspection:
         pytest.skip("harness has no proxy surface")
@@ -503,6 +534,7 @@ def test_proxy_credentials_never_leak(sync_harness: SyncTransportHarness) -> Non
     assert "s3cret" not in repr(client)
 
 
+@pytest.mark.req("TRANSPORT-30")
 def test_unsupported_proxy_feature_is_discoverable(sync_harness: SyncTransportHarness) -> None:
     if not sync_harness.supports_proxy_introspection:
         pytest.skip("harness has no proxy surface")

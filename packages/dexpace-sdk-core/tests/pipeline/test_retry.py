@@ -83,6 +83,7 @@ class _ScriptedClient(HttpClient):
 
 
 class TestRetryOnStatus:
+    @pytest.mark.req("RECOV-19")
     def test_retries_503_on_get(self) -> None:
         client = _ScriptedClient([Status.SERVICE_UNAVAILABLE, Status.OK])
         retry = RetryPolicy(clock=FakeClock())
@@ -91,6 +92,7 @@ class TestRetryOnStatus:
         assert response.status is Status.OK
         assert client.attempts == 2
 
+    @pytest.mark.req("RECOV-19")
     def test_does_not_retry_404(self) -> None:
         client = _ScriptedClient([Status.NOT_FOUND])
         retry = RetryPolicy(clock=FakeClock())
@@ -99,6 +101,7 @@ class TestRetryOnStatus:
         assert response.status is Status.NOT_FOUND
         assert client.attempts == 1
 
+    @pytest.mark.req("BODY-5")
     def test_post_retried_only_on_500_503_504(self) -> None:
         client = _ScriptedClient([Status.BAD_REQUEST])
         retry = RetryPolicy(clock=FakeClock())
@@ -135,6 +138,7 @@ class TestCustomRetryStatusSet:
     would be caught here.
     """
 
+    @pytest.mark.req("XCUT-7")
     def test_default_set_is_exactly_the_curated_codes(self) -> None:
         # The policy default is the shared classifier default verbatim — the
         # permanent 501/505 are deliberately absent so retrying a request that
@@ -160,6 +164,7 @@ class TestCustomRetryStatusSet:
         assert client.attempts == 1
         assert response.status is status
 
+    @pytest.mark.req("RETRY-37", "XCUT-7")
     def test_custom_set_honors_explicitly_included_501(self) -> None:
         # A caller who *explicitly* opts 501 into their own set is honored — the
         # default merely excludes it, it is not hard-blocked. The GET is retried
@@ -171,6 +176,7 @@ class TestCustomRetryStatusSet:
         assert client.attempts == 2
         assert response.status is Status.OK
 
+    @pytest.mark.req("RECOV-17", "RETRY-37", "XCUT-7")
     def test_custom_set_excludes_a_default_code(self) -> None:
         # Narrowing the set to ``{500}`` drops 503 from the retryable codes, so a
         # 503 that the default set *would* retry is now returned on first sight.
@@ -183,6 +189,7 @@ class TestCustomRetryStatusSet:
 
 
 class TestRetryOnError:
+    @pytest.mark.req("RECOV-17", "RETRY-37", "RETRY-39", "RETRY-4")
     def test_retries_connect_error(self) -> None:
         client = _ScriptedClient(
             [ServiceRequestError("dns fail"), Status.OK],
@@ -193,6 +200,7 @@ class TestRetryOnError:
         assert response.is_success
         assert client.attempts == 2
 
+    @pytest.mark.req("RETRY-4")
     def test_retries_response_error(self) -> None:
         client = _ScriptedClient(
             [ServiceResponseError("connection reset"), Status.OK],
@@ -215,6 +223,7 @@ class TestRetryOnError:
         # Only one attempt — auth failures are not retried.
         assert client.attempts == 1
 
+    @pytest.mark.req("RECOV-29")
     def test_connect_retry_budget_exhausted(self) -> None:
         client = _ScriptedClient(
             [ServiceRequestError("fail")] * 5,
@@ -235,7 +244,7 @@ class TestReadPhaseMethodGating:
     safe to retry for every method.
     """
 
-    @pytest.mark.req("RETRY-07")
+    @pytest.mark.req("BODY-5", "RETRY-7")
     def test_post_not_retried_on_read_phase_error(self) -> None:
         # A ``ServiceResponseError`` on a POST must propagate after the first
         # attempt rather than re-sending and risking a duplicate write.
@@ -255,6 +264,7 @@ class TestReadPhaseMethodGating:
         assert response.is_success
         assert client.attempts == 2
 
+    @pytest.mark.req("BODY-5")
     def test_get_still_retried_on_read_phase_error(self) -> None:
         # GET is idempotent and in the allowlist, so a read-phase error is
         # still retried — the gating only suppresses non-idempotent methods.
@@ -300,6 +310,7 @@ class TestRetryAfterHeader:
         assert parse_retry_after("", now=0.0) is None
         assert parse_retry_after(None, now=0.0) is None
 
+    @pytest.mark.req("RECOV-22", "RETRY-20", "RETRY-39")
     def test_respected_during_retry(self) -> None:
         sleeps: list[float] = []
 
@@ -339,6 +350,7 @@ class TestRetryAfterHeader:
 
 
 class TestRetryHistory:
+    @pytest.mark.req("RECOV-28")
     def test_history_recorded_in_ctx_data(self) -> None:
         from dexpace.sdk.core.pipeline import PipelineContext, Policy
 
@@ -362,6 +374,7 @@ class TestRetryNoRetries:
         retry = RetryPolicy.no_retries()
         assert retry.total_retries == 0
 
+    @pytest.mark.req("RETRY-41")
     def test_no_retries_lets_first_failure_through(self) -> None:
         client = _ScriptedClient([Status.SERVICE_UNAVAILABLE])
         retry = RetryPolicy.no_retries()
@@ -373,6 +386,7 @@ class TestRetryNoRetries:
 
 
 class TestRetryTimeout:
+    @pytest.mark.req("RETRY-41")
     def test_per_call_override_via_options(self) -> None:
         client = _ScriptedClient([Status.SERVICE_UNAVAILABLE] * 5)
         retry = RetryPolicy(clock=FakeClock())
@@ -411,6 +425,7 @@ class _BodyRecordingClient(HttpClient):
 
 
 class TestRetryAutoReplaysBody:
+    @pytest.mark.req("BODY-4", "RETRY-44")
     def test_retry_with_single_use_body_auto_replays(self) -> None:
         consumed: list[bytes] = []
         body = RequestBody.from_iter(iter([b"hello", b"world"]))
@@ -563,6 +578,7 @@ class TestRetryCountTiming:
         # ``retry_count`` is never written into ``ctx.data``.
         assert captured["retry_count"] is None
 
+    @pytest.mark.req("RECOV-28")
     def test_retry_count_set_when_retry_happens(self) -> None:
         from dexpace.sdk.core.pipeline import PipelineContext, Policy
 
@@ -625,6 +641,7 @@ def test_monotonic_clock_available() -> None:
     assert time.monotonic() > 0
 
 
+@pytest.mark.req("RETRY-36")
 def test_retry_advances_clock_by_backoff_seconds() -> None:
     """``RetryPolicy`` advances the injected clock by the computed backoff.
 

@@ -21,6 +21,7 @@ def _op(path: str, method: Method = Method.GET, **kw: object) -> Operation:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SEAM-27")
 def test_sas_query_preserved_and_operation_query_appended() -> None:
     base = (
         "https://acct.blob.core.windows.net/container/blob"
@@ -59,6 +60,7 @@ def test_base_query_preserved_when_operation_adds_none() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SEAM-27")
 def test_path_value_with_slash_stays_single_segment() -> None:
     inp = OperationInput(path_params={"path": "a/b/c"})
     req = assemble(_op("/files/{path}/meta"), inp, "https://api.example.com")
@@ -79,6 +81,7 @@ def test_all_placeholders_substituted() -> None:
     assert req.url.path == "/users/42/items/99"
 
 
+@pytest.mark.req("SEAM-27")
 def test_missing_placeholder_is_named_in_error() -> None:
     inp = OperationInput(path_params={"userId": "42"})
     with pytest.raises(KeyError) as excinfo:
@@ -100,6 +103,7 @@ def test_path_param_value_is_not_leaked_when_placeholder_missing() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SEAM-27")
 def test_trailing_slash_on_base_does_not_double() -> None:
     req = assemble(_op("/users"), OperationInput(), "https://api.example.com/v1/")
     assert req.url.path == "/v1/users"
@@ -125,6 +129,7 @@ def test_trailing_slash_on_operation_path_preserved() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SEAM-27")
 def test_base_url_with_fragment_is_rejected() -> None:
     with pytest.raises(ValueError, match="fragment"):
         assemble(_op("/x"), OperationInput(), "https://api.example.com/#section")
@@ -166,6 +171,7 @@ def test_per_call_header_overrides_static_header() -> None:
     assert req.headers.values("accept") == ("text/plain",)
 
 
+@pytest.mark.req("SEAM-26")
 def test_body_is_carried_through_unchanged() -> None:
     body = RequestBody.from_string("hello")
     req = assemble(
@@ -179,6 +185,7 @@ def test_body_is_carried_through_unchanged() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("SEAM-28")
 def test_operation_name_has_no_effect_on_assembly() -> None:
     a = Operation(name="getUser", method=Method.GET, path="/users/{id}")
     b = Operation(name="retrieveUserById", method=Method.GET, path="/users/{id}")

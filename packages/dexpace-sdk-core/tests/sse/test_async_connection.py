@@ -122,6 +122,7 @@ async def test_async_non_success_status_raises() -> None:
     assert len(script.requests) == 1
 
 
+@pytest.mark.req("SSE-41")
 async def test_async_cancellation_propagates_and_closes() -> None:
     body = _AsyncDropBody([b"data: hi\n\n"], block=True)
     script = _AsyncScript([_response(body)])

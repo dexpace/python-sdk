@@ -123,6 +123,7 @@ def test_carriage_return_escaped(caplog: LogCaptureFixture) -> None:
 # --- OBS-2: four structured levels map onto stdlib levels --------------------
 
 
+@pytest.mark.req("OBS-2")
 def test_levels_map_to_stdlib_levels() -> None:
     assert _LEVEL_MAP == {
         LogLevel.ERROR: logging.ERROR,
@@ -132,6 +133,7 @@ def test_levels_map_to_stdlib_levels() -> None:
     }
 
 
+@pytest.mark.req("OBS-2")
 def test_at_helpers_dispatch_to_matching_level(caplog: LogCaptureFixture) -> None:
     caplog.set_level(logging.DEBUG, logger="dexpace.test.at")
     logger = ClientLogger("dexpace.test.at")
@@ -147,6 +149,7 @@ def test_at_helpers_dispatch_to_matching_level(caplog: LogCaptureFixture) -> Non
 # --- OBS-1: disabled level returns a shared inert event (zero allocation) -----
 
 
+@pytest.mark.req("OBS-1")
 def test_disabled_level_returns_shared_inert_singleton() -> None:
     logging.getLogger("dexpace.test.inert").setLevel(logging.ERROR)
     logger = ClientLogger("dexpace.test.inert")
@@ -159,6 +162,7 @@ def test_disabled_level_returns_shared_inert_singleton() -> None:
     assert first is second
 
 
+@pytest.mark.req("OBS-1")
 def test_inert_event_chaining_stays_the_singleton_and_never_emits(
     caplog: LogCaptureFixture,
 ) -> None:
@@ -177,6 +181,7 @@ def test_inert_event_chaining_stays_the_singleton_and_never_emits(
 # --- OBS-3: empty key rejected; None renders literal 'null' -------------------
 
 
+@pytest.mark.req("OBS-3")
 def test_empty_key_is_rejected(caplog: LogCaptureFixture) -> None:
     caplog.set_level(logging.DEBUG, logger="dexpace.test.emptykey")
     logger = ClientLogger("dexpace.test.emptykey")
@@ -188,6 +193,7 @@ def test_none_value_renders_null_literal() -> None:
     assert _render_value(None, 8192) == "null"
 
 
+@pytest.mark.req("OBS-3")
 def test_none_value_renders_null_through_logger(caplog: LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="dexpace.test.null")
     logger = ClientLogger("dexpace.test.null")
@@ -199,6 +205,7 @@ def test_none_value_renders_null_through_logger(caplog: LogCaptureFixture) -> No
 # --- OBS-4: reserved `event` tag emitted exactly once; empty clears -----------
 
 
+@pytest.mark.req("OBS-4")
 def test_reserved_event_tag_emitted_exactly_once(caplog: LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="dexpace.test.event")
     logger = ClientLogger("dexpace.test.event")
@@ -210,6 +217,7 @@ def test_reserved_event_tag_emitted_exactly_once(caplog: LogCaptureFixture) -> N
     assert "method=GET" in rendered
 
 
+@pytest.mark.req("OBS-4")
 def test_reserved_event_empty_value_clears_tag(caplog: LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="dexpace.test.event2")
     logger = ClientLogger("dexpace.test.event2")
@@ -223,6 +231,7 @@ def test_reserved_event_empty_value_clears_tag(caplog: LogCaptureFixture) -> Non
 # --- OBS-5: field > global > diagnostic-context, one occurrence per key -------
 
 
+@pytest.mark.req("OBS-5")
 def test_precedence_field_over_global_over_diagnostic(caplog: LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="dexpace.test.prec")
     logger = ClientLogger(
@@ -251,6 +260,7 @@ class _BoomBaseStr:
         raise KeyboardInterrupt("boom")
 
 
+@pytest.mark.req("OBS-6", "XCUT-20")
 def test_throwing_str_yields_placeholder(caplog: LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="dexpace.test.boom")
     logger = ClientLogger("dexpace.test.boom")
@@ -272,12 +282,14 @@ def test_base_exception_from_str_propagates(caplog: LogCaptureFixture) -> None:
 # --- OBS-7: bounded truncation, primitives exempt ----------------------------
 
 
+@pytest.mark.req("OBS-7")
 def test_long_value_is_truncated() -> None:
     rendered = _render_value("x" * 100, 10)
     assert rendered == "x" * 10 + _TRUNCATION_MARKER
     assert "x" * 11 not in rendered
 
 
+@pytest.mark.req("OBS-6")
 def test_primitives_are_exempt_from_truncation() -> None:
     assert _render_value(123456789, 3) == "123456789"
     assert _render_value(True, 1) == "True"
@@ -285,6 +297,7 @@ def test_primitives_are_exempt_from_truncation() -> None:
     assert _TRUNCATION_MARKER not in _render_value(10**50, 3)
 
 
+@pytest.mark.req("OBS-7")
 def test_truncation_bounds_value_through_logger(caplog: LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="dexpace.test.trunc")
     logger = ClientLogger("dexpace.test.trunc", max_field_length=8)
@@ -299,6 +312,7 @@ def test_truncation_bounds_value_through_logger(caplog: LogCaptureFixture) -> No
 # --- OBS-8: emit-once latch correct under real thread concurrency ------------
 
 
+@pytest.mark.req("OBS-8", "XCUT-11")
 def test_emit_once_latch_under_thread_race(caplog: LogCaptureFixture) -> None:
     # Designed to hold under free-threaded CPython too: the latch is guarded by
     # an explicit threading.Lock, not the GIL.
@@ -326,6 +340,7 @@ def test_emit_once_latch_under_thread_race(caplog: LogCaptureFixture) -> None:
 # --- OBS-9: global context attaches to every event --------------------------
 
 
+@pytest.mark.req("OBS-9")
 def test_global_context_on_every_event(caplog: LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="dexpace.test.global")
     logger = ClientLogger("dexpace.test.global", client="dexpace.foo", region="eu")
@@ -341,6 +356,7 @@ def test_global_context_on_every_event(caplog: LogCaptureFixture) -> None:
 # --- OBS-10: diagnostic-context allow-list -----------------------------------
 
 
+@pytest.mark.req("OBS-10")
 def test_diagnostic_allow_list_defaults_to_trace_and_span(
     caplog: LogCaptureFixture,
 ) -> None:
@@ -357,6 +373,7 @@ def test_diagnostic_allow_list_defaults_to_trace_and_span(
     assert "secret" not in rendered  # not allow-listed by default
 
 
+@pytest.mark.req("OBS-10")
 def test_diagnostic_allow_list_none_folds_all(caplog: LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="dexpace.test.diagall")
     logger = ClientLogger(
@@ -371,6 +388,7 @@ def test_diagnostic_allow_list_none_folds_all(caplog: LogCaptureFixture) -> None
     assert "custom=C" in rendered
 
 
+@pytest.mark.req("OBS-10")
 def test_diagnostic_null_values_are_skipped(caplog: LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="dexpace.test.diagnull")
     logger = ClientLogger(
@@ -391,6 +409,7 @@ def _broken_provider() -> NoReturn:
     raise RuntimeError("provider down")
 
 
+@pytest.mark.req("OBS-20", "XCUT-20")
 def test_logging_failure_reemitted_as_instrumentation_error(
     caplog: LogCaptureFixture,
 ) -> None:
@@ -407,6 +426,7 @@ def test_logging_failure_reemitted_as_instrumentation_error(
 # --- OBS-40: reserved-key collision warns once per logger --------------------
 
 
+@pytest.mark.req("OBS-40")
 def test_reserved_key_collision_warns_once_per_logger(
     caplog: LogCaptureFixture,
 ) -> None:

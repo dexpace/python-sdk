@@ -83,6 +83,7 @@ class TestCanonicalFoldStorage:
                 twice = Headers([(once, "v")]).names()[0]
                 assert once == twice == base
 
+    @pytest.mark.req("HTTP-13")
     def test_fold_is_ascii_and_locale_invariant(self) -> None:
         # Every ASCII letter folds to its a-z counterpart regardless of casing.
         for letter in string.ascii_letters:
@@ -115,16 +116,19 @@ class TestEqualityFollowsFold:
 
 
 class TestOrderedMultiValues:
+    @pytest.mark.req("HTTP-14", "HTTP-5")
     def test_get_all_equivalent_preserves_order(self) -> None:
         h = Headers([("Set-Cookie", "a=1"), ("Set-Cookie", "b=2"), ("Set-Cookie", "c=3")])
         assert h.values("set-cookie") == ("a=1", "b=2", "c=3")
 
+    @pytest.mark.req("HTTP-16")
     def test_distinct_names_keep_insertion_order(self) -> None:
         h = Headers([("B", "1"), ("A", "2"), ("C", "3")])
         assert h.names() == ("b", "a", "c")
 
 
 class TestRemovalBySettingNoValues:
+    @pytest.mark.req("HTTP-15")
     def test_with_set_no_values_removes_header(self) -> None:
         h = Headers([("A", "1"), ("B", "2")])
         result = h.with_set("a")
@@ -150,6 +154,7 @@ class TestInboundLenientObsText:
         assert h.values("x-obs") == (_OBS_TEXT,)
         assert h.values("x-other") == (_OBS_TEXT,)
 
+    @pytest.mark.req("HTTP-19", "XCUT-18")
     @pytest.mark.parametrize("value", _INJECTIONS)
     def test_inbound_still_rejects_crlf_injection(self, value: str) -> None:
         # Lenient about obs-text, but never about the injection-critical bytes.
@@ -162,10 +167,12 @@ class TestOutboundStrictObsText:
         h = Headers.outbound([("Content-Type", "application/json")])
         assert h.get("content-type") == "application/json"
 
+    @pytest.mark.req("HTTP-18")
     def test_outbound_rejects_obs_text(self) -> None:
         with pytest.raises(ValueError, match="obs-text"):
             Headers.outbound([("X-Obs", _OBS_TEXT)])
 
+    @pytest.mark.req("HTTP-18", "XCUT-18")
     @pytest.mark.parametrize("value", ["v\x01ctl", "v\x7fdel", "v\x1fus"])
     def test_outbound_rejects_other_control_bytes(self, value: str) -> None:
         with pytest.raises(ValueError, match="invalid header value"):
@@ -176,6 +183,7 @@ class TestOutboundStrictObsText:
         with pytest.raises(ValueError, match="invalid header value"):
             Headers.outbound([("X-Test", value)])
 
+    @pytest.mark.req("HTTP-19")
     def test_paths_diverge_only_on_obs_text(self) -> None:
         # The exact value the lenient path accepts is what the strict path bars.
         assert Headers([("X-Obs", _OBS_TEXT)]).get("x-obs") == _OBS_TEXT
@@ -184,6 +192,7 @@ class TestOutboundStrictObsText:
 
 
 class TestErrorMessageHygiene:
+    @pytest.mark.req("HTTP-20")
     def test_value_error_never_echoes_the_value(self) -> None:
         secret = "topsecret-token\r\nSet-Cookie: sid=evil"
         with pytest.raises(ValueError) as exc:
@@ -197,6 +206,7 @@ class TestErrorMessageHygiene:
         assert "secret" not in message
         assert "payload" not in message
 
+    @pytest.mark.req("HTTP-20")
     def test_name_error_escapes_control_characters(self) -> None:
         with pytest.raises(ValueError) as exc:
             Headers([("X-\r\nInjected", "v")])
@@ -209,6 +219,7 @@ class TestErrorMessageHygiene:
 
 
 class TestAsciiInvariantFolding:
+    @pytest.mark.req("HTTP-13", "HTTP-17", "XCUT-18")
     @pytest.mark.parametrize("name", _NON_ASCII_NAMES)
     def test_non_ascii_names_rejected_not_folded(self, name: str) -> None:
         # A locale-sensitive ``str.lower()`` before validation would let some of
@@ -227,6 +238,7 @@ class TestHttpHeaderNameHotPath:
         assert h.names() == ("content-type",)
         assert CONTENT_TYPE in h
 
+    @pytest.mark.req("HTTP-21")
     def test_constant_preserves_wire_casing(self) -> None:
         # The stored key folds, but the constant keeps its wire form for output.
         assert CONTENT_TYPE.value == "content-type"

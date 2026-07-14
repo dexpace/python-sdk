@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from dexpace.sdk.core.http.auth import AuthenticateChallenge, DigestChallengeHandler
 from dexpace.sdk.core.http.auth import digest as digest_module
 from dexpace.sdk.core.http.common.url import Url
@@ -45,18 +47,21 @@ def _cnonce_from_default_factory() -> str:
 
 
 class TestCnonceCsprng:
+    @pytest.mark.req("AUTH-20", "XCUT-21")
     def test_module_imports_secrets_not_random(self) -> None:
         # ``import secrets`` binds the name in the module namespace; the absence
         # of ``random`` proves the insecure PRNG was never pulled in.
         assert getattr(digest_module, "secrets", None) is not None
         assert getattr(digest_module, "random", None) is None
 
+    @pytest.mark.req("AUTH-20", "XCUT-21")
     def test_default_cnonce_is_128_bit_hex(self) -> None:
         # ``secrets.token_hex(16)`` yields 16 CSPRNG bytes rendered as 32 lower
         # hex digits — 128 bits of entropy.
         cnonce = _cnonce_from_default_factory()
         assert _HEX32.match(cnonce)
 
+    @pytest.mark.req("AUTH-20", "XCUT-21")
     def test_default_cnonce_differs_across_calls(self) -> None:
         # A deterministic factory would repeat; a CSPRNG effectively never does.
         seen = {_cnonce_from_default_factory() for _ in range(16)}

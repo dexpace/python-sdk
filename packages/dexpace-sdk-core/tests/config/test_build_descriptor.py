@@ -13,6 +13,7 @@ from dexpace.sdk.core.config import BuildDescriptor
 from dexpace.sdk.core.config import build_descriptor as _module
 
 
+@pytest.mark.req("CFG-36")
 def test_resolve_reads_installed_version() -> None:
     # The core distribution is installed in the test venv, so a real version
     # resolves — and it is never blank.
@@ -22,6 +23,7 @@ def test_resolve_reads_installed_version() -> None:
     assert descriptor.version != BuildDescriptor.UNKNOWN
 
 
+@pytest.mark.req("CFG-36")
 def test_resolve_falls_back_under_metadata_less_install(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -39,6 +41,7 @@ def test_resolve_falls_back_under_metadata_less_install(
     assert descriptor.name == "dexpace-sdk-core"
 
 
+@pytest.mark.req("CFG-36")
 def test_resolve_falls_back_on_blank_version(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_module, "version", lambda _name: "   ")
     descriptor = BuildDescriptor.resolve()

@@ -228,6 +228,7 @@ def _header_value(head: list[str], name: str) -> str | None:
     return None
 
 
+@pytest.mark.req("TRANSPORT-11")
 async def test_host_header_includes_non_default_port() -> None:
     # A non-default port must appear in the Host header (RFC 9112 §3.2).
     sink: dict[str, list[str]] = {}
@@ -243,6 +244,7 @@ async def test_host_header_includes_non_default_port() -> None:
     assert _header_value(sink["head"], "host") == f"127.0.0.1:{port}"
 
 
+@pytest.mark.req("TRANSPORT-26")
 async def test_empty_post_body_sends_content_length_zero() -> None:
     # A body-bearing method with no payload must advertise
     # Content-Length: 0 (RFC 9110 §8.6).
@@ -258,6 +260,7 @@ async def test_empty_post_body_sends_content_length_zero() -> None:
     assert _header_value(sink["head"], "content-length") == "0"
 
 
+@pytest.mark.req("TRANSPORT-26")
 async def test_empty_get_omits_content_length() -> None:
     # A GET with no body must not gain a spurious Content-Length: 0.
     sink: dict[str, list[str]] = {}
@@ -555,6 +558,7 @@ async def test_stale_content_length_header_is_recomputed() -> None:
     assert _header_value(sink["head"], "content-length") == "11"
 
 
+@pytest.mark.req("ASYNC-19")
 async def test_per_call_timeout_overrides_client_default() -> None:
     # A per-request timeout must reach the connect wait_for call, not just
     # the client's own constructor default. Proven by racing a *short*
@@ -605,6 +609,7 @@ async def test_response_content_type_is_parsed() -> None:
             await anext(gen)
 
 
+@pytest.mark.req("ASYNC-7", "TRANSPORT-7")
 async def test_cancelled_task_propagates_natively_and_closes_connection() -> None:
     # Cancelling the task running execute() must propagate asyncio.CancelledError
     # unmodified (not swallowed, not converted to an SdkError) and must still
@@ -633,6 +638,7 @@ async def test_cancelled_task_propagates_natively_and_closes_connection() -> Non
             await anext(gen)
 
 
+@pytest.mark.req("TRANSPORT-14")
 async def test_malformed_inbound_header_dropped_others_preserved() -> None:
     # A single malformed header name (one `Headers` rejects, e.g. containing
     # a space) must be dropped without losing the good headers before *or*

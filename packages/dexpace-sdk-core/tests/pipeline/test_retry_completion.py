@@ -176,6 +176,7 @@ class _NonReplayableBody(RequestBody):
 
 
 class TestExactlyThreeSends:
+    @pytest.mark.req("RECOV-19", "RETRY-14", "RETRY-44")
     def test_sync_max_retries_two_sends_exactly_three_times(self) -> None:
         client = _ScriptedClient([Status.SERVICE_UNAVAILABLE] * 5)
         retry = RetryPolicy(total_retries=2, backoff_factor=0.0, clock=FakeClock())
@@ -185,6 +186,7 @@ class TestExactlyThreeSends:
         assert client.attempts == 3
         assert response.status is Status.SERVICE_UNAVAILABLE
 
+    @pytest.mark.req("RETRY-14", "RETRY-30")
     async def test_async_max_retries_two_sends_exactly_three_times(self) -> None:
         client = _AsyncScriptedClient([Status.SERVICE_UNAVAILABLE] * 5)
         retry = AsyncRetryPolicy(total_retries=2, backoff_factor=0.0, clock=_AsyncFakeClock())
@@ -198,6 +200,7 @@ class TestExactlyThreeSends:
 
 
 class TestCancelDuringBackoff:
+    @pytest.mark.req("XCUT-3")
     def test_sync_precancelled_token_aborts_at_attempt_boundary(self) -> None:
         # An already-cancelled token is observed at the attempt boundary before
         # the first send: cooperative cancellation means "do not start".
@@ -216,6 +219,7 @@ class TestCancelDuringBackoff:
             )
         assert client.attempts == 0
 
+    @pytest.mark.req("RECOV-27", "RETRY-23", "RETRY-26", "XCUT-3")
     def test_sync_cancel_mid_backoff_aborts_promptly(self) -> None:
         token = CancellationToken()
         # Real 30s backoff via a server ``Retry-After``; a timer cancels the
@@ -243,6 +247,7 @@ class TestCancelDuringBackoff:
         assert elapsed < 5.0
         assert client.attempts == 1
 
+    @pytest.mark.req("RECOV-27", "RETRY-26", "RETRY-31", "XCUT-3")
     async def test_async_cancel_mid_backoff_aborts_immediately(self) -> None:
         # Real ``asyncio.sleep`` backoff of 30s (server ``Retry-After``); the
         # task is cancelled while parked in it and must unwind at once.
@@ -272,6 +277,7 @@ class TestCancelDuringBackoff:
 
 
 class TestBarePostNeverRetried:
+    @pytest.mark.req("RECOV-18", "RETRY-5", "RETRY-7", "RETRY-8")
     def test_sync_bare_post_not_retried_on_retryable_status(self) -> None:
         # 429 is in the default retryable set, but POST is only ever retried on
         # 500/503/504 — a bare POST on 429 is not re-sent.
@@ -292,6 +298,7 @@ class TestBarePostNeverRetried:
 
 
 class TestNonReplayableBodyNeverResent:
+    @pytest.mark.req("RECOV-18", "RETRY-5", "RETRY-8")
     def test_sync_status_trigger_does_not_resend_non_replayable_body(self) -> None:
         body = _NonReplayableBody()
         client = _ScriptedClient([Status.SERVICE_UNAVAILABLE, Status.OK])
@@ -316,6 +323,7 @@ class TestNonReplayableBodyNeverResent:
             p.run(request, DispatchContext(_instr("0" * 15 + "58")))
         assert client.attempts == 1
 
+    @pytest.mark.req("RETRY-5")
     async def test_async_status_trigger_does_not_resend_non_replayable_body(self) -> None:
         body = _NonReplayableBody()
         client = _AsyncScriptedClient([Status.SERVICE_UNAVAILABLE, Status.OK])
@@ -340,6 +348,7 @@ class TestNonReplayableBodyNeverResent:
 
 
 class TestTerminalFailureTrail:
+    @pytest.mark.req("RETRY-22", "RETRY-34")
     def test_sync_surfaced_error_carries_attempts_and_prior_notes(self) -> None:
         errors: list[BaseException] = [
             ServiceRequestError("boom-1"),
@@ -360,6 +369,7 @@ class TestTerminalFailureTrail:
         assert any("boom-2" in note for note in notes)
         assert all("boom-3" not in note for note in notes)
 
+    @pytest.mark.req("RETRY-34")
     async def test_async_surfaced_error_carries_attempts_and_prior_notes(self) -> None:
         errors: list[BaseException] = [
             ServiceRequestError("boom-1"),
@@ -377,6 +387,7 @@ class TestTerminalFailureTrail:
         assert len(notes) == 2
         assert all("boom-3" not in note for note in notes)
 
+    @pytest.mark.req("RETRY-34")
     def test_status_then_error_trail_excludes_only_the_surfaced_error(self) -> None:
         # A 503 status retry precedes the terminal connect error: the prior
         # status attempt is in the trail, the surfaced error is not.
@@ -431,6 +442,7 @@ class _RecordingAsyncClock:
 
 
 class TestScheduleParity:
+    @pytest.mark.req("RECOV-30", "RETRY-13", "RETRY-30", "RETRY-31")
     def test_both_stacks_produce_identical_delay_schedules(self) -> None:
         # Both policies delegate to the same ``_pure/backoff`` and draw the same
         # seeded RNG in the same order, so their slept schedules are identical.
