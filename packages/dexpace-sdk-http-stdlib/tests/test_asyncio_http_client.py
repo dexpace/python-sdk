@@ -7,17 +7,20 @@ from __future__ import annotations
 
 import asyncio
 import ssl
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest
 
 from dexpace.sdk.core.errors import (
     ServiceRequestError,
+    ServiceRequestTimeoutError,
     ServiceResponseError,
     ServiceResponseTimeoutError,
 )
 from dexpace.sdk.core.http.common import Url
 from dexpace.sdk.core.http.common.headers import Headers
+from dexpace.sdk.core.http.common.media_type import MediaType
 from dexpace.sdk.core.http.common.protocol import Protocol
 from dexpace.sdk.core.http.request import Method, Request, RequestBody
 from dexpace.sdk.core.http.response import Status
@@ -483,6 +486,180 @@ async def test_protocol_version_reported_from_status_line() -> None:
         async with AsyncioHttpClient(timeout=5.0) as client:
             response = await client.execute(Request(method=Method.GET, url=Url.parse(f"{base}/")))
             assert response.protocol is Protocol.HTTP_1_0
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await anext(gen)
+
+
+async def test_content_type_derived_from_body_media_type() -> None:
+    # A body with a declared media type but no caller-set Content-Type must
+    # surface that type on the wire.
+    sink: dict[str, list[str]] = {}
+    gen = _serve(await _collect_head(sink))
+    base = await anext(gen)
+    try:
+        async with AsyncioHttpClient(timeout=5.0) as client:
+            await client.execute(
+                Request(
+                    method=Method.POST,
+                    url=Url.parse(f"{base}/"),
+                    body=RequestBody.from_bytes(b"{}", MediaType.of("application", "json")),
+                )
+            )
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await anext(gen)
+    assert _header_value(sink["head"], "content-type") == "application/json"
+
+
+async def test_explicit_content_type_is_authoritative() -> None:
+    sink: dict[str, list[str]] = {}
+    gen = _serve(await _collect_head(sink))
+    base = await anext(gen)
+    try:
+        async with AsyncioHttpClient(timeout=5.0) as client:
+            await client.execute(
+                Request(
+                    method=Method.POST,
+                    url=Url.parse(f"{base}/"),
+                    headers=Headers([("Content-Type", "text/plain")]),
+                    body=RequestBody.from_bytes(b"{}", MediaType.of("application", "json")),
+                )
+            )
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await anext(gen)
+    assert _header_value(sink["head"], "content-type") == "text/plain"
+
+
+async def test_stale_content_length_header_is_recomputed() -> None:
+    # A caller-supplied Content-Length that disagrees with the real body must
+    # never reach the wire: trusting it would make the peer wait for bytes
+    # that never arrive.
+    sink: dict[str, list[str]] = {}
+    gen = _serve(await _collect_head(sink))
+    base = await anext(gen)
+    try:
+        async with AsyncioHttpClient(timeout=5.0) as client:
+            await client.execute(
+                Request(
+                    method=Method.POST,
+                    url=Url.parse(f"{base}/"),
+                    headers=Headers([("Content-Length", "999")]),
+                    body=RequestBody.from_bytes(b"hello world"),
+                )
+            )
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await anext(gen)
+    assert _header_value(sink["head"], "content-length") == "11"
+
+
+async def test_per_call_timeout_overrides_client_default() -> None:
+    # A per-request timeout must reach the connect wait_for call, not just
+    # the client's own constructor default. Proven by racing a *short*
+    # per-call timeout against a blackhole address and a *long* constructor
+    # default: if the override were ignored, this would hang for the full
+    # 30s default instead of failing in well under a second.
+    start = time.monotonic()
+    async with AsyncioHttpClient(timeout=30.0) as client:
+        with pytest.raises(ServiceRequestTimeoutError):
+            await asyncio.wait_for(
+                client.execute(
+                    Request(
+                        method=Method.GET,
+                        url=Url.parse("http://10.255.255.1:81/"),
+                        timeout=0.3,
+                    )
+                ),
+                timeout=5.0,
+            )
+    assert time.monotonic() - start < 5.0
+
+
+async def test_response_content_type_is_parsed() -> None:
+    # The response body must expose the declared Content-Type, not always
+    # None.
+    async def json_response(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await _read_request_head(reader)
+        body = b"{}"
+        writer.write(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+            + str(len(body)).encode()
+            + b"\r\nConnection: close\r\n\r\n"
+            + body
+        )
+        await writer.drain()
+        writer.close()
+
+    gen = _serve(json_response)
+    base = await anext(gen)
+    try:
+        async with AsyncioHttpClient(timeout=5.0) as client:
+            response = await client.execute(Request(method=Method.GET, url=Url.parse(f"{base}/")))
+            body = response.body
+            assert body is not None
+            assert body.media_type() == MediaType.of("application", "json")
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await anext(gen)
+
+
+async def test_cancelled_task_propagates_natively_and_closes_connection() -> None:
+    # Cancelling the task running execute() must propagate asyncio.CancelledError
+    # unmodified (not swallowed, not converted to an SdkError) and must still
+    # tear down the underlying connection.
+    accepted = asyncio.Event()
+
+    async def stall(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await _read_request_head(reader)
+        accepted.set()
+        await asyncio.sleep(30.0)
+        writer.close()
+
+    gen = _serve(stall)
+    base = await anext(gen)
+    try:
+        client = AsyncioHttpClient(timeout=30.0)
+        task = asyncio.create_task(
+            client.execute(Request(method=Method.GET, url=Url.parse(f"{base}/")))
+        )
+        await accepted.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await anext(gen)
+
+
+async def test_malformed_inbound_header_dropped_others_preserved() -> None:
+    # A single malformed header name (one `Headers` rejects, e.g. containing
+    # a space) must be dropped without losing the good headers before *or*
+    # after it, and without aborting the exchange. `Headers`' bulk
+    # constructor raises on the first invalid entry rather than skipping it,
+    # so this exercises the per-entry lenient construction in
+    # `_read_headers`.
+    async def malformed(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await _read_request_head(reader)
+        body = b"hi"
+        writer.write(
+            b"HTTP/1.1 200 OK\r\nX-Good: ok\r\nBad Name: x\r\nX-After: yes\r\nContent-Length: "
+            + str(len(body)).encode()
+            + b"\r\nConnection: close\r\n\r\n"
+            + body
+        )
+        await writer.drain()
+        writer.close()
+
+    gen = _serve(malformed)
+    base = await anext(gen)
+    try:
+        async with AsyncioHttpClient(timeout=5.0) as client:
+            response = await client.execute(Request(method=Method.GET, url=Url.parse(f"{base}/")))
+            assert response.headers.get("x-good") == "ok"
+            assert response.headers.get("x-after") == "yes"
+            assert "bad name" not in response.headers.names()
     finally:
         with pytest.raises(StopAsyncIteration):
             await anext(gen)

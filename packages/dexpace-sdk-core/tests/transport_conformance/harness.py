@@ -211,6 +211,42 @@ class _BaseHarness(ABC):
     supports_streaming: bool = True
     #: Whether the adapter exposes proxy capability introspection.
     supports_proxy_introspection: bool = True
+    #: Whether the harness can program a native cooperative-cancellation
+    #: outcome. The SDK's `HttpClient.execute(request)` seam has no
+    #: cancellation hook of its own (`Request` carries no cancellation
+    #: token) — cooperative cancellation is a pipeline/retry-loop concept in
+    #: this SDK, not a transport one. A harness backed by a real, minimal
+    #: transport with no cancellation channel of its own sets this `False`
+    #: rather than forcing a misleading `True`.
+    supports_cancellation: bool = True
+    #: Whether the adapter can frame an unknown-upfront-length request body
+    #: as genuine wire-level ``Transfer-Encoding: chunked`` rather than fully
+    #: buffering it first. A transport that always buffers the whole body
+    #: before send (documented as a "no streaming uploads" limitation) always
+    #: knows the exact length once buffering completes, so it correctly uses
+    #: ``Content-Length`` even for a body whose declared length was unknown
+    #: upfront — it never emits (and should not fake) chunked framing.
+    supports_unknown_length_chunked_framing: bool = True
+    #: Whether the harness can produce a native response that is obtained
+    #: successfully but then fails SDK-level adaptation (the fake models this
+    #: with a non-numeric status token). A transport whose native library
+    #: validates the status line itself (rejecting a non-numeric or
+    #: out-of-range token before handing back any response object at all) —
+    #: combined with the SDK's own `Status` being total over integers
+    #: (TRANSPORT-24: no valid status ever fails adaptation) — can have no
+    #: state where a native response is obtained yet adaptation fails, and
+    #: sets this `False` rather than forcing a misleading `True`.
+    supports_adaptation_failure: bool = True
+    #: Whether the adapter can recover a good header that arrives *after* a
+    #: malformed one in the same response. Every adapter in this SDK drops a
+    #: single malformed inbound header without aborting the conversion, but a
+    #: native library whose own header parser treats an invalid name as the
+    #: end of the header block (silently discarding every header that
+    #: follows) can lose "good" headers upstream of anything the adapter's
+    #: own conversion logic controls. Set this `False` rather than forcing a
+    #: misleading `True` when that upstream loss is real and verified, not
+    #: assumed.
+    supports_defensive_inbound_headers: bool = True
     #: Smallest positive timeout the adapter will apply (sub-resolution values
     #: clamp up to this rather than truncating to zero).
     min_timeout_granularity: float = 0.001
@@ -251,6 +287,16 @@ class _BaseHarness(ABC):
         override it.
         """
         raise NotImplementedError
+
+    def shutdown(self) -> None:  # noqa: B027  # intentional no-op default, not abstract
+        """Release any process-level resources the harness holds. Idempotent.
+
+        The battery's fixtures call this in teardown. A harness backed by a
+        real server/socket (rather than the in-memory fake) overrides it to
+        tear that down; the default is intentionally a no-op — an in-memory
+        harness holds nothing to release, so this is a real (empty) default,
+        not an unimplemented abstract method.
+        """
 
     # ----- Convenience programming (implemented on the neutral seam) --------
 

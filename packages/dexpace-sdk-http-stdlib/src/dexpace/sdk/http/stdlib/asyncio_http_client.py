@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import ssl as _ssl
 from collections.abc import Mapping
 from types import TracebackType
@@ -57,6 +58,7 @@ from dexpace.sdk.core.errors import (
     ServiceResponseTimeoutError,
 )
 from dexpace.sdk.core.http.common.headers import Headers
+from dexpace.sdk.core.http.common.media_type import MediaType
 from dexpace.sdk.core.http.common.protocol import Protocol
 from dexpace.sdk.core.http.common.url import Url
 from dexpace.sdk.core.http.request.request import Request
@@ -66,6 +68,8 @@ from dexpace.sdk.core.http.response.status import Status
 
 if TYPE_CHECKING:
     from dexpace.sdk.core.http.request.request_body import RequestBody
+
+_LOGGER: Final = logging.getLogger("dexpace.sdk.http.stdlib.asyncio")
 
 _DEFAULT_TIMEOUT: Final[float] = 30.0
 _CRLF: Final[bytes] = b"\r\n"
@@ -108,13 +112,46 @@ class AsyncioHttpClient:
         self._closed = False
 
     async def execute(self, request: Request) -> AsyncResponse:
+        """Send ``request`` and return the response.
+
+        Exception-mapping matrix (native cause -> SDK type):
+
+        - Connect-phase failure/timeout, mapped in `_open` -> `ServiceRequestError`
+          / `ServiceRequestTimeoutError`. The timeout check is by *type*
+          (``except TimeoutError``), explicit rather than an incidental
+          reliance on any platform aliasing.
+        - A ``TimeoutError`` reaching this method (connect already succeeded,
+          so the stall is read/write-phase) -> `ServiceResponseTimeoutError`.
+        - A truncated body (``IncompleteReadError``) or an over-limit header
+          line (``readline`` re-raising ``LimitOverrunError`` as
+          ``ValueError``) -> `ServiceResponseError`.
+        - A malformed status line, malformed header, or
+          ``Transfer-Encoding: chunked`` response (unsupported by this
+          transport) -> `ServiceResponseError`, raised directly by `_read`.
+        - Any other mid-exchange ``OSError`` (the request may already be on
+          the wire) -> `ServiceResponseError`, not the request-error bucket
+          the httpx/aiohttp/requests adapters use, so a non-idempotent
+          request already possibly received is never blindly retried.
+        - ``asyncio.CancelledError`` is a `BaseException`, never caught by
+          any clause here, and propagates natively — the connection is still
+          torn down via the ``finally`` clause below.
+
+        Raises:
+            ServiceRequestError: When the connection cannot be established.
+            ServiceRequestTimeoutError: When the connect phase times out.
+            ServiceResponseError: When the response cannot be read or
+                parsed, or another mid-exchange transport error occurs.
+            ServiceResponseTimeoutError: When a read/write phase stalls
+                after the connection was established.
+        """
         if self._closed:
             raise ServiceRequestError("AsyncioHttpClient is closed")
+        timeout = request.timeout if request.timeout is not None else self.timeout
         host, port, secure, path = _split_url(request.url)
-        reader, writer = await self._open(host, port, secure)
+        reader, writer = await self._open(host, port, secure, timeout)
         try:
             await self._send(writer, request, host, port, secure, path)
-            return await self._read(reader, request)
+            return await self._read(reader, request, timeout)
         except TimeoutError as err:
             # The connection was established (``_open`` already maps connect
             # timeouts), so a timeout here is a read/write-phase stall.
@@ -164,6 +201,7 @@ class AsyncioHttpClient:
         host: str,
         port: int,
         secure: bool,
+        timeout: float,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         # ``http://`` must never attempt a TLS handshake, even when a caller
         # supplied an ``ssl_context`` — the ``secure`` guard wraps the whole
@@ -172,7 +210,7 @@ class AsyncioHttpClient:
         try:
             return await asyncio.wait_for(
                 asyncio.open_connection(host, port, ssl=ssl_ctx),
-                timeout=self.timeout,
+                timeout=timeout,
             )
         except TimeoutError as err:
             raise ServiceRequestTimeoutError(
@@ -196,19 +234,26 @@ class AsyncioHttpClient:
             # (file / stream reads); run it off the event loop so the loop is
             # not stalled while the payload is gathered.
             body_bytes = await asyncio.to_thread(_drain_body, request.body)
-        headers = Headers(request.headers.items())
+        headers = _resolve_content_type(request)
         if "host" not in headers:
             # Preserve a caller-supplied Host (virtual hosting); only derive
             # it from the URL when the request did not set one. RFC 9112 §3.2
             # requires the port for non-default ports.
             headers = headers.with_set("Host", _host_header(host, port, secure))
-        if "content-length" not in headers:
-            if body_bytes:
-                headers = headers.with_set("Content-Length", str(len(body_bytes)))
-            elif str(request.method) in _BODY_METHODS:
-                # RFC 9110 §8.6 recommends an explicit ``Content-Length: 0``
-                # for body-bearing methods sent without a payload.
-                headers = headers.with_set("Content-Length", "0")
+        # A caller-supplied Content-Length/Transfer-Encoding is never trusted:
+        # it is dropped and recomputed from the bytes actually drained above,
+        # since a stale value disagreeing with the real payload breaks HTTP
+        # framing (the peer reads short or hangs waiting for bytes that never
+        # arrive). This transport always fully buffers before send, so the
+        # exact length is always known — Transfer-Encoding: chunked is never
+        # emitted (see the module docstring's streaming-upload limitation).
+        headers = headers.without("Content-Length").without("Transfer-Encoding")
+        if body_bytes:
+            headers = headers.with_set("Content-Length", str(len(body_bytes)))
+        elif str(request.method) in _BODY_METHODS:
+            # RFC 9110 §8.6 recommends an explicit ``Content-Length: 0``
+            # for body-bearing methods sent without a payload.
+            headers = headers.with_set("Content-Length", "0")
         headers = headers.with_set("Connection", "close")
         request_line = f"{request.method} {path or '/'} HTTP/1.1".encode()
         lines: list[bytes] = [request_line]
@@ -223,8 +268,9 @@ class AsyncioHttpClient:
         self,
         reader: asyncio.StreamReader,
         request: Request,
+        timeout: float,
     ) -> AsyncResponse:
-        status_line = await asyncio.wait_for(reader.readline(), timeout=self.timeout)
+        status_line = await asyncio.wait_for(reader.readline(), timeout=timeout)
         if not status_line:
             raise ServiceResponseError("Empty response from server")
         parts = status_line.decode("latin-1").rstrip("\r\n").split(" ", 2)
@@ -233,18 +279,20 @@ class AsyncioHttpClient:
         protocol = _PROTOCOL_BY_VERSION.get(parts[0], Protocol.HTTP_1_1)
         status = _parse_status(parts[1])
         reason = (parts[2] or None) if len(parts) > 2 else None
-        headers = await self._read_headers(reader)
-        body_bytes = await self._read_body(reader, headers)
+        headers = await self._read_headers(reader, timeout)
+        body_bytes = await self._read_body(reader, headers, timeout)
         return AsyncResponse(
             request=request,
             protocol=protocol,
             status=status,
             headers=headers,
             reason=reason,
-            body=AsyncResponseBody.from_bytes(body_bytes),
+            body=AsyncResponseBody.from_bytes(body_bytes, media_type=_inbound_media_type(headers)),
         )
 
-    async def _read_body(self, reader: asyncio.StreamReader, headers: Headers) -> bytes:
+    async def _read_body(
+        self, reader: asyncio.StreamReader, headers: Headers, timeout: float
+    ) -> bytes:
         """Read the response body, honouring the response's framing.
 
         ``Transfer-Encoding: chunked`` is rejected loudly (this reference
@@ -255,6 +303,7 @@ class AsyncioHttpClient:
         Args:
             reader: The connection's stream reader.
             headers: The parsed response headers.
+            timeout: The effective per-call timeout for this read.
 
         Returns:
             The raw response body bytes.
@@ -269,24 +318,59 @@ class AsyncioHttpClient:
         content_length = _content_length(headers)
         if content_length is None:
             # No Content-Length: connection-close framed. Read to EOF.
-            return await asyncio.wait_for(reader.read(), timeout=self.timeout)
+            return await asyncio.wait_for(reader.read(), timeout=timeout)
         return await asyncio.wait_for(
             reader.readexactly(content_length) if content_length > 0 else _empty(),
-            timeout=self.timeout,
+            timeout=timeout,
         )
 
-    async def _read_headers(self, reader: asyncio.StreamReader) -> Headers:
-        entries: list[tuple[str, str]] = []
+    async def _read_headers(self, reader: asyncio.StreamReader, timeout: float) -> Headers:
+        """Read response header lines, dropping malformed names defensively.
+
+        A missing colon is a genuine framing failure (the line is not a
+        header at all) and aborts the exchange. A well-formed ``name: value``
+        line whose name fails `Headers`' token validation (e.g. an embedded
+        space) is instead dropped and logged — a single malformed header must
+        never take down the whole response, and `Headers`' bulk constructor
+        raises on the first invalid entry rather than skipping it, so entries
+        are added one at a time here.
+        """
+        headers = Headers()
         while True:
-            line = await asyncio.wait_for(reader.readline(), timeout=self.timeout)
+            line = await asyncio.wait_for(reader.readline(), timeout=timeout)
             if not line or line in (b"\r\n", b"\n"):
                 break
             text = line.decode("latin-1").rstrip("\r\n")
             if ":" not in text:
                 raise ServiceResponseError(f"Malformed header: {text!r}")
             name, _, value = text.partition(":")
-            entries.append((name.strip(), value.strip()))
-        return Headers(entries)
+            try:
+                headers = headers.with_added(name.strip(), value.strip())
+            except ValueError:
+                _LOGGER.warning("dropping malformed inbound response header: %r", name.strip())
+        return headers
+
+
+def _resolve_content_type(request: Request) -> Headers:
+    """Keep a caller-set Content-Type; else derive one from the body."""
+    headers = request.headers
+    if headers.get("Content-Type") is not None or request.body is None:
+        return headers
+    media = request.body.media_type()
+    if media is None:
+        return headers
+    return headers.with_set("Content-Type", str(media))
+
+
+def _inbound_media_type(headers: Headers) -> MediaType | None:
+    """Parse the response Content-Type, downgrading a malformed value to ``None``."""
+    raw = headers.get("Content-Type")
+    if raw is None:
+        return None
+    try:
+        return MediaType.parse(raw)
+    except ValueError:
+        return None
 
 
 def _split_url(url: Url) -> tuple[str, int, bool, str]:
