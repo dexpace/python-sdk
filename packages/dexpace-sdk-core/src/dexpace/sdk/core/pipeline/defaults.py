@@ -10,10 +10,11 @@ from typing import TYPE_CHECKING
 from .async_staged_builder import AsyncStagedPipelineBuilder
 from .policies.async_client_identity import AsyncClientIdentityPolicy
 from .policies.async_idempotency import AsyncIdempotencyPolicy
+from .policies.async_logging_policy import AsyncLoggingPolicy
 from .policies.async_redirect import AsyncRedirectPolicy
 from .policies.async_retry import AsyncRetryPolicy
 from .policies.async_set_date import AsyncSetDatePolicy
-from .policies.async_tracing_policy import AsyncOperationTracingPolicy
+from .policies.async_tracing_policy import AsyncOperationTracingPolicy, AsyncTracingPolicy
 from .policies.client_identity import ClientIdentityPolicy
 from .policies.idempotency import IdempotencyPolicy
 from .policies.logging_policy import LoggingPolicy
@@ -104,6 +105,8 @@ def default_async_pipeline(
     set_date: AsyncSetDatePolicy | None = None,
     client_identity: AsyncClientIdentityPolicy | None = None,
     auth: AsyncPolicy | None = None,
+    logging: AsyncLoggingPolicy | None = None,
+    tracing: AsyncTracingPolicy | None = None,
 ) -> AsyncStagedPipelineBuilder:
     """Async twin of `default_pipeline`.
 
@@ -112,32 +115,28 @@ def default_async_pipeline(
     ``HttpTracer`` lifecycle (``operation_started`` / ``operation_succeeded`` /
     ``operation_failed``) fires once and reflects the final outcome — completing
     the attempt-level events the async retry policy already emits through the
-    same per-operation tracer. The per-attempt OpenTelemetry span policy
-    (`TracingPolicy`) and `LoggingPolicy` ship sync-only, so the async stack
-    omits those two.
-
-    Known gap — async wire logging: there is no async twin of `LoggingPolicy`
-    yet, so an async pipeline emits no per-request / per-response log lines and
-    no request-body preview. Correlation ids still propagate across ``await``
-    boundaries (`AsyncOperationTracingPolicy` binds them), so an async caller's
-    own log records remain correlated; only the built-in wire log is absent.
-    An async logging policy is planned; until it lands, wrap the transport or
-    add a custom `AsyncPolicy` if you need request/response logging on the
-    async path.
+    same per-operation tracer. `AsyncLoggingPolicy` and `AsyncTracingPolicy`
+    then sit inside the retry wrapper (at ``LOGGING`` / ``POST_LOGGING``), so
+    the async stack emits the same per-attempt wire logs and per-attempt tracing
+    span as the sync default.
 
     No redirect policy by default. Unlike the sync `default_pipeline`, this
     stack does NOT wire `AsyncRedirectPolicy` unless the caller passes one
-    explicitly. The async twin has not been certified against the full redirect
-    security battery: cross-origin credential handling is judged against the
-    previous hop rather than the seed origin and strips only ``Authorization``
-    (not ``Cookie`` / ``Proxy-Authorization``); an HTTPS→HTTP downgrade is
-    followed rather than default-denied; and ``Location`` resolution round-trips
-    through a parse/re-encode that does not preserve percent-encoding
-    wire-exactly. Silently following redirects on the async path without those
-    guarantees is the failure mode this omission avoids. The certification lands
-    in a later milestone; until it does, an async caller who accepts the current
-    limitations can opt in by passing ``redirect=AsyncRedirectPolicy(...)``,
-    which wires it into the REDIRECT stage exactly as the sync default does.
+    explicitly. Neither pillar's redirect handling is yet certified against the
+    full redirect security battery — `AsyncRedirectPolicy` delegates every
+    per-hop decision to the same `RedirectPolicy` core the sync default wires
+    unconditionally, so the gaps are shared, not async-specific: cross-origin
+    credential handling is judged against the previous hop rather than the seed
+    origin and strips only ``Authorization`` (not ``Cookie`` /
+    ``Proxy-Authorization``); an HTTPS→HTTP downgrade is followed rather than
+    default-denied. (`Location` resolution IS wire-exact — the pure RFC 3986
+    query codec fixed that dimension.) See `docs/deviations.md` for the full
+    battery and status. Gating the async twin off by default — rather than
+    also removing it from the sync default, which would be a bigger behavior
+    change — is the narrower fix while the shared core gets certified; until
+    then, an async caller who accepts the current limitations can opt in by
+    passing ``redirect=AsyncRedirectPolicy(...)``, which wires it into the
+    REDIRECT stage exactly as the sync default does.
 
     Args:
         client: Terminal async HTTP transport.
@@ -152,6 +151,8 @@ def default_async_pipeline(
             uses defaults.
         auth: Optional async authentication policy. No default — requests pass
             without authentication when this is ``None``.
+        logging: Override for `AsyncLoggingPolicy`. ``None`` uses defaults.
+        tracing: Override for `AsyncTracingPolicy`. ``None`` uses defaults.
 
     Returns:
         An `AsyncStagedPipelineBuilder` ready for further customisation or
@@ -171,6 +172,10 @@ def default_async_pipeline(
     builder.append(client_identity or AsyncClientIdentityPolicy())
     if auth is not None:
         builder.append(auth)
+    # Sit inside the retry wrapper (LOGGING / POST_LOGGING) so wire logs and the
+    # tracing span are emitted per attempt, matching the sync default's slots.
+    builder.append(logging or AsyncLoggingPolicy())
+    builder.append(tracing or AsyncTracingPolicy())
     return builder
 
 

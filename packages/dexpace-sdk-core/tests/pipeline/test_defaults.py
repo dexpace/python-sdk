@@ -37,10 +37,14 @@ from dexpace.sdk.core.pipeline.async_policy import AsyncPolicy
 from dexpace.sdk.core.pipeline.defaults import default_async_pipeline, default_pipeline
 from dexpace.sdk.core.pipeline.policies.async_client_identity import AsyncClientIdentityPolicy
 from dexpace.sdk.core.pipeline.policies.async_idempotency import AsyncIdempotencyPolicy
+from dexpace.sdk.core.pipeline.policies.async_logging_policy import AsyncLoggingPolicy
 from dexpace.sdk.core.pipeline.policies.async_redirect import AsyncRedirectPolicy
 from dexpace.sdk.core.pipeline.policies.async_retry import AsyncRetryPolicy
 from dexpace.sdk.core.pipeline.policies.async_set_date import AsyncSetDatePolicy
-from dexpace.sdk.core.pipeline.policies.async_tracing_policy import AsyncOperationTracingPolicy
+from dexpace.sdk.core.pipeline.policies.async_tracing_policy import (
+    AsyncOperationTracingPolicy,
+    AsyncTracingPolicy,
+)
 from dexpace.sdk.core.pipeline.policies.client_identity import ClientIdentityPolicy
 from dexpace.sdk.core.pipeline.policies.idempotency import IdempotencyPolicy
 from dexpace.sdk.core.pipeline.policies.logging_policy import LoggingPolicy
@@ -379,9 +383,12 @@ def test_default_async_pipeline_wires_operation_tracing() -> None:
 
 
 def test_default_async_pipeline_exact_policy_order() -> None:
-    # The async default omits redirect (opt-in only) and both instrumentation
-    # policies (logging + per-attempt tracing ship sync-only). The exact-order
-    # assertion certifies those omissions alongside the surviving sequence.
+    # The async default omits redirect (opt-in only) — the shared resolution
+    # core isn't yet certified against the full redirect security battery
+    # (docs/deviations.md) — but DOES carry the async logging + per-attempt
+    # tracing policies inside the retry wrapper, matching the sync default's
+    # instrumentation slots. The exact-order assertion certifies both the
+    # redirect omission and the instrumentation policies' positions.
     pipeline = default_async_pipeline(_AsyncStubTransport()).build()
     assert _async_policies_of(pipeline) == [
         AsyncOperationTracingPolicy,
@@ -389,6 +396,8 @@ def test_default_async_pipeline_exact_policy_order() -> None:
         AsyncRetryPolicy,
         AsyncSetDatePolicy,
         AsyncClientIdentityPolicy,
+        AsyncLoggingPolicy,
+        AsyncTracingPolicy,
     ]
 
 
@@ -401,6 +410,8 @@ def test_default_async_pipeline_opt_in_redirect_exact_policy_order() -> None:
         AsyncRetryPolicy,
         AsyncSetDatePolicy,
         AsyncClientIdentityPolicy,
+        AsyncLoggingPolicy,
+        AsyncTracingPolicy,
     ]
 
 
@@ -413,7 +424,30 @@ def test_default_async_pipeline_with_auth_exact_policy_order() -> None:
         AsyncSetDatePolicy,
         AsyncClientIdentityPolicy,
         _StubAsyncAuth,
+        AsyncLoggingPolicy,
+        AsyncTracingPolicy,
     ]
+
+
+def test_default_async_pipeline_wires_logging_and_tracing() -> None:
+    builder = default_async_pipeline(_AsyncStubTransport())
+    # The async wire-logging gap is closed: the LOGGING pillar holds the async
+    # logging policy and the per-attempt tracing span sits at POST_LOGGING,
+    # matching the sync default's instrumentation slots.
+    assert isinstance(builder._pillars[Stage.LOGGING], AsyncLoggingPolicy)
+    stages = _async_stages_of(builder.build())
+    assert Stage.LOGGING in stages
+    assert Stage.POST_LOGGING in stages
+    # Logging / tracing sit inside the retry wrapper (per attempt), not before it.
+    assert stages.index(Stage.RETRY) < stages.index(Stage.LOGGING)
+    assert stages.index(Stage.LOGGING) < stages.index(Stage.POST_LOGGING)
+
+
+def test_default_async_pipeline_logging_tracing_overrides_replace_defaults() -> None:
+    logging = AsyncLoggingPolicy(preview_bytes=256)
+    tracing = AsyncTracingPolicy()
+    builder = default_async_pipeline(_AsyncStubTransport(), logging=logging, tracing=tracing)
+    assert builder._pillars[Stage.LOGGING] is logging
 
 
 def test_default_async_pipeline_omits_redirect_by_default() -> None:

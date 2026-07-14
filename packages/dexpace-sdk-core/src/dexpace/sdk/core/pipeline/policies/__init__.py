@@ -8,10 +8,11 @@ from __future__ import annotations
 from ._history import RequestHistory
 from .async_client_identity import AsyncClientIdentityPolicy
 from .async_idempotency import AsyncIdempotencyPolicy
+from .async_logging_policy import AsyncLoggingPolicy
 from .async_redirect import AsyncRedirectPolicy
 from .async_retry import AsyncRetryPolicy
 from .async_set_date import AsyncSetDatePolicy
-from .async_tracing_policy import AsyncOperationTracingPolicy
+from .async_tracing_policy import AsyncOperationTracingPolicy, AsyncTracingPolicy
 from .client_identity import ClientIdentityPolicy, default_user_agent
 from .idempotency import IdempotencyPolicy
 from .logging_policy import DEFAULT_PREVIEW_BYTES, LoggingPolicy
@@ -24,10 +25,12 @@ __all__ = [
     "DEFAULT_PREVIEW_BYTES",
     "AsyncClientIdentityPolicy",
     "AsyncIdempotencyPolicy",
+    "AsyncLoggingPolicy",
     "AsyncOperationTracingPolicy",
     "AsyncRedirectPolicy",
     "AsyncRetryPolicy",
     "AsyncSetDatePolicy",
+    "AsyncTracingPolicy",
     "ClientIdentityPolicy",
     "IdempotencyPolicy",
     "LoggingPolicy",
