@@ -20,6 +20,7 @@ httpx response and releases the connection back to the pool.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from types import TracebackType
 from typing import Any, Final, Self
@@ -40,8 +41,13 @@ from dexpace.sdk.core.http.response.response import Response
 from dexpace.sdk.core.http.response.response_body import ResponseBody
 from dexpace.sdk.core.http.response.status import Status
 
+_LOGGER: Final = logging.getLogger(__name__)
+
 _DEFAULT_TIMEOUT: Final[float] = 30.0
 _DEFAULT_CHUNK_SIZE: Final[int] = 8192
+#: Methods whose semantics call for an explicit zero-length body substitution
+#: when the caller supplies no payload (RFC 9110 §8.6).
+_ZERO_LENGTH_METHODS: Final[frozenset[str]] = frozenset({"POST", "PUT", "PATCH"})
 
 
 class HttpxHttpClient:
@@ -69,6 +75,14 @@ class HttpxHttpClient:
             timeout / transport kwargs entirely. Ownership stays with the
             caller: ``close`` does not close a client passed in this way,
             so the caller remains responsible for closing it.
+
+    A client this adapter constructs itself never trusts the process
+    environment: `httpx.Client`'s own ``trust_env`` (which implicitly reads
+    ``HTTP_PROXY`` / ``HTTPS_PROXY`` / ``NO_PROXY``) is pinned to ``False``, so
+    proxy routing only ever happens through the SDK's own opt-in
+    ``ProxyOptions`` resolution, never silently through httpx's defaults. A
+    caller-supplied ``client=`` keeps whatever ``trust_env`` it was built
+    with — ownership of that choice stays with the caller.
     """
 
     __slots__ = ("_client", "_closed", "_owns_client")
@@ -93,7 +107,12 @@ class HttpxHttpClient:
                 write=write_timeout,
                 pool=pool_timeout,
             )
-            self._client = httpx.Client(timeout=timeout, transport=transport)
+            self._client = httpx.Client(
+                timeout=timeout,
+                transport=transport,
+                follow_redirects=False,
+                trust_env=False,
+            )
             self._owns_client = True
         self._closed = False
 
@@ -111,7 +130,17 @@ class HttpxHttpClient:
             raise ServiceRequestError("HttpxHttpClient is closed")
         httpx_request = self._build_request(request)
         try:
-            httpx_response = self._client.send(httpx_request, stream=True)
+            # ``follow_redirects=False`` is pinned here explicitly rather than
+            # left to the client's own default: a caller-supplied (BYO)
+            # ``httpx.Client`` could have been constructed with
+            # ``follow_redirects=True``, and redirect handling is the SDK's
+            # own pipeline policy's job, never the transport's.
+            httpx_response = self._client.send(httpx_request, stream=True, follow_redirects=False)
+        # Subtype-first: every ``httpx.TimeoutException`` subtype (Connect /
+        # Read / Write / Pool) is caught by name *before* the broader
+        # ``httpx.ConnectError`` / ``httpx.RequestError`` clauses below, so a
+        # timeout is never misclassified as a generic network error by
+        # falling through to a wider catch first.
         except httpx.ConnectTimeout as err:
             raise ServiceRequestTimeoutError(str(err), error=err) from err
         except httpx.ReadTimeout as err:
@@ -127,16 +156,26 @@ class HttpxHttpClient:
         return _build_response(request, httpx_response)
 
     def _build_request(self, request: Request) -> httpx.Request:
-        headers = _headers_to_pairs(request.headers)
+        sdk_headers = _resolve_content_type(request.headers, request.body)
+        headers = _headers_to_pairs(sdk_headers)
         content: Iterator[bytes] | None = None
         if request.body is not None:
             content = request.body.iter_bytes(_DEFAULT_CHUNK_SIZE)
-            _frame_known_length(headers, request.headers, request.body)
+            headers = _resolve_framing_headers(headers, request.body)
+        else:
+            headers = _strip_framing_headers(headers)
+            if str(request.method) in _ZERO_LENGTH_METHODS:
+                headers.append((http_header_name.CONTENT_LENGTH.canonical_name, "0"))
+        # A per-call ``Request.timeout`` overrides the client's own default
+        # for this exchange only; ``None`` defers to whatever the client (or
+        # a BYO client's own construction) already has configured.
+        timeout = request.timeout if request.timeout is not None else httpx.USE_CLIENT_DEFAULT
         return self._client.build_request(
             method=str(request.method),
             url=request.url.wire_form(),
             headers=headers,
             content=content,
+            timeout=timeout,
         )
 
     def close(self) -> None:
@@ -216,12 +255,49 @@ class _HttpxStreamAdapter:
         self._response.close()
 
 
+class _AdaptationError(Exception):
+    """Raised internally when a native response cannot be adapted."""
+
+
+def _parse_status(raw: int) -> Status:
+    """Parse the native status; a non-numeric token fails adaptation cleanly.
+
+    Status is total over *valid* integers (TRANSPORT-24): an out-of-range
+    code (outside 100..599) synthesizes an ``UNKNOWN_<code>`` member rather
+    than raising, so a vendor/unusual status still surfaces with its body.
+    Only a genuinely unparseable value (not an int at all) fails here.
+    """
+    try:
+        return Status(int(raw))
+    except (TypeError, ValueError) as err:
+        raise _AdaptationError(f"unparseable status: {raw!r}") from err
+
+
+def _inbound_headers(httpx_response: httpx.Response) -> Headers:
+    """Build response headers, dropping malformed names, preserving obs-text.
+
+    Built one entry at a time rather than in a single ``Headers(...)`` call:
+    a defensively-received header whose name fails the RFC 7230 token check
+    (a literal space, say) is dropped and logged instead of failing the whole
+    response adaptation. A legal-but-unusual obs-text byte in a header
+    *value* is tolerated, per `Headers`'s inbound-lenient contract.
+    """
+    headers = Headers()
+    for name, value in httpx_response.headers.multi_items():
+        try:
+            headers = headers.with_added(name, value)
+        except ValueError:
+            _LOGGER.warning("dropping malformed inbound response header: %r", name)
+    return headers
+
+
 def _build_response(request: Request, httpx_response: httpx.Response) -> Response:
-    # Status is total over integers (TRANSPORT-24): an out-of-range code
-    # (outside 100..599) synthesizes an UNKNOWN_<code> member rather than
-    # raising, so a vendor/unusual status still surfaces with its body.
-    status = Status(int(httpx_response.status_code))
-    headers = Headers(httpx_response.headers.multi_items())
+    try:
+        status = _parse_status(httpx_response.status_code)
+        headers = _inbound_headers(httpx_response)
+    except _AdaptationError as err:
+        httpx_response.close()
+        raise ServiceResponseError(str(err), error=err) from err
     stream = _HttpxStreamAdapter(httpx_response, _DEFAULT_CHUNK_SIZE)
     content_length = _content_length(httpx_response)
     body: Any = ResponseBody.from_stream(stream, content_length=content_length)  # type: ignore[arg-type]
@@ -266,23 +342,69 @@ def _content_length(httpx_response: httpx.Response) -> int:
         return -1
 
 
-def _frame_known_length(pairs: list[tuple[str, str]], headers: Headers, body: RequestBody) -> None:
-    """Add a ``Content-Length`` pair for a known-length body.
-
-    httpx receives the body as a bare iterator with no declared length, so it
-    falls back to ``Transfer-Encoding: chunked``. Declaring the length lets it
-    frame the upload by length instead. Unknown-length bodies (``-1``) are left
-    chunked, and an explicit caller-supplied ``Content-Length`` is preserved.
+def _resolve_content_type(headers: Headers, body: RequestBody | None) -> Headers:
+    """Keep a caller-set ``Content-Type``; else derive one from the body.
 
     Args:
-        pairs: The header name/value pairs forwarded to httpx; mutated in place.
-        headers: The SDK request headers, consulted case-insensitively.
-        body: The outgoing request body.
+        headers: The SDK request headers.
+        body: The outgoing request body, if any.
+
+    Returns:
+        ``headers`` unchanged when the caller already set a content-type (or
+        there is no body / the body reports none); otherwise ``headers`` with
+        the body's `MediaType` stamped on as ``Content-Type``.
     """
+    if headers.get(http_header_name.CONTENT_TYPE) is not None or body is None:
+        return headers
+    media = body.media_type()
+    if media is None:
+        return headers
+    return headers.with_set(http_header_name.CONTENT_TYPE, str(media))
+
+
+def _resolve_framing_headers(
+    pairs: list[tuple[str, str]], body: RequestBody
+) -> list[tuple[str, str]]:
+    """Recompute framing headers from the actual body; never trust the caller.
+
+    httpx receives the body as a bare iterator with no declared length, so it
+    falls back to ``Transfer-Encoding: chunked`` unless told otherwise. A
+    caller-supplied ``Content-Length`` that disagrees with the body actually
+    being written (or one left over from a different, unknown-length body) is
+    stale and would violate RFC 9112 §6.1's "not both" framing rule, so any
+    existing ``Content-Length`` / ``Transfer-Encoding`` is dropped first and
+    the correct one is derived from ``body.content_length()``.
+
+    Args:
+        pairs: The header name/value pairs forwarded to httpx.
+        body: The outgoing request body.
+
+    Returns:
+        ``pairs`` with framing headers recomputed from ``body``.
+    """
+    pairs = _strip_framing_headers(pairs)
     length = body.content_length()
-    if length < 0 or http_header_name.CONTENT_LENGTH in headers:
-        return
-    pairs.append((http_header_name.CONTENT_LENGTH.canonical_name, str(length)))
+    if length >= 0:
+        pairs.append((http_header_name.CONTENT_LENGTH.canonical_name, str(length)))
+    return pairs
+
+
+def _strip_framing_headers(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Drop any caller-supplied ``Content-Length`` / ``Transfer-Encoding``.
+
+    Framing headers describe a body; when there is none, any stale
+    caller-supplied value would misdescribe the (absent) payload, so both are
+    dropped here before the bodyless-method case re-adds an explicit
+    ``Content-Length: 0`` (RFC 9110 §8.6).
+
+    Args:
+        pairs: The header name/value pairs forwarded to httpx.
+
+    Returns:
+        A new list with any ``content-length`` / ``transfer-encoding`` entries
+        removed.
+    """
+    return [(n, v) for n, v in pairs if n.lower() not in ("content-length", "transfer-encoding")]
 
 
 def _headers_to_pairs(headers: Headers) -> list[tuple[str, str]]:
