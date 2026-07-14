@@ -159,3 +159,131 @@ jobs:
       - name: pyright typing-conformance corpus (advisory)
         continue-on-error: true
         run: uv run --with pyright pyright packages/dexpace-sdk-core/tests/typing_conformance.py
+
+  version-skew:
+    name: version skew (Python ${{ matrix.python-version }}, ${{ matrix.resolution }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+        resolution: ["highest", "lowest-direct"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+
+      # Resolve the workspace at either edge of its declared dependency window.
+      # `highest` exercises the newest adapters against head core (the standard
+      # release runtime). `lowest-direct` pins every *direct* dependency to its
+      # declared floor: core to the compatible-release lower bound each adapter
+      # and the TCK pin (dexpace-sdk-core>=0.1,<0.2) and each transport to its
+      # minimum (httpx>=0.27, aiohttp>=3.9, requests>=2.32, furl>=2.1.3). Running
+      # both edges across Python 3.12-3.14 turns the forward-compatibility
+      # promise -- newest adapters and the generated petstore canary run against
+      # the oldest supported core -- into a passing pipeline, not a prose claim.
+      - name: Sync workspace (${{ matrix.resolution }} resolution)
+        run: uv sync --resolution ${{ matrix.resolution }}
+
+      # Newest adapters (built from HEAD) plus the TCK conformance battery, run
+      # against the resolved core. `--no-sync` keeps the environment exactly as
+      # the resolution step left it rather than re-resolving to the default edge.
+      - name: Adapters + TCK conformance
+        run: >
+          uv run --no-sync pytest -q
+          packages/dexpace-sdk-http-stdlib/tests
+          packages/dexpace-sdk-http-httpx/tests
+          packages/dexpace-sdk-http-aiohttp/tests
+          packages/dexpace-sdk-http-requests/tests
+          packages/dexpace-sdk-tck/src/dexpace/sdk/tck
+
+      # The petstore canary is the "generated at vN.M runs on vN.x" proof: a
+      # generated SDK driven end to end over the certified core. Running it at
+      # both dependency edges proves the generated output keeps working against
+      # both head core and the oldest supported core.
+      - name: Petstore canary
+        run: uv run --no-sync pytest -q examples/petstore/tests
+
+  free-threaded:
+    name: free-threaded CPython (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13t", "3.14t"]
+    # Exercises the codebase's explicit-lock claims (no GIL assumption) on a real
+    # GIL-disabled interpreter, not just under code review. Only the
+    # lock-sensitive core suites run here, and each spins real threads: the
+    # single-use body once-guards, the single-flight token cache, the
+    # ContextStore cap-drain, the emit-once logger latch, and the SSE
+    # cross-thread close. Core is pure Python (only furl), so the environment
+    # holds core plus the test runner alone -- no C-extension transports, which
+    # do not yet ship free-threaded wheels.
+    env:
+      # Fail loudly if an imported extension would force the GIL back on rather
+      # than silently re-enabling it and voiding the exercise.
+      PYTHON_GIL: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Install free-threaded interpreter
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Create free-threaded environment
+        run: uv venv --python ${{ matrix.python-version }} .venv-ft
+
+      # `--only-binary hypothesis` uses its universal wheel instead of building
+      # its sdist, whose build pulls a Rust/PyO3 toolchain with no free-threaded
+      # support yet. hypothesis is imported by the core test conftest.
+      - name: Install core + test runner
+        run: >
+          uv pip install --python .venv-ft --only-binary hypothesis
+          ./packages/dexpace-sdk-core
+          pytest pytest-asyncio hypothesis
+
+      - name: Verify the interpreter is GIL-disabled
+        run: .venv-ft/bin/python -c "import sys; assert not sys._is_gil_enabled(), 'GIL is enabled'; print(sys.version)"
+
+      - name: Run lock-sensitive suites (GIL disabled)
+        run: >
+          .venv-ft/bin/python -m pytest -q
+          packages/dexpace-sdk-core/tests/http/test_single_use_bodies.py
+          packages/dexpace-sdk-core/tests/auth/test_token_cache.py
+          packages/dexpace-sdk-core/tests/context/test_context_store.py
+          packages/dexpace-sdk-core/tests/instrumentation/test_logger.py
+          packages/dexpace-sdk-core/tests/sse/test_connection_lifecycle.py
+
+  version-source:
+    name: single version train
+    runs-on: ubuntu-latest
+    # One version train for every published package (NFR-14): the version lives
+    # once in each pyproject and is mirrored in uv.lock, and a built wheel
+    # carries that real version -- never a placeholder such as 0.0.0 or
+    # "unknown" (NFR-15). A bump touches all published packages together or this
+    # gate fails.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Build a wheel to inspect its metadata version
+        run: uv build --package dexpace-sdk-core --wheel -o dist
+
+      - name: Verify one version train (pyproject + uv.lock + wheel)
+        run: uv run --no-project python tools/check_version_train.py --wheel-dir dist
