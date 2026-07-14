@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..errors import PipelineAbortedError
+from ._recovery import _close_and_chain
 from .policy import Policy
 from .step.pipeline_step import PipelineStep
 
@@ -56,8 +57,15 @@ class _SansIOResponseRunner(Policy):
         response = self.next.send(request, ctx)
         try:
             transformed = self._step(response, ctx.call)
-        except BaseException:
-            response.close()
+        except BaseException as exc:
+            # Close the held response before the exception continues. This
+            # catch-all is deliberately broad: a step that raises an
+            # ``Exception`` folds upstream, but a ``BaseException`` — an
+            # ``asyncio.CancelledError`` or ``KeyboardInterrupt`` — must
+            # re-raise unconverted, never be swallowed here. A failure from the
+            # close itself is chained onto ``exc`` so the original exception,
+            # not the close error, is what propagates.
+            _close_and_chain(response, exc)
             raise
         if transformed is None:
             response.close()

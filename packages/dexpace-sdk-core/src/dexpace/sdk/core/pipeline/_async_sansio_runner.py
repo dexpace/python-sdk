@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from ..errors import PipelineAbortedError
+from ._async_recovery import _aclose_and_chain
 from .async_policy import AsyncPolicy
 
 if TYPE_CHECKING:
@@ -72,8 +73,12 @@ class _AsyncSansIOResponseRunner(AsyncPolicy):
             transformed: AsyncResponse | None = await _resolve(
                 self._step(response, ctx.call),
             )
-        except BaseException:
-            await response.close()
+        except BaseException as exc:
+            # Broad by design: fold-class ``Exception``s and cancellation-class
+            # ``BaseException``s (``asyncio.CancelledError``, ``KeyboardInterrupt``)
+            # alike must re-raise unconverted after the held response is closed.
+            # A close failure is chained onto ``exc`` so the original propagates.
+            await _aclose_and_chain(response, exc)
             raise
         if transformed is None:
             await response.close()
