@@ -33,6 +33,7 @@ from dexpace.sdk.core.instrumentation import (
 )
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import Pipeline
+from dexpace.sdk.core.pipeline._pure.classifier import DEFAULT_RETRYABLE_STATUS
 from dexpace.sdk.core.pipeline._pure.pacing import parse_retry_after
 from dexpace.sdk.core.pipeline.policies import RetryPolicy
 
@@ -121,6 +122,63 @@ class TestRetryOnStatus:
             response = p.run(_get(), DispatchContext(_instr("0" * 16 + "5")))
         # 1 initial + 2 retries = 3 attempts before giving up.
         assert client.attempts == 3
+        assert response.status is Status.SERVICE_UNAVAILABLE
+
+
+class TestCustomRetryStatusSet:
+    """The configurable ``retry_on_status_codes`` set drives the retry decision.
+
+    The default set (``408/429/500/502/503/504``) is the single authority
+    shared with the classifier and ``HttpResponseError.retryable``; a caller
+    may override it end to end. These tests exercise the actual retry loop, not
+    just the pure classifier, so a regression that ignored the configured set
+    would be caught here.
+    """
+
+    def test_default_set_is_exactly_the_curated_codes(self) -> None:
+        # The policy default is the shared classifier default verbatim — the
+        # permanent 501/505 are deliberately absent so retrying a request that
+        # can never succeed is not attempted.
+        retry = RetryPolicy(clock=FakeClock())
+        assert retry.retry_on_status_codes == DEFAULT_RETRYABLE_STATUS
+        assert retry.retry_on_status_codes == frozenset({408, 429, 500, 502, 503, 504})
+        assert 501 not in retry.retry_on_status_codes
+        assert 505 not in retry.retry_on_status_codes
+
+    @pytest.mark.parametrize(
+        "status",
+        [Status.NOT_IMPLEMENTED, Status.HTTP_VERSION_NOT_SUPPORTED],
+        ids=["501", "505"],
+    )
+    def test_default_policy_does_not_retry_permanent_5xx(self, status: Status) -> None:
+        # The permanent-failure exclusion survives end to end: an idempotent GET
+        # returning 501/505 is passed straight back, never retried.
+        client = _ScriptedClient([status])
+        retry = RetryPolicy(clock=FakeClock())
+        with Pipeline(client, policies=[retry]) as p:
+            response = p.run(_get(), DispatchContext(_instr("0" * 15 + "50")))
+        assert client.attempts == 1
+        assert response.status is status
+
+    def test_custom_set_honors_explicitly_included_501(self) -> None:
+        # A caller who *explicitly* opts 501 into their own set is honored — the
+        # default merely excludes it, it is not hard-blocked. The GET is retried
+        # and eventually succeeds.
+        client = _ScriptedClient([Status.NOT_IMPLEMENTED, Status.OK])
+        retry = RetryPolicy(retry_on_status_codes={501}, clock=FakeClock())
+        with Pipeline(client, policies=[retry]) as p:
+            response = p.run(_get(), DispatchContext(_instr("0" * 15 + "51")))
+        assert client.attempts == 2
+        assert response.status is Status.OK
+
+    def test_custom_set_excludes_a_default_code(self) -> None:
+        # Narrowing the set to ``{500}`` drops 503 from the retryable codes, so a
+        # 503 that the default set *would* retry is now returned on first sight.
+        client = _ScriptedClient([Status.SERVICE_UNAVAILABLE])
+        retry = RetryPolicy(retry_on_status_codes={500}, clock=FakeClock())
+        with Pipeline(client, policies=[retry]) as p:
+            response = p.run(_get(), DispatchContext(_instr("0" * 15 + "52")))
+        assert client.attempts == 1
         assert response.status is Status.SERVICE_UNAVAILABLE
 
 

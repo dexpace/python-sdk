@@ -109,6 +109,29 @@ def test_retryable_is_baked_once_and_stable_against_classifier_change(
     assert fresh.retryable is False
 
 
+def test_retry_policy_custom_set_does_not_rewrite_baked_error_flag() -> None:
+    # The retry policy's ``retry_on_status_codes`` is the direct injection point
+    # for a custom set, but it is a *policy-local* override: the error bakes its
+    # own flag from the shared classifier default at construction and never
+    # consults a policy instance. Building a policy with an inverted set must
+    # therefore leave already-built errors' flags untouched — the flag reflects
+    # the set authoritative at construction time, not a policy's configuration.
+    from dexpace.sdk.core.pipeline.policies import RetryPolicy
+
+    retryable_by_default = HttpResponseError(response=_response(Status.SERVICE_UNAVAILABLE))
+    terminal_by_default = HttpResponseError(response=_response(Status.NOT_IMPLEMENTED))
+    assert retryable_by_default.retryable is True  # 503 in the default set
+    assert terminal_by_default.retryable is False  # 501 excluded by default
+
+    # A policy whose set inverts both classifications relative to the default.
+    RetryPolicy(retry_on_status_codes={501})
+
+    # The errors keep the flags baked at their own construction, independent of
+    # any policy's set.
+    assert retryable_by_default.retryable is True
+    assert terminal_by_default.retryable is False
+
+
 # ----- bounded, replayable error body -------------------------------------
 
 
