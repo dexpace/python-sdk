@@ -22,6 +22,19 @@
           }
         }
       },
+      "dexpace.sdk.core.codegen.assembly": {
+        "assemble": "assemble(op: Operation, input: OperationInput, base_url: str | Url, *, serde: Serde | None) -> Request"
+      },
+      "dexpace.sdk.core.codegen.operation": {
+        "Operation": {
+          "bases": [],
+          "methods": {}
+        },
+        "OperationInput": {
+          "bases": [],
+          "methods": {}
+        }
+      },
       "dexpace.sdk.core.config.build_descriptor": {
         "BuildDescriptor": {
           "bases": [],
@@ -1549,6 +1562,11 @@
         "AsyncHttpClient",
         "HttpClient",
         "asyncio_sleep"
+      ],
+      "dexpace.sdk.core.codegen": [
+        "Operation",
+        "OperationInput",
+        "assemble"
       ],
       "dexpace.sdk.core.config": [
         "BuildDescriptor",
