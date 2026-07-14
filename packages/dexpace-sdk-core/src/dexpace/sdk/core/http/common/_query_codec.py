@@ -29,7 +29,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from urllib.parse import quote, unquote
 
-__all__ = ["parse_query", "render_query"]
+__all__ = ["parse_query", "remove_query_param", "render_query", "splice_query"]
 
 
 def _encode(component: str) -> str:
@@ -68,6 +68,81 @@ def render_query(pairs: Iterable[tuple[str, str]]) -> str:
         The wire query string with no leading ``?`` (empty for no pairs).
     """
     return "&".join(f"{_encode(name)}={_encode(value)}" for name, value in pairs)
+
+
+def _token_name(token: str) -> str:
+    """Decode a raw ``name=value`` token's name (the part before the first ``=``).
+
+    The name is decoded so it compares against a plain (unencoded) parameter
+    name, while the token itself is left untouched by the caller — only the
+    name is inspected, never rewritten.
+
+    Args:
+        token: One raw ``&``-separated query token (a bare flag has no ``=``).
+
+    Returns:
+        The percent-decoded parameter name.
+    """
+    return unquote(token.split("=", 1)[0])
+
+
+def splice_query(raw_query: str, name: str, value: str) -> str:
+    """Set ``name=value`` in a raw query, preserving every other token verbatim.
+
+    A wire-exact splice: the query is tokenised on ``&`` and every untouched
+    token is copied through byte for byte — a pre-encoded ``%20`` survives and a
+    literal ``+`` is neither re-encoded to ``%2B`` nor decoded to a space. Only
+    the new pair is freshly RFC 3986 encoded via ``render_query``. This is a
+    deliberate alternative to a ``parse_qs`` / ``urlencode`` round-trip, which
+    would normalise (and so corrupt) the untouched bytes.
+
+    The first token whose (decoded) name equals ``name`` is replaced in place,
+    keeping its position; if no token matches, the new pair is appended. A
+    second occurrence of ``name`` is left untouched — a "set" edits the first
+    only.
+
+    Args:
+        raw_query: The raw query string with no leading ``?`` (may be empty).
+        name: The parameter name to set (plain, unencoded).
+        value: The parameter value to set (plain, unencoded).
+
+    Returns:
+        The rewritten raw query string with no leading ``?``.
+    """
+    encoded = render_query([(name, value)])
+    if not raw_query:
+        return encoded
+    result: list[str] = []
+    replaced = False
+    for token in raw_query.split("&"):
+        if not replaced and _token_name(token) == name:
+            result.append(encoded)
+            replaced = True
+        else:
+            result.append(token)
+    if not replaced:
+        result.append(encoded)
+    return "&".join(result)
+
+
+def remove_query_param(raw_query: str, name: str) -> str:
+    """Drop every occurrence of ``name`` from a raw query, preserving other tokens.
+
+    The counterpart to ``splice_query``'s "set": all tokens whose (decoded) name
+    equals ``name`` are removed; every other token is copied through byte for
+    byte, so untouched pre-encoded or literal-``+`` bytes survive verbatim.
+
+    Args:
+        raw_query: The raw query string with no leading ``?`` (may be empty).
+        name: The parameter name to drop (plain, unencoded).
+
+    Returns:
+        The rewritten raw query string with no leading ``?``.
+    """
+    if not raw_query:
+        return ""
+    kept = [token for token in raw_query.split("&") if _token_name(token) != name]
+    return "&".join(kept)
 
 
 def parse_query(raw: str) -> list[tuple[str, str]]:
