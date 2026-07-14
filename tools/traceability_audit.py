@@ -367,10 +367,11 @@ def render_matrix_csv(result: AuditResult, index: RequirementIndex) -> str:
 def na_ids_from_file(path: Path | str | None) -> frozenset[str]:
     """Read intentionally-not-applicable requirement ids from a ledger file.
 
-    This is the seam the future deviations ledger plugs into. The accepted
-    format is one requirement id per line; blank lines and ``#`` comments are
-    ignored. A ``None`` path or a missing file yields an empty set, so the audit
-    works before the ledger exists.
+    This is the seam the deviations ledger plugs into. The accepted format is
+    one requirement id per line, optionally followed by an inline ``#`` comment
+    giving the justification (``RETRY-9  # deviation: ...``); blank lines and
+    whole-line ``#`` comments are ignored. A ``None`` path or a missing file
+    yields an empty set, so the audit works before the ledger exists.
 
     Args:
         path: Path to the N/A id file, or ``None``.
@@ -385,9 +386,10 @@ def na_ids_from_file(path: Path | str | None) -> frozenset[str]:
         return frozenset()
     ids: set[str] = set()
     for line in resolved.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#"):
-            ids.add(stripped)
+        # Drop any inline comment, then take the bare id token.
+        token = line.split("#", 1)[0].strip()
+        if token:
+            ids.add(token)
     return frozenset(ids)
 
 

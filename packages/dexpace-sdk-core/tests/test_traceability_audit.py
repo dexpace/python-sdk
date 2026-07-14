@@ -201,8 +201,12 @@ def test_na_ids_from_missing_or_none_path_is_empty(tool: ModuleType, tmp_path: P
 
 def test_na_ids_from_file_reads_ids_and_skips_comments(tool: ModuleType, tmp_path: Path) -> None:
     ledger = tmp_path / "deviations.txt"
-    ledger.write_text("# comment\nRETRY-19\n\n  AUTH-02  \n", encoding="utf-8")
-    assert tool.na_ids_from_file(ledger) == frozenset({"RETRY-19", "AUTH-02"})
+    ledger.write_text(
+        "# whole-line comment\nRETRY-19\n\n  AUTH-02  \nRETRY-9  # deviation: met differently\n",
+        encoding="utf-8",
+    )
+    # Bare ids and ids with an inline justification comment both resolve to the id.
+    assert tool.na_ids_from_file(ledger) == frozenset({"RETRY-19", "AUTH-02", "RETRY-9"})
 
 
 # --- Plugin behaviour ------------------------------------------------------
