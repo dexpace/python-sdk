@@ -171,11 +171,13 @@ class BearerTokenPolicy(Policy):
         status = int(response.status)
         if status not in (401, 407):
             return response
-        # On 401 the bearer token was rejected: drop it from the cache so the
-        # ``on_challenge`` fallback path forces a refresh. A 407 means the
-        # proxy rejected us, not the origin — leave the cached token alone.
+        # On 401 the origin rejected the bearer token: drop it from the cache
+        # so a later refresh re-fetches. Evict only when the cached token still
+        # matches the one this request carried, so a stale 401 cannot discard a
+        # token a concurrent refresh already replaced. A 407 means the proxy
+        # rejected us, not the origin — leave the cached token alone.
         if status == 401:
-            self._cache.set(self._scopes, _expired_token(), self._audience)
+            self._evict_rejected_token(request)
         handler_header = self._apply_challenge_handler(request, response, status)
         if handler_header is not None:
             request = request.with_header(*handler_header)
@@ -190,14 +192,69 @@ class BearerTokenPolicy(Policy):
             # No handler match on a 407; surface the response unchanged so
             # callers can inspect proxy-auth failures themselves.
             return response
-        if "WWW-Authenticate" in response.headers and self.on_challenge(request, response):
-            request = self._authorize(request, ctx, force_refresh=True)
-            # Release the rejected 401 before retrying with the refreshed token.
+        return self._replay_on_challenge(request, response, ctx)
+
+    def _replay_on_challenge(
+        self,
+        request: Request,
+        response: Response,
+        ctx: PipelineContext,
+    ) -> Response:
+        """Consult ``on_challenge`` and replay the 401 at most once.
+
+        A 401 without a ``WWW-Authenticate`` header is surfaced unchanged and
+        the hook is never consulted. A single-use request body is likewise
+        surfaced un-replayed rather than corrupting a half-consumed stream by
+        resending it. When the hook authorizes a retry and the body is
+        replayable, the request is re-issued once with a refreshed token and
+        the resulting response is returned regardless of its status — there is
+        no challenge loop. If the hook raises, the rejected response is closed
+        before the exception propagates so its connection is not leaked.
+
+        Args:
+            request: The request that produced the 401.
+            response: The open 401 response.
+            ctx: The per-operation pipeline context.
+
+        Returns:
+            The surfaced 401, or the response from the single replay.
+        """
+        if "WWW-Authenticate" not in response.headers:
+            return response
+        if request.body is not None and not request.body.is_replayable():
+            return response
+        try:
+            proceed = self.on_challenge(request, response)
+        except BaseException:
             response.close()
-            response = self.next.send(request, ctx)
-            if int(response.status) != 401:
-                return response
-        raise ClientAuthenticationError(response=response)
+            raise
+        if not proceed:
+            return response
+        request = self._authorize(request, ctx, force_refresh=True)
+        # Release the rejected 401 before retrying with the refreshed token.
+        response.close()
+        return self.next.send(request, ctx)
+
+    def _evict_rejected_token(self, request: Request) -> None:
+        """Evict the cached token when it still matches this request's stamp.
+
+        A 401 invalidates only the exact token that was sent. Matching the
+        stamped ``Authorization`` header against the cached token guards a
+        token a concurrent refresh already installed: a stale 401 for the
+        superseded token must not discard the newer one still valid for other
+        requests. The compare-and-set runs under the refresh lock so it is
+        atomic with respect to ``_authorize``.
+
+        Args:
+            request: The request whose stamped token was rejected.
+        """
+        stamped = request.headers.get("Authorization")
+        if stamped is None:
+            return
+        with self._lock:
+            cached = self._cache.get(self._scopes, self._audience)
+            if cached is not None and stamped == f"{cached.token_type} {cached.token}":
+                self._cache.set(self._scopes, _expired_token(), self._audience)
 
     def _apply_challenge_handler(
         self,
@@ -239,14 +296,15 @@ class BearerTokenPolicy(Policy):
             ``False`` (the default) to surface the error to the caller.
 
         Note:
-            By the time this hook runs, ``send`` has already replaced the
-            cached token for ``(scopes, audience)`` with an expired sentinel
-            (``token=""``, ``expires_on=0``). Subclasses that inspect the
-            ``TokenCache`` here will see that sentinel, not the original
-            token that was attached to ``request``. The sentinel is what
-            forces the subsequent ``_authorize`` call (when this hook
-            returns ``True``) to invoke the credential and acquire a fresh
-            token rather than reusing the rejected one.
+            By the time this hook runs, ``send`` has invalidated the cached
+            token for ``(scopes, audience)`` — replacing it with an expired
+            sentinel (``token=""``, ``expires_on=0``) — but only when the
+            cached token still matched the one stamped on ``request``. A
+            subclass inspecting the ``TokenCache`` here therefore sees the
+            sentinel whenever the rejection was for the currently cached
+            token, and the newer token otherwise. When this hook returns
+            ``True`` the subsequent ``_authorize`` call forces a fresh
+            acquisition regardless.
         """
         del request, response
         return False
@@ -343,11 +401,13 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         status = int(response.status)
         if status not in (401, 407):
             return response
-        # On 401 the bearer token was rejected: drop it from the cache so the
-        # ``on_challenge`` fallback path forces a refresh. A 407 means the
-        # proxy rejected us, not the origin — leave the cached token alone.
+        # On 401 the origin rejected the bearer token: drop it from the cache
+        # so a later refresh re-fetches. Evict only when the cached token still
+        # matches the one this request carried, so a stale 401 cannot discard a
+        # token a concurrent refresh already replaced. A 407 means the proxy
+        # rejected us, not the origin — leave the cached token alone.
         if status == 401:
-            self._cache.set(self._scopes, _expired_token(), self._audience)
+            self._evict_rejected_token(request)
         handler_header = self._apply_challenge_handler(request, response, status)
         if handler_header is not None:
             request = request.with_header(*handler_header)
@@ -362,14 +422,66 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
             # No handler match on a 407; surface the response unchanged so
             # callers can inspect proxy-auth failures themselves.
             return response
-        if "WWW-Authenticate" in response.headers and await self.on_challenge(request, response):
-            request = await self._authorize(request, ctx, force_refresh=True)
-            # Release the rejected 401 before retrying with the refreshed token.
+        return await self._replay_on_challenge(request, response, ctx)
+
+    async def _replay_on_challenge(
+        self,
+        request: Request,
+        response: AsyncResponse,
+        ctx: PipelineContext,
+    ) -> AsyncResponse:
+        """Async twin of ``BearerTokenPolicy._replay_on_challenge``.
+
+        Enforces the same gate as the sync policy: a 401 without a
+        ``WWW-Authenticate`` header is surfaced without consulting the hook, a
+        single-use body is surfaced un-replayed, and at most one replay is made
+        when the hook authorizes it, whose response is returned regardless of
+        status. Wrapping the ``await`` of ``on_challenge`` catches every hook
+        failure shape — a raised coroutine and a synchronous throw from
+        producing the coroutine alike — so the rejected response is closed
+        before the exception propagates.
+
+        Args:
+            request: The request that produced the 401.
+            response: The open 401 response.
+            ctx: The per-operation pipeline context.
+
+        Returns:
+            The surfaced 401, or the response from the single replay.
+        """
+        if "WWW-Authenticate" not in response.headers:
+            return response
+        if request.body is not None and not request.body.is_replayable():
+            return response
+        try:
+            proceed = await self.on_challenge(request, response)
+        except BaseException:
             await response.close()
-            response = await self.next.send(request, ctx)
-            if int(response.status) != 401:
-                return response
-        raise ClientAuthenticationError(response=response)
+            raise
+        if not proceed:
+            return response
+        request = await self._authorize(request, ctx, force_refresh=True)
+        # Release the rejected 401 before retrying with the refreshed token.
+        await response.close()
+        return await self.next.send(request, ctx)
+
+    def _evict_rejected_token(self, request: Request) -> None:
+        """Evict the cached token when it still matches this request's stamp.
+
+        Mirrors ``BearerTokenPolicy._evict_rejected_token``. The compare-and-set
+        needs no lock here: it runs without an ``await`` between the read and
+        the write, so no other task can interleave under asyncio's cooperative
+        scheduling.
+
+        Args:
+            request: The request whose stamped token was rejected.
+        """
+        stamped = request.headers.get("Authorization")
+        if stamped is None:
+            return
+        cached = self._cache.get(self._scopes, self._audience)
+        if cached is not None and stamped == f"{cached.token_type} {cached.token}":
+            self._cache.set(self._scopes, _expired_token(), self._audience)
 
     def _apply_challenge_handler(
         self,
@@ -407,14 +519,15 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         """Async version of ``BearerTokenPolicy.on_challenge``.
 
         Note:
-            By the time this hook runs, ``send`` has already replaced the
-            cached token for ``(scopes, audience)`` with an expired sentinel
-            (``token=""``, ``expires_on=0``). Subclasses that inspect the
-            ``TokenCache`` here will see that sentinel, not the original
-            token that was attached to ``request``. The sentinel is what
-            forces the subsequent ``_authorize`` call (when this hook
-            returns ``True``) to invoke the credential and acquire a fresh
-            token rather than reusing the rejected one.
+            By the time this hook runs, ``send`` has invalidated the cached
+            token for ``(scopes, audience)`` — replacing it with an expired
+            sentinel (``token=""``, ``expires_on=0``) — but only when the
+            cached token still matched the one stamped on ``request``. A
+            subclass inspecting the ``TokenCache`` here therefore sees the
+            sentinel whenever the rejection was for the currently cached
+            token, and the newer token otherwise. When this hook returns
+            ``True`` the subsequent ``_authorize`` call forces a fresh
+            acquisition regardless.
         """
         del request, response
         return False
