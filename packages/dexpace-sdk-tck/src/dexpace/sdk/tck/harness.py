@@ -16,12 +16,12 @@ A harness is the single seam between a test body and a concrete adapter:
 - and inspects what the adapter did through ``sent_requests`` /
   ``attempt_count`` / ``drop_log`` / ``native_responses`` / ``byo_*``.
 
-Because every test body speaks only this seam, a later task can certify a real
-adapter (PY-M8-02..05) by shipping its own harness implementation and appending
-it to the registry — no test body changes. The same split makes the extraction
-of this package into a standalone TCK (PY-M10-01) a mechanical move: this module
-plus the ``test_*`` batteries travel together, and each transport package
-supplies its harness.
+Because every test body speaks only this seam, a transport adapter is certified
+by shipping its own harness implementation and appending it to the registry — no
+test body changes. This module and the ``test_*`` batteries ship together inside
+the installed ``dexpace.sdk.tck`` package, and each transport-adapter package
+supplies its own harness and registers it from that package's own
+``tests/conftest.py``.
 
 Capability flags let a harness declare which contract facets it can simulate;
 the battery skips the facets a given transport cannot exercise rather than
@@ -382,9 +382,9 @@ class AsyncTransportHarness(_BaseHarness):
         """Close ``client`` through whatever async close surface the adapter exposes."""
 
 
-# Registries a future task appends real-adapter harness factories to. Populated
-# for the in-memory reference fake in ``conftest.py``; a certification task adds
-# its factory here (or from its own package's conftest once the TCK is extracted).
+# Registries each transport-adapter package appends its harness factory to.
+# Populated for the in-memory reference fake in this package's ``conftest.py``;
+# each real adapter appends its factory from its own package's ``tests/conftest.py``.
 SYNC_HARNESS_FACTORIES: list[tuple[str, type[SyncTransportHarness]]] = []
 ASYNC_HARNESS_FACTORIES: list[tuple[str, type[AsyncTransportHarness]]] = []
 

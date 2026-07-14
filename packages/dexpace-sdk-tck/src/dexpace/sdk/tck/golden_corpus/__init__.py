@@ -11,8 +11,8 @@ own conformance checks at these vectors.
 
 The fixtures live under ``data/`` as raw byte files organised by family, read
 in binary mode via ``importlib.resources`` so newline forms and percent-encoded
-bytes are never mangled. The layout is self-contained so the corpus can later
-be lifted into a standalone TCK distribution and shipped as package data.
+bytes are never mangled. The corpus ships as package data inside the
+``dexpace.sdk.tck`` distribution and loads byte-exactly from an installed wheel.
 """
 
 from __future__ import annotations

@@ -10,9 +10,10 @@ collection time (rather than at import time) is what makes the battery
 genuinely parametrizable: each real transport-adapter package appends its own
 harness factory to ``SYNC_HARNESS_FACTORIES`` / ``ASYNC_HARNESS_FACTORIES``
 from ITS OWN ``tests/conftest.py`` when that package's tests are collected, and
-every ``test_*`` body runs against it unchanged. This shared conftest depends
-on NO adapter package — it registers only the in-memory reference — so the
-battery stays transport-agnostic and lifts cleanly into a standalone TCK.
+every ``test_*`` body runs against it unchanged. This TCK conftest depends on
+NO adapter package — it registers only the in-memory reference — so the battery
+stays transport-agnostic: certifying any adapter needs only that adapter's own
+harness registration.
 """
 
 from __future__ import annotations

@@ -4,9 +4,9 @@
 """Real-adapter conformance harness for the httpx transports.
 
 Implements the shared transport-adapter conformance battery's
-``SyncTransportHarness`` / ``AsyncTransportHarness`` ABCs (from
-``dexpace-sdk-core``'s ``tests/transport_conformance/harness.py``) against the
-REAL `HttpxHttpClient` / `AsyncHttpxHttpClient` adapters — not a stand-in.
+``SyncTransportHarness`` / ``AsyncTransportHarness`` ABCs (from the installed
+``dexpace.sdk.tck.harness`` module) against the REAL `HttpxHttpClient` /
+`AsyncHttpxHttpClient` adapters — not a stand-in.
 
 The "native layer" faked here is a custom `httpx.BaseTransport` /
 `httpx.AsyncBaseTransport` pair, plugged in through the same ``transport=``
@@ -17,12 +17,10 @@ runs as real `httpx` / adapter code; only the socket is faked out, exactly
 where `httpx.MockTransport` would sit.
 
 This module intentionally lives in ``dexpace-sdk-http-httpx``'s own test tree
-(not inside ``dexpace-sdk-core``): the workspace's shared pytest session
-already makes ``tests.transport_conformance.harness`` importable from any
-package's tests (all five distributions share one editable-install
-virtualenv), so registering from here keeps this package's certification
-self-contained — no shared file is edited, so parallel certification tasks
-for the other transports never collide with this one.
+(not inside the TCK): the harness ABCs ship in the installed
+``dexpace.sdk.tck`` package, so registering from here keeps this package's
+certification self-contained — no shared file is edited, so parallel
+certification work for the other transports never collides with this one.
 """
 
 from __future__ import annotations
@@ -34,7 +32,11 @@ from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, Final
 
 import httpx
-from tests.transport_conformance.harness import (
+
+from dexpace.sdk.core.errors import RequestCancelledError
+from dexpace.sdk.core.http.common.headers import Headers
+from dexpace.sdk.http.httpx import AsyncHttpxHttpClient, HttpxHttpClient
+from dexpace.sdk.tck.harness import (
     AsyncTransportHarness,
     ClosableNative,
     DropLog,
@@ -44,10 +46,6 @@ from tests.transport_conformance.harness import (
     SentRequest,
     SyncTransportHarness,
 )
-
-from dexpace.sdk.core.errors import RequestCancelledError
-from dexpace.sdk.core.http.common.headers import Headers
-from dexpace.sdk.http.httpx import AsyncHttpxHttpClient, HttpxHttpClient
 
 if TYPE_CHECKING:
     from dexpace.sdk.core.client.async_http_client import AsyncHttpClient

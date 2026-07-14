@@ -23,7 +23,7 @@ from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 
 import pytest
 
-from .golden_corpus import (
+from dexpace.sdk.tck.golden_corpus import (
     FAMILIES,
     FAMILY_TAGS,
     load_all,

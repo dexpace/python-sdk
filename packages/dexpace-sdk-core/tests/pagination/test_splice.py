@@ -23,8 +23,7 @@ from urllib.parse import urlsplit, urlunsplit
 import pytest
 
 from dexpace.sdk.core.http.common._query_codec import remove_query_param, splice_query
-
-from ..golden_corpus import PaginationSpliceVector, load_pagination_splice
+from dexpace.sdk.tck.golden_corpus import PaginationSpliceVector, load_pagination_splice
 
 _VECTORS = load_pagination_splice()
 

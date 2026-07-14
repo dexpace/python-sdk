@@ -3,10 +3,10 @@
 
 """Real-``aiohttp`` harness for the shared transport-adapter conformance battery.
 
-``AiohttpAsyncHarness`` implements `AsyncTransportHarness` (from the shared
-``tests.transport_conformance`` battery built in PY-M8-01) against the REAL
-`AiohttpHttpClient` adapter — not a fake. Every native exchange the battery
-programs is realised as literally as aiohttp allows:
+``AiohttpAsyncHarness`` implements `AsyncTransportHarness` (from the installed
+``dexpace.sdk.tck`` conformance kit) against the REAL `AiohttpHttpClient`
+adapter — not a fake. Every native exchange the battery programs is realised as
+literally as aiohttp allows:
 
 - A ``RESPONSE`` outcome with a numeric status and well-formed headers is
   served by a genuine ``aiohttp.web`` server bound to loopback; the request
@@ -51,7 +51,10 @@ from typing import TYPE_CHECKING, Final
 
 import aiohttp
 from aiohttp import web
-from tests.transport_conformance.harness import (
+
+from dexpace.sdk.core.http.common.headers import Headers
+from dexpace.sdk.http.aiohttp import AiohttpHttpClient
+from dexpace.sdk.tck.harness import (
     AsyncTransportHarness,
     ClosableNative,
     DropLog,
@@ -60,9 +63,6 @@ from tests.transport_conformance.harness import (
     ResponseSpec,
     SentRequest,
 )
-
-from dexpace.sdk.core.http.common.headers import Headers
-from dexpace.sdk.http.aiohttp import AiohttpHttpClient
 
 if TYPE_CHECKING:
     from dexpace.sdk.core.client.async_http_client import AsyncHttpClient

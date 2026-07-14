@@ -2,11 +2,12 @@
 # Licensed under the MIT License. See LICENSE.md in the repository root for details.
 
 """Real-transport harness certifying ``RequestsHttpClient`` against the shared
-transport-adapter conformance battery (see
-``dexpace-sdk-core/tests/transport_conformance``).
+transport-adapter conformance battery (the installed ``dexpace.sdk.tck``
+package).
 
-Unlike ``fake_transport.py`` (an in-memory reference adapter over a fake
-native layer), this harness drives the REAL ``RequestsHttpClient`` over a REAL
+Unlike the TCK's ``dexpace.sdk.tck.fake_transport`` (an in-memory reference
+adapter over a fake native layer), this harness drives the REAL
+``RequestsHttpClient`` over a REAL
 ``requests.Session``. The "native layer" the battery programs is realised by
 mounting a custom ``requests.adapters.BaseAdapter`` on the session — the same,
 already-established technique this package's own unit tests use
@@ -43,7 +44,10 @@ from typing import TYPE_CHECKING, Final, cast
 
 import requests
 import requests.adapters
-from tests.transport_conformance.harness import (
+from urllib3 import HTTPHeaderDict
+
+from dexpace.sdk.core.http.common.headers import Headers
+from dexpace.sdk.tck.harness import (
     ClosableNative,
     DropLog,
     Outcome,
@@ -52,9 +56,6 @@ from tests.transport_conformance.harness import (
     SentRequest,
     SyncTransportHarness,
 )
-from urllib3 import HTTPHeaderDict
-
-from dexpace.sdk.core.http.common.headers import Headers
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator

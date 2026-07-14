@@ -36,8 +36,7 @@ from dexpace.sdk.core.pipeline._pure.pacing import (
     parse_rate_limit_reset,
     parse_retry_after,
 )
-
-from ..golden_corpus import RetryPacingVector, load_retry_pacing
+from dexpace.sdk.tck.golden_corpus import RetryPacingVector, load_retry_pacing
 
 # ----- classifier: status table -------------------------------------------
 
