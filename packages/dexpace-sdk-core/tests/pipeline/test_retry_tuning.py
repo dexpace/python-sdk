@@ -32,15 +32,13 @@ from dexpace.sdk.core.instrumentation import (
 from dexpace.sdk.core.instrumentation.http_tracer import HttpTracer, HttpTracerFactory
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import Pipeline
+from dexpace.sdk.core.pipeline._pure.pacing import parse_rate_limit_reset
 from dexpace.sdk.core.pipeline.policies import (
     OperationTracingPolicy,
     RetryPolicy,
     TracingPolicy,
 )
-from dexpace.sdk.core.pipeline.policies.retry import (
-    _parse_rate_limit_reset,
-    _StatusRetryError,
-)
+from dexpace.sdk.core.pipeline.policies.retry import _StatusRetryError
 
 from ..conftest import FakeClock
 
@@ -121,17 +119,17 @@ class _RecordingTracerFactory:
 
 class TestRateLimitResetParsing:
     def test_epoch_in_future_yields_positive_delay(self) -> None:
-        assert _parse_rate_limit_reset("150", now=100.0) == 50.0
+        assert parse_rate_limit_reset("150", now=100.0) == 50.0
 
     def test_epoch_in_past_floors_at_zero(self) -> None:
-        assert _parse_rate_limit_reset("90", now=100.0) == 0.0
+        assert parse_rate_limit_reset("90", now=100.0) == 0.0
 
     def test_missing_or_blank_returns_none(self) -> None:
-        assert _parse_rate_limit_reset(None, now=0.0) is None
-        assert _parse_rate_limit_reset("   ", now=0.0) is None
+        assert parse_rate_limit_reset(None, now=0.0) is None
+        assert parse_rate_limit_reset("   ", now=0.0) is None
 
     def test_non_numeric_returns_none(self) -> None:
-        assert _parse_rate_limit_reset("soon", now=0.0) is None
+        assert parse_rate_limit_reset("soon", now=0.0) is None
 
 
 class TestRateLimitResetHonored:

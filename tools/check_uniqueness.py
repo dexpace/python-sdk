@@ -24,10 +24,11 @@ bodies (``__init__`` field stores, ``__hash__``, builder splices), so an
 unregistered denylist would be noise. The registry keeps the audit precise —
 zero false positives, and every entry documents an invariant on purpose.
 
-The registry is empty today because the pure algorithm modules land in later
-milestones (M4/M6). The companion pytest exercises the mechanism against a
-fixture pair (one file defining a formula, one restating it) so the machinery is
-proven to catch duplication before there is anything real to catch.
+The registry covers the shared resilience formulas (retry classifier, backoff
+calculator, pacing parser); further pure modules land in later milestones. The
+companion pytest also exercises the mechanism against a fixture pair (one file
+defining a formula, one restating it) so the machinery stays proven independent
+of what happens to be registered.
 
 Run as a script to audit the live tree:
 
@@ -63,20 +64,44 @@ class Algorithm:
 
 # Registry of single-sourced algorithms.
 #
-# EMPTY today — the pure algorithm modules (retry classifier, backoff
-# calculator, pacing parser, query codec, SSE grammar, redirect resolution)
-# are built in later milestones. Register each one here when it is written; the
-# audit then forbids any other module (notably an async twin) from restating its
-# body instead of importing it.
-#
-# Example — uncomment and adapt once the module exists:
-#
-#     Algorithm(
-#         module="dexpace.sdk.core.pipeline._backoff",
-#         function="compute_delay",
-#         description="Exponential backoff with full jitter.",
-#     ),
-SINGLE_SOURCED: tuple[Algorithm, ...] = ()
+# Each entry names a formula that is defined once in a pure module and imported
+# everywhere else; the audit then forbids any other module (notably a
+# hand-maintained async twin) from restating its body instead of importing it.
+# Further pure modules (query codec, SSE grammar, redirect resolution) land in
+# later milestones — register each here when it is written.
+_PURE = "dexpace.sdk.core.pipeline._pure"
+SINGLE_SOURCED: tuple[Algorithm, ...] = (
+    Algorithm(
+        module=f"{_PURE}.classifier",
+        function="status_is_retryable",
+        description="Retryability status-code table lookup against a configurable set.",
+    ),
+    Algorithm(
+        module=f"{_PURE}.classifier",
+        function="is_retryable",
+        description="Cycle-safe retryability walk over an exception cause chain.",
+    ),
+    Algorithm(
+        module=f"{_PURE}.backoff",
+        function="compute_backoff",
+        description="Deterministic exponential/fixed backoff schedule (pre-jitter).",
+    ),
+    Algorithm(
+        module=f"{_PURE}.backoff",
+        function="apply_jitter",
+        description="Full/symmetric jitter applied to a computed backoff delay.",
+    ),
+    Algorithm(
+        module=f"{_PURE}.pacing",
+        function="parse_retry_after",
+        description="Retry-After header parser (delta-seconds or HTTP-date).",
+    ),
+    Algorithm(
+        module=f"{_PURE}.pacing",
+        function="parse_rate_limit_reset",
+        description="X-RateLimit-Reset epoch header parser.",
+    ),
+)
 
 # Distribution directory name -> its ``src`` sub-path. The audit scans source
 # trees only; test trees (which hold the audit's own fixtures) are excluded.
