@@ -222,7 +222,7 @@
           "bases": [],
           "methods": {}
         },
-        "parse_challenges": "parse_challenges(header_value: str) -> list[AuthenticateChallenge]"
+        "parse_challenges": "parse_challenges(header_value: str | Iterable[str]) -> list[AuthenticateChallenge]"
       },
       "dexpace.sdk.core.http.auth.challenge_handler": {
         "BasicChallengeHandler": {

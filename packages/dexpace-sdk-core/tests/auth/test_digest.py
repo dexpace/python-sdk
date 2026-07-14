@@ -312,6 +312,153 @@ class TestCompositeChallengeHandler:
         assert composite.can_handle([AuthenticateChallenge(scheme="Basic", parameters={})])
         assert not composite.can_handle([AuthenticateChallenge(scheme="Bearer", parameters={})])
 
+    def test_prefers_strongest_scheme_when_all_offered(self) -> None:
+        # A server offering Basic + Digest/MD5 + Digest/SHA-256 must be answered
+        # with the strongest the composite supports: Digest SHA-256. Ordering
+        # Digest ahead of Basic in the composite makes Digest win over Basic,
+        # and Digest's own preference makes SHA-256 win over MD5.
+        composite = CompositeChallengeHandler(
+            DigestChallengeHandler(_USERNAME, _PASSWORD, cnonce_factory=lambda: _FIXED_CNONCE),
+            BasicChallengeHandler(_USERNAME, _PASSWORD),
+        )
+        challenges = [
+            AuthenticateChallenge(scheme="Basic", parameters={"realm": _RFC_PARAMS["realm"]}),
+            AuthenticateChallenge(scheme="Digest", parameters={**_RFC_PARAMS, "algorithm": "MD5"}),
+            AuthenticateChallenge(
+                scheme="Digest", parameters={**_RFC_PARAMS, "algorithm": "SHA-256"}
+            ),
+        ]
+        result = composite.handle(Method.GET, _URL, challenges, is_proxy=False)
+        assert result is not None
+        name, value = result
+        assert name == "Authorization"
+        assert value.startswith("Digest ")
+        assert _parse_auth(value)["algorithm"] == "SHA-256"
+
+
+class TestRfc7616Vectors:
+    """End-to-end reproduction of the RFC 7616 §3.9.1 worked example.
+
+    The example authenticates ``GET /dir/index.html`` for user ``Mufasa`` with
+    password ``Circle of Life`` against realm ``http-auth@example.org``, using
+    the fixed ``nonce``/``cnonce``/``opaque`` the RFC pins. The SHA-256
+    ``response`` digest is quoted verbatim from the RFC; the MD5 digest is the
+    widely-published value for the same inputs.
+    """
+
+    def _handle(self, algorithm: str) -> dict[str, str]:
+        handler = DigestChallengeHandler(
+            _USERNAME,
+            _PASSWORD,
+            preferred_algorithms=(algorithm,),
+            cnonce_factory=lambda: _FIXED_CNONCE,
+        )
+        challenge = AuthenticateChallenge(
+            scheme="Digest",
+            parameters={**_RFC_PARAMS, "algorithm": algorithm},
+        )
+        result = handler.handle(Method.GET, _URL, [challenge], is_proxy=False)
+        assert result is not None
+        return _parse_auth(result[1])
+
+    def test_sha256_full_header_matches_rfc(self) -> None:
+        params = self._handle("SHA-256")
+        assert params == {
+            "username": "Mufasa",
+            "realm": "http-auth@example.org",
+            "uri": "/dir/index.html",
+            "algorithm": "SHA-256",
+            "nonce": _RFC_PARAMS["nonce"],
+            "nc": "00000001",
+            "cnonce": _FIXED_CNONCE,
+            "qop": "auth",
+            "response": ("753927fa0e85d155564e2e272a28d1802ca10daf4496794697cf8db5856cb6c1"),
+            "opaque": _RFC_PARAMS["opaque"],
+        }
+
+    def test_md5_full_header_matches_known_vector(self) -> None:
+        params = self._handle("MD5")
+        assert params["algorithm"] == "MD5"
+        assert params["response"] == "8ca523f5e9506fed4657c9700eebdbec"
+        assert params["nc"] == "00000001"
+        assert params["cnonce"] == _FIXED_CNONCE
+        assert params["opaque"] == _RFC_PARAMS["opaque"]
+
+
+class TestNonceCountRobustness:
+    """``nc`` is strictly monotonic per nonce and the tracking map is bounded."""
+
+    def _nc_for(self, handler: DigestChallengeHandler, nonce: str) -> int:
+        challenge = AuthenticateChallenge(
+            scheme="Digest",
+            parameters={**_RFC_PARAMS, "algorithm": "MD5", "nonce": nonce},
+        )
+        result = handler.handle(Method.GET, _URL, [challenge], is_proxy=False)
+        assert result is not None
+        return int(_parse_auth(result[1])["nc"], 16)
+
+    def test_nc_is_strictly_monotonic_over_many_reuses(self) -> None:
+        handler = DigestChallengeHandler(
+            _USERNAME,
+            _PASSWORD,
+            preferred_algorithms=("MD5",),
+            cnonce_factory=lambda: _FIXED_CNONCE,
+        )
+        previous = 0
+        for expected in range(1, 5001):
+            current = self._nc_for(handler, "stable-nonce")
+            assert current == expected
+            assert current > previous
+            previous = current
+
+    def test_nc_renders_as_eight_lowercase_hex_digits(self) -> None:
+        handler = DigestChallengeHandler(
+            _USERNAME,
+            _PASSWORD,
+            preferred_algorithms=("MD5",),
+            cnonce_factory=lambda: _FIXED_CNONCE,
+        )
+        challenge = AuthenticateChallenge(
+            scheme="Digest", parameters={**_RFC_PARAMS, "algorithm": "MD5"}
+        )
+        result = handler.handle(Method.GET, _URL, [challenge], is_proxy=False)
+        assert result is not None
+        assert re.fullmatch(r"[0-9a-f]{8}", _parse_auth(result[1])["nc"])
+
+    def test_actively_reused_nonce_survives_eviction_pressure(self) -> None:
+        # Interleaving a hot nonce with a flood of one-shot nonces must not
+        # evict the hot nonce: each reuse refreshes its recency, so its count
+        # keeps climbing rather than resetting to 1.
+        from dexpace.sdk.core.http.auth.digest import _MAX_TRACKED_NONCES
+
+        handler = DigestChallengeHandler(
+            _USERNAME,
+            _PASSWORD,
+            preferred_algorithms=("MD5",),
+            cnonce_factory=lambda: _FIXED_CNONCE,
+        )
+        hot_uses = 0
+        for index in range(_MAX_TRACKED_NONCES * 2):
+            self._nc_for(handler, "hot")
+            hot_uses += 1
+            self._nc_for(handler, f"cold-{index}")
+        assert self._nc_for(handler, "hot") == hot_uses + 1
+        assert len(handler._nonce_counts) == _MAX_TRACKED_NONCES
+
+    def test_map_stays_bounded_under_pure_rotation(self) -> None:
+        from dexpace.sdk.core.http.auth.digest import _MAX_TRACKED_NONCES
+
+        handler = DigestChallengeHandler(
+            _USERNAME,
+            _PASSWORD,
+            preferred_algorithms=("MD5",),
+            cnonce_factory=lambda: _FIXED_CNONCE,
+        )
+        for index in range(_MAX_TRACKED_NONCES * 3):
+            self._nc_for(handler, f"rotating-{index}")
+            assert len(handler._nonce_counts) <= _MAX_TRACKED_NONCES
+        assert len(handler._nonce_counts) == _MAX_TRACKED_NONCES
+
 
 def _structural_protocol_check() -> ChallengeHandler:
     """Compile-time check that BasicChallengeHandler is a ChallengeHandler."""
