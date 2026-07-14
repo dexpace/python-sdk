@@ -169,6 +169,30 @@ class _SyncSingleFlight:
     def _is_fresh(self, token: AccessTokenInfo | None) -> bool:
         return classify(token, now=self._clock.now(), margin=self._margin) is RefreshZone.FRESH
 
+    def evict_if_matches(
+        self,
+        predicate: Callable[[AccessTokenInfo], bool],
+        replacement: AccessTokenInfo,
+    ) -> None:
+        """Replace the cached token with ``replacement`` if it matches ``predicate``.
+
+        Runs under the same lock ``get_token`` uses for its refresh
+        compare-and-set, so eviction cannot race a concurrent refresh across
+        threads: either this reads the token before a refresh publishes a new
+        one (and evicts it), or it reads the new one after (and ``predicate``
+        — checked against a caller-held reference to the token that was
+        actually rejected — correctly declines to evict it).
+
+        Args:
+            predicate: Called with the currently cached token, if any; return
+                ``True`` to evict it.
+            replacement: The value to store in place of an evicted token.
+        """
+        with self._lock:
+            token = self._cache.get(self._scopes, self._audience)
+            if token is not None and predicate(token):
+                self._cache.set(self._scopes, replacement, self._audience)
+
 
 class _AsyncSingleFlight:
     """Three-zone async refresh with shielded single-flight for one token key.

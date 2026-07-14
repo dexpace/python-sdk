@@ -251,10 +251,10 @@ class BearerTokenPolicy(Policy):
         stamped = request.headers.get("Authorization")
         if stamped is None:
             return
-        with self._lock:
-            cached = self._cache.get(self._scopes, self._audience)
-            if cached is not None and stamped == f"{cached.token_type} {cached.token}":
-                self._cache.set(self._scopes, _expired_token(), self._audience)
+        self._single_flight.evict_if_matches(
+            lambda cached: stamped == f"{cached.token_type} {cached.token}",
+            _expired_token(),
+        )
 
     def _apply_challenge_handler(
         self,
