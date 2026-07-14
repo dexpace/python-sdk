@@ -23,9 +23,15 @@ Exception
    ├─ ResponseNotReadError               # attribute access before read
    ├─ StreamingError                     # stream framing / decode error (e.g. SSE)
    ├─ PipelineAbortedError               # SansIO step returned None
-   ├─ SerializationError                 # also a ValueError
-   └─ DeserializationError               # also a ValueError
+   └─ SerdeError                         # serde failure root; also a ValueError
+      ├─ SerializationError              # encode side
+      └─ DeserializationError            # decode side (CodecError lives here)
 ```
+
+`SerdeError` roots the serde failure taxonomy: catch it to handle any
+serde failure regardless of direction, or catch `SerializationError` /
+`DeserializationError` to distinguish encode from decode. All three are
+also `ValueError`s, so existing `except ValueError` handlers keep working.
 
 `SdkError` captures `sys.exc_info()` at construction time, preserving
 the original cause even when the SDK re-wraps a stdlib exception.

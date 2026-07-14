@@ -16,8 +16,9 @@ shapes:
 
 Plus exceptions for body / stream lifecycle violations
 (``StreamConsumedError``, ``StreamClosedError``, ``ResponseNotReadError``,
-``StreamingError``), serialization (``SerializationError``,
-``DeserializationError``), and pipeline aborts (``PipelineAbortedError``).
+``StreamingError``), serde failures (``SerdeError`` and its directional
+``SerializationError`` / ``DeserializationError`` subtypes), and pipeline
+aborts (``PipelineAbortedError``).
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ from .http import (
     ResourceNotModifiedError,
 )
 from .pipeline import PipelineAbortedError
-from .serialization import DeserializationError, SerializationError
+from .serialization import DeserializationError, SerdeError, SerializationError
 from .streaming import (
     ResponseNotReadError,
     StreamClosedError,
@@ -60,6 +61,7 @@ __all__ = [
     "ResourceNotModifiedError",
     "ResponseNotReadError",
     "SdkError",
+    "SerdeError",
     "SerializationError",
     "ServiceRequestError",
     "ServiceRequestTimeoutError",

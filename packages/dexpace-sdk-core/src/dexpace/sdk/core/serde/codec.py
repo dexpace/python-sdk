@@ -373,6 +373,46 @@ def _decode_atomic(
             return _decode_temporal(data, target, path)
         if issubclass(target, uuid.UUID):
             return _decode_uuid(data, target, path)
+        return _decode_scalar(data, target, path)
+    return data
+
+
+def _decode_scalar(data: object, target: type, path: tuple[str, ...]) -> object:
+    """Bind a wire scalar to a plain scalar target under the no-coercion rule.
+
+    The codec performs no implicit coercion, so a wire scalar whose Python type
+    does not match ``target`` passes through unchanged — a wire ``'5'`` bound to
+    ``int`` stays the string ``'5'``, and a wire ``1.5`` bound to ``int`` stays
+    the float ``1.5``. Two cases are singled out:
+
+    - A wire ``null`` bound to a non-``Optional`` target is a genuine shape
+      error, not a value to pass through, so it is rejected with the target type
+      named. An optional target routes through the union branch and never
+      reaches here for a ``null`` payload.
+    - A wire ``int`` bound to a ``float`` target is widened losslessly to
+      ``float`` (``bool`` is excluded, being only nominally an ``int``). This is
+      the one numeric widening JSON's number model makes safe.
+
+    Args:
+        data: The wire scalar to bind.
+        target: The plain scalar type to bind against.
+        path: Wire-name breadcrumb to this location.
+
+    Returns:
+        ``data`` unchanged, or its ``float`` widening for an ``int`` under a
+        ``float`` target.
+
+    Raises:
+        CodecError: If ``data`` is ``None`` and ``target`` is non-optional.
+    """
+    if data is None:
+        raise CodecError(
+            f"expected {target.__name__}, got null",
+            path=path,
+            target_name=target.__name__,
+        )
+    if target is float and type(data) is int:
+        return float(data)
     return data
 
 
