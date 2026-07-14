@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from ..http.request import RequestBody
+    from .auth import AuthDescriptor
 
 __all__ = ["Operation", "OperationInput"]
 
@@ -50,12 +51,18 @@ class Operation:
             `OperationInput.path_params`.
         headers: Static headers constant across every call. Per-call headers in
             `OperationInput.headers` are overlaid on top of these by `assemble`.
+        auth: The operation-level authentication requirement, if the operation
+            declares one. It is the middle tier the executor's resolver consults
+            — used only when no per-call override is passed, and overridden in
+            turn by one that is. ``None`` (the default) leaves the operation
+            without its own requirement, deferring to the client-level default.
     """
 
     name: str = field(compare=False)
     method: Method
     path: str
     headers: Headers = field(default_factory=Headers)
+    auth: AuthDescriptor | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

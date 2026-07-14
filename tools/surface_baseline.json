@@ -95,12 +95,54 @@
           "bases": [],
           "methods": {
             "aclose": "async aclose(self) -> None",
-            "events": "events(self, op: Operation, input: OperationInput, mapper: SseMapper[T], *, auth: AsyncPolicy | None, **call_options: Any) -> AsyncTypedSseConnection[T]",
-            "execute": "async execute(self, op: Operation, input: OperationInput, *, response_type: _Witness[Any] | None, handler: AsyncResponseHandler | None, auth: AsyncPolicy | None, **call_options: Any) -> Any",
-            "execute_request": "async execute_request(self, request: Request, *, response_type: _Witness[Any] | None, handler: AsyncResponseHandler | None, auth: AsyncPolicy | None, **call_options: Any) -> Any",
-            "paginate": "paginate(self, op: Operation, input: OperationInput, strategy: PaginationStrategy[T], *, max_pages: int | None, auth: AsyncPolicy | None, **call_options: Any) -> AsyncPaginator[T]"
+            "events": "events(self, op: Operation, input: OperationInput, mapper: SseMapper[T], *, auth: AuthDescriptor | AsyncPolicy | None, **call_options: Any) -> AsyncTypedSseConnection[T]",
+            "execute": "async execute(self, op: Operation, input: OperationInput, *, response_type: _Witness[Any] | None, handler: AsyncResponseHandler | None, auth: AuthDescriptor | AsyncPolicy | None, **call_options: Any) -> Any",
+            "execute_request": "async execute_request(self, request: Request, *, response_type: _Witness[Any] | None, handler: AsyncResponseHandler | None, auth: AuthDescriptor | AsyncPolicy | None, **call_options: Any) -> Any",
+            "paginate": "paginate(self, op: Operation, input: OperationInput, strategy: PaginationStrategy[T], *, max_pages: int | None, auth: AuthDescriptor | AsyncPolicy | None, **call_options: Any) -> AsyncPaginator[T]"
           }
         }
+      },
+      "dexpace.sdk.core.codegen.auth": {
+        "AuthDescriptor": {
+          "bases": [],
+          "methods": {
+            "of": "of(cls, *requirements: AuthRequirement) -> AuthDescriptor"
+          }
+        },
+        "AuthRegistry": {
+          "bases": [],
+          "methods": {
+            "scheme_for": "scheme_for(self, requirement: AuthRequirement) -> AuthScheme[P] | None"
+          }
+        },
+        "AuthRequirement": {
+          "bases": [],
+          "methods": {}
+        },
+        "AuthResolutionError": {
+          "bases": [
+            "SdkError"
+          ],
+          "methods": {}
+        },
+        "AuthScheme": {
+          "bases": [],
+          "methods": {
+            "satisfies": "satisfies(self, requirement: AuthRequirement) -> bool"
+          }
+        },
+        "AuthTier": {
+          "bases": [
+            "Enum"
+          ],
+          "methods": {}
+        },
+        "ResolvedAuth": {
+          "bases": [],
+          "methods": {}
+        },
+        "resolve_auth": "resolve_auth(*, per_call: AuthDescriptor | None, operation: AuthDescriptor | None, client: AuthDescriptor | None, registry: AuthRegistry[P]) -> ResolvedAuth[P] | None",
+        "select_tier": "select_tier(*, per_call: AuthDescriptor | None, operation: AuthDescriptor | None, client: AuthDescriptor | None) -> tuple[AuthTier, AuthDescriptor] | None"
       },
       "dexpace.sdk.core.codegen.merge_config": {
         "merge_config": "merge_config(defaults: ServiceDefaults, user: ServiceDefaults | None, *, transport: HttpClient | None, pipeline: Pipeline | None, redirect: RedirectPolicy | None, idempotency: IdempotencyPolicy | None, retry: RetryPolicy | None, set_date: SetDatePolicy | None, auth: Policy | None, logging: LoggingPolicy | None, tracing: TracingPolicy | None) -> dict[str, Any]"
@@ -120,10 +162,10 @@
           "bases": [],
           "methods": {
             "close": "close(self) -> None",
-            "events": "events(self, op: Operation, input: OperationInput, mapper: SseMapper[T], *, auth: Policy | None, **call_options: Any) -> TypedSseConnection[T]",
-            "execute": "execute(self, op: Operation, input: OperationInput, *, response_type: _Witness[Any] | None, handler: ResponseHandler | None, auth: Policy | None, **call_options: Any) -> Any",
-            "execute_request": "execute_request(self, request: Request, *, response_type: _Witness[Any] | None, handler: ResponseHandler | None, auth: Policy | None, **call_options: Any) -> Any",
-            "paginate": "paginate(self, op: Operation, input: OperationInput, strategy: PaginationStrategy[T], *, max_pages: int | None, auth: Policy | None, **call_options: Any) -> Paginator[T]"
+            "events": "events(self, op: Operation, input: OperationInput, mapper: SseMapper[T], *, auth: AuthDescriptor | Policy | None, **call_options: Any) -> TypedSseConnection[T]",
+            "execute": "execute(self, op: Operation, input: OperationInput, *, response_type: _Witness[Any] | None, handler: ResponseHandler | None, auth: AuthDescriptor | Policy | None, **call_options: Any) -> Any",
+            "execute_request": "execute_request(self, request: Request, *, response_type: _Witness[Any] | None, handler: ResponseHandler | None, auth: AuthDescriptor | Policy | None, **call_options: Any) -> Any",
+            "paginate": "paginate(self, op: Operation, input: OperationInput, strategy: PaginationStrategy[T], *, max_pages: int | None, auth: AuthDescriptor | Policy | None, **call_options: Any) -> Paginator[T]"
           }
         }
       },
@@ -1794,6 +1836,11 @@
         "AsyncDecodeSuccess",
         "AsyncResponseHandler",
         "AsyncServiceCore",
+        "AuthDescriptor",
+        "AuthRegistry",
+        "AuthRequirement",
+        "AuthResolutionError",
+        "AuthScheme",
         "Operation",
         "OperationInput",
         "ServiceCore",
