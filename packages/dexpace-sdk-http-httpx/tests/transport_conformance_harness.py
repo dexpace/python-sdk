@@ -26,6 +26,7 @@ certification work for the other transports never collides with this one.
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 from collections import deque
 from collections.abc import AsyncIterator, Iterator
@@ -287,6 +288,18 @@ class _HttpxHarnessMixin:
 
     supports_native_header_rejection = False
     supports_proxy_introspection = False
+    #: Python 3.14 tightened ``email`` header-name validation, and httpx's own
+    #: cookie-jar extraction inside ``client.send()`` builds an
+    #: ``email.message.Message`` from the response headers (via
+    #: ``response.info()``). A malformed inbound header NAME — the exact input
+    #: this facet programs — therefore makes httpx raise ``ValueError`` from its
+    #: cookie machinery on 3.14+, BEFORE the adapter's response adaptation (and
+    #: its defensive per-header drop) ever runs. httpx genuinely cannot deliver a
+    #: malformed-name header to the adapter on 3.14+, so this facet is a real,
+    #: verified capability limitation of the httpx transport there — not a
+    #: weakened test. On 3.13 and earlier httpx tolerates the header and the
+    #: adapter's defensive drop is exercised in full, so the facet runs there.
+    supports_defensive_inbound_headers = sys.version_info < (3, 14)
     min_timeout_granularity = 1e-6
 
     def __init__(self) -> None:

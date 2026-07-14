@@ -197,6 +197,8 @@ async def test_native_rejected_header_dropped_counted_and_logged(
 async def test_malformed_inbound_header_dropped_obs_text_preserved(
     async_harness: AsyncTransportHarness,
 ) -> None:
+    if not async_harness.supports_defensive_inbound_headers:
+        pytest.skip("harness cannot recover a good header following a malformed one")
     async_harness.expect_response(
         200,
         headers=[("X-Good", "ok"), ("Bad Name", "x"), ("X-Obs", "caf\xe9")],
