@@ -14,16 +14,22 @@ SDK facade delegates to. Each exposes `execute` / `execute_request` /
 shared pure planners so only the awaiting shell differs between the sync and
 async twins. `AsyncResponseHandler` / `AsyncDecodeSuccess` are the async twin of
 serde's `ResponseHandler` / `DecodeSuccess`, used as the async executor's
-default handler.
+default handler. `ServiceDefaults` plus `merge_config` / `merge_async_config`
+are the Tier-2 seam: they fold a service's baked-in defaults and an optional
+user override into the single core pipeline's constructor kwargs, never a
+second pipeline or a wrapper client.
 """
 
 from __future__ import annotations
 
 from .assembly import assemble
+from .async_merge_config import merge_async_config
 from .async_response_handler import AsyncDecodeSuccess, AsyncResponseHandler
 from .async_service_core import AsyncServiceCore
+from .merge_config import merge_config
 from .operation import Operation, OperationInput
 from .service_core import ServiceCore
+from .service_defaults import ServiceDefaults
 from .status_error_map import StatusErrorMap
 
 __all__ = [
@@ -33,6 +39,9 @@ __all__ = [
     "Operation",
     "OperationInput",
     "ServiceCore",
+    "ServiceDefaults",
     "StatusErrorMap",
     "assemble",
+    "merge_async_config",
+    "merge_config",
 ]
