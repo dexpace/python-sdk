@@ -61,6 +61,15 @@ cancellation by subtype (a `ServiceRequestTimeoutError` is a retryable
 never by matching message text. The asynchronous cancel signal is
 `asyncio.CancelledError`, a `BaseException` that needs no SDK subtype.
 
+On the sync path, cancellation and deadlines are honoured at attempt boundaries
+and during backoff waits — the retry loop's `CancellationToken` sleep returns
+early the moment another thread cancels. An already-issued blocking socket read
+is *not* interrupted mid-read, though: CPython threads cannot be pre-empted from
+outside, so an in-flight read runs to its own transport read timeout before the
+retry loop regains control. That is a property of the threading model, not a
+missing feature; callers needing tighter mid-read cancellation set an aggressive
+transport read timeout or use the async stack. See [`deviations.md`](deviations.md).
+
 `SerdeError` roots the serde failure taxonomy: catch it to handle any
 serde failure regardless of direction, or catch `SerializationError` /
 `DeserializationError` to distinguish encode from decode. All three are
@@ -75,12 +84,15 @@ Consumer libraries declare a per-operation table and use `map_error`
 after each send:
 
 ```python
+from dexpace.sdk.core.client import HttpClient
 from dexpace.sdk.core.errors import (
     ResourceExistsError,
     ResourceModifiedError,
     ResourceNotFoundError,
     map_error,
 )
+from dexpace.sdk.core.http.request import Request
+from dexpace.sdk.core.http.response import Response
 
 ERROR_MAP = {
     404: ResourceNotFoundError,
@@ -88,10 +100,12 @@ ERROR_MAP = {
     412: ResourceModifiedError,
 }
 
-with client.execute(request) as response:
-    if not response.is_success:
-        map_error(int(response.status), response, ERROR_MAP)
-    return response
+
+def send(client: HttpClient, request: Request) -> Response:
+    with client.execute(request) as response:
+        if not response.is_success:
+            map_error(int(response.status), response, ERROR_MAP)
+        return response
 ```
 
 `map_error` only raises when `status_code` is a key in the supplied
