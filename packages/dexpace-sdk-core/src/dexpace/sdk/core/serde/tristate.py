@@ -70,12 +70,28 @@ class _Null:
 class Present[T]:
     """A real, present value within a ``Tristate``.
 
+    ``None`` is rejected at construction: "present but null" is the ``NULL``
+    variant, so ``Present(None)`` would make the three inhabitants overlap and
+    reintroduce the very ``None``-means-absent ambiguity ``Tristate`` exists to
+    remove. ``__match_args__`` (supplied by the dataclass) is ``("value",)``,
+    so ``case Present(v):`` binds the wrapped value in a ``match`` statement.
+
     Attributes:
         value: The wrapped value. May itself be falsy (``0``, ``""``, ``[]``);
-            presence is encoded by the wrapper, never by truthiness.
+            presence is encoded by the wrapper, never by truthiness. Never
+            ``None``.
     """
 
     value: T
+
+    def __post_init__(self) -> None:
+        """Reject ``Present(None)``; use ``NULL`` for an explicit null.
+
+        Raises:
+            ValueError: If ``value`` is ``None``.
+        """
+        if self.value is None:
+            raise ValueError("Present(None) is invalid; use NULL for an explicit null")
 
 
 ABSENT: Final[_Absent] = _Absent()
@@ -94,9 +110,13 @@ def present[T](value: T) -> Present[T]:
 
     Args:
         value: The value to wrap; falsy values are preserved as present.
+            ``None`` is rejected — use ``NULL`` for an explicit null.
 
     Returns:
         A ``Present`` holding ``value``.
+
+    Raises:
+        ValueError: If ``value`` is ``None``.
     """
     return Present(value)
 
