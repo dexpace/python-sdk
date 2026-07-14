@@ -413,3 +413,17 @@ class TestMissingLocation:
         response = _run(client, policy, _request())
         assert response.status is Status.MOVED_PERMANENTLY
         assert len(client.requests) == 1
+
+
+class TestMalformedLocation:
+    def test_malformed_location_returns_response_open_not_closed(self) -> None:
+        # A Location that cannot be resolved to an absolute URL must not raise
+        # (leaking the connection). The policy returns the current 3xx response
+        # unfollowed and open — the same disposition as loop / max-hops.
+        tracking_body = _TrackingBody()
+        client = _ScriptedClient([_Hop(Status.FOUND, "http://[malformed", body=tracking_body)])
+        policy = RedirectPolicy()
+        response = _run(client, policy, _request())
+        assert response.status is Status.FOUND
+        assert not tracking_body.closed
+        assert len(client.requests) == 1
