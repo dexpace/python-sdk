@@ -26,6 +26,7 @@ For sync callers, use ``dexpace-sdk-http-stdlib``'s ``UrllibHttpClient`` or
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Iterator
 from types import TracebackType
 from typing import TYPE_CHECKING, Final, Self
@@ -48,8 +49,12 @@ if TYPE_CHECKING:
     from dexpace.sdk.core.http.request.request import Request
     from dexpace.sdk.core.http.request.request_body import RequestBody
 
+_LOGGER: Final = logging.getLogger("dexpace.sdk.http.aiohttp")
 _DEFAULT_TIMEOUT: Final[float] = 30.0
 _UPLOAD_CHUNK: Final[int] = 8192
+#: Methods whose semantics call for an explicit zero-length body substitution
+#: when the caller supplies no payload (RFC 9110 §8.6).
+_ZERO_LENGTH_METHODS: Final[frozenset[str]] = frozenset({"POST", "PUT", "PATCH"})
 
 
 class AiohttpHttpClient:
@@ -97,7 +102,8 @@ class AiohttpHttpClient:
             else None
         )
         data = _payload(request.body)
-        headers = _request_headers(_frame_length(request))
+        framed_headers = _with_content_type(_frame_length(request), request.body)
+        headers = _request_headers(framed_headers)
         try:
             ctx = session.request(
                 method=str(request.method),
@@ -122,7 +128,16 @@ class AiohttpHttpClient:
             raise ServiceResponseError(f"Response error: {err}", error=err) from err
         except aiohttp.ClientError as err:
             raise ServiceRequestError(f"Transport error: {err}", error=err) from err
-        return _wrap_response(request, aio_response)
+        try:
+            return _wrap_response(request, aio_response)
+        except (ValueError, TypeError) as err:
+            # A live response was received but could not be adapted (for
+            # example a non-numeric status line surfaced by a nonconformant
+            # peer). The native response must still be released — it is never
+            # reachable again once this call raises, so leaving it open would
+            # leak the underlying connection.
+            aio_response.release()
+            raise ServiceResponseError(f"Response adaptation failed: {err}", error=err) from err
 
     async def aclose(self) -> None:
         if self._closed:
@@ -159,22 +174,48 @@ def _frame_length(request: Request) -> Headers:
     and otherwise falls back to ``Transfer-Encoding: chunked`` for any
     async-iterable payload — including a fully buffered, known-length body.
     Setting the length up front keeps known-length uploads (bytes, file)
-    length-framed and wire-consistent with the other transports.
+    length-framed and wire-consistent with the other transports. A
+    body-bearing method with no body at all gets an explicit
+    ``Content-Length: 0`` per RFC 9110 §8.6, rather than leaving the request
+    unframed.
 
     Args:
         request: The outgoing request.
 
     Returns:
         The request headers, with ``Content-Length`` added when the body
-        reports a non-negative length and no such header is already set.
+        reports a non-negative length, the method calls for a zero-length
+        default, and no such header is already set.
     """
     body = request.body
     if body is None:
+        if str(request.method) in _ZERO_LENGTH_METHODS:
+            return request.headers.with_set(http_header_name.CONTENT_LENGTH, "0")
         return request.headers
     length = body.content_length()
     if length < 0 or http_header_name.CONTENT_LENGTH in request.headers:
         return request.headers
     return request.headers.with_set(http_header_name.CONTENT_LENGTH, str(length))
+
+
+def _with_content_type(headers: Headers, body: RequestBody | None) -> Headers:
+    """Keep a caller-supplied content-type; else derive one from the body.
+
+    Args:
+        headers: The headers computed so far (post-framing).
+        body: The outgoing request body, if any.
+
+    Returns:
+        ``headers`` unchanged if a ``Content-Type`` is already present or
+        there is no body to derive one from; otherwise ``headers`` with the
+        body's `MediaType` set.
+    """
+    if headers.get(http_header_name.CONTENT_TYPE) is not None or body is None:
+        return headers
+    media = body.media_type()
+    if media is None:
+        return headers
+    return headers.with_set(http_header_name.CONTENT_TYPE, str(media))
 
 
 def _request_headers(headers: Headers) -> list[tuple[str, str]]:
@@ -251,7 +292,7 @@ def _wrap_response(request: Request, aio_response: aiohttp.ClientResponse) -> As
         The wrapped async response.
     """
     status = Status(aio_response.status)
-    headers = Headers(tuple(aio_response.headers.items()))
+    headers = _inbound_headers(aio_response)
     reason = aio_response.reason
     content_length = _content_length(aio_response, headers)
     body = AsyncResponseBody.from_async_stream(
@@ -265,6 +306,29 @@ def _wrap_response(request: Request, aio_response: aiohttp.ClientResponse) -> As
         reason=reason,
         body=body,
     )
+
+
+def _inbound_headers(aio_response: aiohttp.ClientResponse) -> Headers:
+    """Build response headers, dropping malformed lines, preserving obs-text.
+
+    ``aio_response.headers`` is aiohttp's own already-parsed multidict; a name
+    that fails the SDK's RFC 7230 token check (a stray space, for example)
+    must not fail the whole response, so each pair is added individually and a
+    rejected one is logged and skipped rather than propagated.
+
+    Args:
+        aio_response: The aiohttp response carrying the raw headers.
+
+    Returns:
+        The parsed, defensively-filtered response headers.
+    """
+    headers = Headers()
+    for name, value in aio_response.headers.items():
+        try:
+            headers = headers.with_added(name, value)
+        except ValueError:
+            _LOGGER.warning("dropping malformed inbound response header: %r", name)
+    return headers
 
 
 def _protocol(aio_response: aiohttp.ClientResponse) -> Protocol:
