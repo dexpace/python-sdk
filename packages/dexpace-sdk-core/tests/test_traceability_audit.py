@@ -133,6 +133,32 @@ def test_build_index_rejects_duplicate_ids(tool: ModuleType) -> None:
         )
 
 
+# --- Vendored requirement index (real Appendix C projection) ---------------
+
+
+def test_vendored_index_loads_and_covers_every_subsystem(tool: ModuleType) -> None:
+    index = tool.load_index_file(tool.default_index_path())
+    # The vendored index is the full spec: 645 requirements across 19 subsystems.
+    assert len(index.requirements) == 645
+    assert len(index.subsystems()) == 19
+    must = [r for r in index.requirements if r.level is tool.Level.MUST]
+    assert len(must) == 532  # MUST + the single MUST NOT, which folds to MUST
+
+
+def test_default_index_returns_the_vendored_index(tool: ModuleType) -> None:
+    # With the vendored file present, default_index() is the real 645-req index,
+    # not the 15-req placeholder.
+    assert tool.default_index_path().is_file()
+    assert len(tool.default_index().requirements) == 645
+
+
+def test_load_index_file_rejects_a_foreign_document(tool: ModuleType, tmp_path: Path) -> None:
+    bad = tmp_path / "not-an-index.json"
+    bad.write_text('{"schema": "something-else/v1", "requirements": []}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="not a requirement index"):
+        tool.load_index_file(bad)
+
+
 # --- Matrix artifact rendering ---------------------------------------------
 
 
@@ -230,11 +256,13 @@ def test_plugin_gate_fails_on_uncovered_must(tool: ModuleType, tmp_path: Path) -
 def test_build_plugin_from_env_honours_overrides(
     tool: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # build_plugin_from_env() uses the real vendored index, so the ids here are
+    # real Appendix C ids (RETRY-7, not the placeholder's RETRY-07).
     ledger = tmp_path / "na.txt"
-    ledger.write_text("RETRY-19\n", encoding="utf-8")
+    ledger.write_text("RETRY-7\n", encoding="utf-8")
     out = tmp_path / "env-matrix.json"
     monkeypatch.setenv("DEXPACE_TRACEABILITY_MATRIX", str(out))
-    monkeypatch.setenv("DEXPACE_TRACEABILITY_ENABLE", "retry, auth")
+    monkeypatch.setenv("DEXPACE_TRACEABILITY_ENABLE", "retry")
     monkeypatch.setenv("DEXPACE_TRACEABILITY_NA", str(ledger))
     monkeypatch.setenv("DEXPACE_TRACEABILITY_GATE", "yes")
 
@@ -244,8 +272,8 @@ def test_build_plugin_from_env_honours_overrides(
         plugin.pytest_collection_finish(None)
 
     message = str(excinfo.value)
-    assert "RETRY-07" in message and "AUTH-02" in message
-    assert "RETRY-19" not in message  # excluded via the N/A ledger
+    assert "RETRY-45" in message  # an uncovered retry MUST is reported
+    assert "RETRY-7," not in message and not message.endswith("RETRY-7")  # N/A-excluded
     assert out.is_file()
 
 

@@ -75,7 +75,10 @@ __all__ = [
     "audit",
     "build_index",
     "build_plugin_from_env",
+    "default_index",
+    "default_index_path",
     "default_matrix_path",
+    "load_index_file",
     "na_ids_from_file",
     "render_matrix_csv",
     "render_matrix_json",
@@ -398,6 +401,54 @@ def default_matrix_path() -> Path:
     return repo_root() / "build" / "traceability-matrix.json"
 
 
+def default_index_path() -> Path:
+    """Return the vendored requirement-index path (``tools/requirement_index.json``)."""
+    return repo_root() / "tools" / "requirement_index.json"
+
+
+def load_index_file(path: Path | str) -> RequirementIndex:
+    """Load a requirement index from a vendored JSON projection of Appendix C.
+
+    The file is produced by ``tools/build_requirement_index.py`` and carries a
+    ``requirements`` array of ``{id, level, subsystem, description}`` objects
+    (levels already normalized to the ``Level`` vocabulary).
+
+    Args:
+        path: Path to the vendored index JSON.
+
+    Returns:
+        The immutable requirement index.
+
+    Raises:
+        ValueError: If the document has an unexpected schema or a duplicate id.
+    """
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    schema = document.get("schema", "")
+    if not schema.startswith("dexpace-requirement-index/"):
+        raise ValueError(f"not a requirement index document: schema={schema!r}")
+    return build_index(
+        Requirement(
+            id=row["id"],
+            level=Level(row["level"]),
+            subsystem=row["subsystem"],
+            description=row["description"],
+        )
+        for row in document["requirements"]
+    )
+
+
+def default_index() -> RequirementIndex:
+    """Return the real vendored index, or the placeholder if it is absent.
+
+    CI and local runs use the committed ``requirement_index.json``; the
+    placeholder fallback keeps the audit importable in a stripped checkout that
+    lacks the vendored file (the machinery unit tests exercise the placeholder
+    directly and do not depend on this fallback).
+    """
+    path = default_index_path()
+    return load_index_file(path) if path.is_file() else PLACEHOLDER_INDEX
+
+
 # --- Placeholder requirement index -----------------------------------------
 #
 # NOT the real spec. A handful of representative requirements whose subsystems
@@ -535,6 +586,7 @@ def build_plugin_from_env() -> TraceabilityPlugin:
     na_path = os.environ.get(ENV_NA)
     gate = os.environ.get(ENV_GATE, "").strip().lower() in {"1", "true", "yes"}
     return TraceabilityPlugin(
+        default_index(),
         output_path=os.environ.get(ENV_MATRIX),
         enabled_subsystems=_split_env(os.environ.get(ENV_ENABLE)),
         na_ids=na_ids_from_file(na_path) if na_path else (),
@@ -560,11 +612,13 @@ def main(argv: list[str] | None = None) -> int:
         "--write", action="store_true", help="write to the default matrix path instead of stdout"
     )
     args = parser.parse_args(argv)
-    result = audit(PLACEHOLDER_INDEX, {})
+    # Dump the real vendored index (no coverage data outside a pytest run).
+    index = default_index()
+    result = audit(index, {})
     if args.format == "csv":
-        text = render_matrix_csv(result, PLACEHOLDER_INDEX)
+        text = render_matrix_csv(result, index)
     else:
-        text = render_matrix_json(result, PLACEHOLDER_INDEX)
+        text = render_matrix_json(result, index)
     if args.write:
         path = default_matrix_path()
         path.parent.mkdir(parents=True, exist_ok=True)
