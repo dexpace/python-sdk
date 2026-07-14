@@ -16,6 +16,13 @@ from .codec import (
     variant,
 )
 from .json_serde import JSON_SERDE, JsonDeserializer, JsonSerde, JsonSerializer
+from .response_handler import (
+    DecodeBody,
+    DecodeSuccess,
+    ResponseDisposition,
+    ResponseHandler,
+    classify_status,
+)
 from .serde import Deserializer, Serde, Serializer
 from .tristate import (
     ABSENT,
@@ -40,15 +47,20 @@ __all__ = [
     "REGISTRY_KEY",
     "Codec",
     "CodecError",
+    "DecodeBody",
+    "DecodeSuccess",
     "Deserializer",
     "JsonDeserializer",
     "JsonSerde",
     "JsonSerializer",
     "Present",
+    "ResponseDisposition",
+    "ResponseHandler",
     "Serde",
     "Serializer",
     "Tristate",
     "TypeRef",
+    "classify_status",
     "discriminated",
     "field_alias",
     "fold",

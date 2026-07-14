@@ -1575,6 +1575,29 @@
           }
         }
       },
+      "dexpace.sdk.core.serde.response_handler": {
+        "DecodeBody": {
+          "bases": [],
+          "methods": {}
+        },
+        "DecodeSuccess": {
+          "bases": [],
+          "methods": {}
+        },
+        "ResponseDisposition": {
+          "bases": [
+            "enum.Enum"
+          ],
+          "methods": {}
+        },
+        "ResponseHandler": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {}
+        },
+        "classify_status": "classify_status(status: Status) -> ResponseDisposition"
+      },
       "dexpace.sdk.core.serde.serde": {
         "Deserializer": {
           "bases": [
@@ -1921,6 +1944,8 @@
         "Codec",
         "CodecError",
         "DISCRIMINATOR_KEY",
+        "DecodeBody",
+        "DecodeSuccess",
         "Deserializer",
         "JSON_SERDE",
         "JsonDeserializer",
@@ -1929,10 +1954,13 @@
         "NULL",
         "Present",
         "REGISTRY_KEY",
+        "ResponseDisposition",
+        "ResponseHandler",
         "Serde",
         "Serializer",
         "Tristate",
         "TypeRef",
+        "classify_status",
         "discriminated",
         "field_alias",
         "fold",
