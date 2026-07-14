@@ -8,7 +8,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import inspect
 import json
+import re
 from collections.abc import Mapping
 
 import pytest
@@ -18,6 +20,7 @@ from dexpace.sdk.core.http.webhooks import (
     InvalidWebhookSignatureError,
     WebhookVerifier,
 )
+from dexpace.sdk.core.http.webhooks import verification as _verification_module
 
 # A known whsec_ secret and its raw base64 body. The key is "supersecret"
 # base64-encoded so the test vectors are reproducible by hand if needed.
@@ -288,3 +291,22 @@ def test_verifier_accepts_a_generic_mapping() -> None:
     signature = _sign(_RAW_KEY, _WEBHOOK_ID, _TIMESTAMP, _BODY)
     headers: Mapping[str, str] = _headers(signature)
     _verifier().verify(headers, _BODY)
+
+
+def test_signature_comparison_uses_constant_time_compare_digest() -> None:
+    # The signature check must go through hmac.compare_digest so a timing side
+    # channel cannot leak the expected signature byte by byte.
+    source = inspect.getsource(_verification_module)
+    assert "hmac.compare_digest(" in source
+
+
+def test_no_timing_unsafe_equality_digest_comparison_exists() -> None:
+    # Guard against a regression to a plain '==' comparison of the computed
+    # digest or a candidate signature, which would be timing-unsafe.
+    source = inspect.getsource(_verification_module)
+    forbidden = re.compile(
+        r"(?:expected|candidate|digest|signature)\w*\s*==|"
+        r"==\s*(?:expected|candidate|digest|signature)"
+    )
+    offending = [line.strip() for line in source.splitlines() if forbidden.search(line)]
+    assert not offending, f"timing-unsafe digest comparison found: {offending}"
