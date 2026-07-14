@@ -823,6 +823,26 @@
         "parse_async_events": "parse_async_events(chunks: AsyncIterable[bytes]) -> AsyncSseStream",
         "parse_events": "parse_events(chunks: Iterable[bytes]) -> Iterator[SseEvent]"
       },
+      "dexpace.sdk.core.http.sse.typed": {
+        "AsyncTypedSseConnection": {
+          "bases": [],
+          "methods": {
+            "aclose": "async aclose(self) -> None"
+          }
+        },
+        "SseSignal": {
+          "bases": [
+            "Enum"
+          ],
+          "methods": {}
+        },
+        "TypedSseConnection": {
+          "bases": [],
+          "methods": {
+            "close": "close(self) -> None"
+          }
+        }
+      },
       "dexpace.sdk.core.http.webhooks.verification": {
         "InvalidWebhookSignatureError": {
           "bases": [
@@ -1651,9 +1671,13 @@
       "dexpace.sdk.core.http.sse": [
         "AsyncSseConnection",
         "AsyncSseStream",
+        "AsyncTypedSseConnection",
         "SseConnection",
         "SseEvent",
+        "SseMapper",
         "SseParser",
+        "SseSignal",
+        "TypedSseConnection",
         "parse_async_events",
         "parse_events"
       ],
