@@ -43,6 +43,26 @@
           }
         }
       },
+      "dexpace.sdk.core.codegen._api_version_policy": {
+        "ApiVersionPolicy": {
+          "bases": [
+            "Policy"
+          ],
+          "methods": {
+            "send": "send(self, request: Request, ctx: PipelineContext) -> Response"
+          }
+        }
+      },
+      "dexpace.sdk.core.codegen._async_api_version_policy": {
+        "AsyncApiVersionPolicy": {
+          "bases": [
+            "AsyncPolicy"
+          ],
+          "methods": {
+            "send": "async send(self, request: Request, ctx: PipelineContext) -> AsyncResponse"
+          }
+        }
+      },
       "dexpace.sdk.core.codegen._pure.options": {
         "plan_options": "plan_options(auth: object | None, call_options: Mapping[str, Any]) -> Mapping[str, Any]"
       },
@@ -54,6 +74,9 @@
       },
       "dexpace.sdk.core.codegen.assembly": {
         "assemble": "assemble(op: Operation, input: OperationInput, base_url: str | Url, *, serde: Serde | None) -> Request"
+      },
+      "dexpace.sdk.core.codegen.async_merge_config": {
+        "merge_async_config": "merge_async_config(defaults: ServiceDefaults, user: ServiceDefaults | None, *, transport: AsyncHttpClient | None, pipeline: AsyncPipeline | None, redirect: AsyncRedirectPolicy | None, idempotency: AsyncIdempotencyPolicy | None, retry: AsyncRetryPolicy | None, set_date: AsyncSetDatePolicy | None, auth: AsyncPolicy | None, logging: AsyncLoggingPolicy | None, tracing: AsyncTracingPolicy | None) -> dict[str, Any]"
       },
       "dexpace.sdk.core.codegen.async_response_handler": {
         "AsyncDecodeSuccess": {
@@ -79,6 +102,9 @@
           }
         }
       },
+      "dexpace.sdk.core.codegen.merge_config": {
+        "merge_config": "merge_config(defaults: ServiceDefaults, user: ServiceDefaults | None, *, transport: HttpClient | None, pipeline: Pipeline | None, redirect: RedirectPolicy | None, idempotency: IdempotencyPolicy | None, retry: RetryPolicy | None, set_date: SetDatePolicy | None, auth: Policy | None, logging: LoggingPolicy | None, tracing: TracingPolicy | None) -> dict[str, Any]"
+      },
       "dexpace.sdk.core.codegen.operation": {
         "Operation": {
           "bases": [],
@@ -100,6 +126,13 @@
             "paginate": "paginate(self, op: Operation, input: OperationInput, strategy: PaginationStrategy[T], *, max_pages: int | None, auth: Policy | None, **call_options: Any) -> Paginator[T]"
           }
         }
+      },
+      "dexpace.sdk.core.codegen.service_defaults": {
+        "ServiceDefaults": {
+          "bases": [],
+          "methods": {}
+        },
+        "merge_service_defaults": "merge_service_defaults(defaults: ServiceDefaults, user: ServiceDefaults | None) -> ServiceDefaults"
       },
       "dexpace.sdk.core.codegen.status_error_map": {
         "StatusErrorMap": {
@@ -1764,8 +1797,11 @@
         "Operation",
         "OperationInput",
         "ServiceCore",
+        "ServiceDefaults",
         "StatusErrorMap",
-        "assemble"
+        "assemble",
+        "merge_async_config",
+        "merge_config"
       ],
       "dexpace.sdk.core.config": [
         "BuildDescriptor",
