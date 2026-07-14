@@ -148,18 +148,25 @@ def test_meter_callback_exception_is_not_wrapped() -> None:
 
 
 def test_noop_metric_calls_retain_no_memory() -> None:
-    # A genuine no-op retains nothing per call: after many calls the net traced
-    # allocation returns to baseline (transient frames are freed immediately).
+    # A genuine no-op retains nothing PER CALL: repeating the loop must not
+    # grow traced memory further. The first loop is a warm-up round, not just
+    # a single warm-up call — it settles any one-time cost that isn't the
+    # code under test (tracemalloc's own bookkeeping table sizing itself up,
+    # small-object allocator arena growth, etc.), so the measured delta
+    # isolates a genuine per-call leak from a one-time constant overhead.
     add = NOOP_COUNTER.add
     record = NOOP_HISTOGRAM.record
-    tracemalloc.start()
-    try:
-        add(1.0)  # warm up any one-time internals before the baseline
-        record(1.0)
-        before, _ = tracemalloc.get_traced_memory()
+
+    def run() -> None:
         for _ in range(50_000):
             add(1.0)
             record(1.0)
+
+    tracemalloc.start()
+    try:
+        run()  # warm-up round: settles one-time allocator/tracemalloc costs
+        before, _ = tracemalloc.get_traced_memory()
+        run()
         after, _ = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
