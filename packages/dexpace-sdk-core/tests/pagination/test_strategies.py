@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from dexpace.sdk.core.http.common import Headers, Protocol, Url
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.response import Response, Status
@@ -160,6 +162,7 @@ class TestPageNumberStrategy:
 
 
 class TestLinkHeaderStrategy:
+    @pytest.mark.req("PAGINATION-06")
     def test_follows_rel_next_target(self) -> None:
         strategy: LinkHeaderStrategy[int] = LinkHeaderStrategy(items_field="data")
         headers = Headers(

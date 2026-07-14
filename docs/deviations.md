@@ -257,13 +257,23 @@ file (one id per line; blank lines and `#` comments ignored; a missing file
 yields an empty set), pointed at by the `DEXPACE_TRACEABILITY_NA` environment
 variable.
 
-That reader is, by its own docstring, the *placeholder* seam for this ledger: it
-consumes a flat id file, **not** this Markdown document, and the real requirement
-index it audits against is still `PLACEHOLDER_INDEX`, not the finished spec. So
-the wiring that would derive N/A requirement ids from these prose entries — and
-the requirement ids the entries would cite once the real index exists — is
-deliberately **not** built here; it belongs to the later task that lands the real
-requirement index and the id-extraction step. This entry records that the
-integration point exists and is intentionally a placeholder, so a future
-implementer knows where the ledger plugs in (`na_ids` via `na_ids_from_file`)
-without this docs-only change inventing audit code outside its scope.
+That reader consumes a flat id file, **not** this Markdown document. The concrete
+bridge between this prose ledger and that reader is the committed, hand-maintained
+file `docs/traceability-na-ids.txt`: a newline-delimited projection of the N/A
+requirement ids implied by the entries above (one id per line; `#` comments and
+blank lines ignored, matching `na_ids_from_file`). CI points
+`DEXPACE_TRACEABILITY_NA` at it and runs the audit **blocking** against every
+MUST-bearing subsystem of the requirement index (see the "traceability audit"
+step in `.github/workflows/ci.yml`), and the matrix artifact is uploaded per run.
+
+The audit deliberately does **not** parse this Markdown — deriving the id set by
+scraping prose would be a fragile coupling. Instead, `docs/traceability-na-ids.txt`
+is maintained by review alongside these entries: when a deviation here renders a
+MUST-level requirement intentionally unmet, its id is transcribed into that file
+with a back-reference to the justifying section. As of this writing no indexed
+MUST is N/A (every deviation above is either a design choice that withholds no
+MUST-level behaviour, or a gap in a behaviour with no assigned requirement id in
+the current `PLACEHOLDER_INDEX`), so the file carries no active ids yet — the
+seam is wired and exercised in CI and gains entries the moment a ledgered
+deviation withholds an indexed MUST. Swapping `PLACEHOLDER_INDEX` for the real
+spec index later needs no change to this bridge.

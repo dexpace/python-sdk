@@ -68,6 +68,7 @@ def test_format_many_empty_raises() -> None:
 # --- Conformance battery (HTTP-49; RFC 7233 §2.1) ---------------------------
 
 
+@pytest.mark.req("HTTP-49")
 class TestFormatShapes:
     """``format`` renders the value portion; ``to_header_value`` adds ``bytes=``."""
 

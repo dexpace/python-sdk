@@ -16,6 +16,8 @@ from __future__ import annotations
 import time
 from collections.abc import Sequence
 
+import pytest
+
 from dexpace.sdk.core.client.http_client import HttpClient
 from dexpace.sdk.core.http.auth import (
     AccessTokenInfo,
@@ -230,6 +232,7 @@ def test_basic_auth_reissued_same_origin() -> None:
     assert client.requests[1].headers.get("authorization") == "Basic dXNlcjpwYXNz"
 
 
+@pytest.mark.req("REDIRECT-11")
 def test_caller_authorization_kept_same_origin_dropped_cross_origin() -> None:
     # No auth policy at all: a caller-set Authorization header. The redirect
     # policy keeps it on a same-origin 301 and drops it on a cross-origin 302.

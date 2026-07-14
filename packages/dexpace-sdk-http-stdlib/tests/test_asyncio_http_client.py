@@ -427,6 +427,7 @@ async def test_in_range_unregistered_status_is_preserved() -> None:
             await anext(gen)
 
 
+@pytest.mark.req("TRANSPORT-24")
 async def test_out_of_range_status_surfaces_with_readable_body() -> None:
     # TRANSPORT-24: an out-of-range status (999) is total over integers now —
     # Status synthesizes a member rather than raising, so the response

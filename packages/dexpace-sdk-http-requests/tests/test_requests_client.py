@@ -280,6 +280,7 @@ def test_in_range_unregistered_status_is_preserved() -> None:
         assert response.body.bytes() == b"this is fine"
 
 
+@pytest.mark.req("TRANSPORT-24")
 def test_out_of_range_status_surfaces_with_readable_body() -> None:
     """TRANSPORT-24: an out-of-range status code surfaces with its body."""
     closed = {"yes": False}

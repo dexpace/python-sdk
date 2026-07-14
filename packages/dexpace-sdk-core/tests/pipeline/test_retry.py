@@ -235,6 +235,7 @@ class TestReadPhaseMethodGating:
     safe to retry for every method.
     """
 
+    @pytest.mark.req("RETRY-07")
     def test_post_not_retried_on_read_phase_error(self) -> None:
         # A ``ServiceResponseError`` on a POST must propagate after the first
         # attempt rather than re-sending and risking a duplicate write.

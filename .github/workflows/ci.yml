@@ -37,6 +37,28 @@ jobs:
       - name: Run pytest
         run: uv run pytest -q
 
+      # Blocking requirement-traceability audit. Collection-only run: the
+      # TraceabilityPlugin (registered in the root conftest) collects every
+      # @pytest.mark.req(...) marker, writes the matrix artifact, and — because
+      # DEXPACE_TRACEABILITY_GATE is set — fails the run if any MUST-level
+      # requirement in an enabled subsystem is neither covered by a marker nor
+      # listed N/A in docs/traceability-na-ids.txt (the deviations-ledger bridge).
+      - name: Run traceability audit (blocking)
+        env:
+          DEXPACE_TRACEABILITY_ENABLE: "retry,redirect,idempotency,auth,bodies,http,sse,webhooks,tracing,pagination"
+          DEXPACE_TRACEABILITY_NA: docs/traceability-na-ids.txt
+          DEXPACE_TRACEABILITY_MATRIX: build/traceability-matrix.json
+          DEXPACE_TRACEABILITY_GATE: "1"
+        run: uv run pytest -q --co
+
+      - name: Upload traceability matrix
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: traceability-matrix-py${{ matrix.python-version }}
+          path: build/traceability-matrix.json
+          if-no-files-found: error
+
       - name: Run mypy
         run: uv run mypy --strict
 

@@ -97,6 +97,7 @@ def test_weak_comparison() -> None:
 # --- Conformance battery (HTTP-48; RFC 7232 §2.3, §2.3.2) --------------------
 
 
+@pytest.mark.req("HTTP-48")
 class TestStrongComparison:
     """RFC 7232 §2.3.2: strong compare requires exact match and both strong."""
 

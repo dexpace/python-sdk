@@ -1,0 +1,28 @@
+# Traceability N/A requirement ids — machine-readable projection of docs/deviations.md
+#
+# This file is the concrete bridge between the human-readable deviations ledger
+# (docs/deviations.md) and the traceability audit (tools/traceability_audit.py).
+# The audit reads it via the DEXPACE_TRACEABILITY_NA environment variable and
+# treats every id listed here as intentionally not-applicable, so a ledgered
+# deviation never counts as an uncovered-MUST coverage gap.
+#
+# Format (enforced by na_ids_from_file): one requirement id per line; blank
+# lines and lines beginning with `#` are ignored.
+#
+# Maintenance: hand-maintained on purpose — the audit does NOT parse the ledger
+# prose (Markdown parsing would be a fragile coupling). When a deviation in
+# docs/deviations.md renders a MUST-level requirement intentionally unmet,
+# transcribe that requirement's id here with a `#` comment pointing back at the
+# ledger section that justifies it, so the two stay in lock-step by review.
+#
+# Current state: no requirement id in the audited requirement index is N/A.
+# Every deviation recorded in docs/deviations.md is either (a) a design choice
+# that does not withhold a MUST-level behaviour (e.g. `furl` as a sanctioned
+# dependency, RuntimeError vs a bespoke body-exhaustion exception, the
+# reference stdlib transport's documented capability gaps), or (b) a gap in a
+# behaviour that has no assigned requirement id in the current index (e.g.
+# cross-origin Cookie/Proxy-Authorization stripping — REDIRECT-11 covers only
+# Authorization stripping, which *is* implemented and tested). This file is
+# therefore intentionally empty of active ids: the seam is wired and exercised
+# in CI, and gains entries the moment a ledgered deviation withholds an indexed
+# MUST.

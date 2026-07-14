@@ -103,6 +103,7 @@ def test_set_returns_token_that_resets() -> None:
     assert get_trace_id() == "outer"
 
 
+@pytest.mark.req("TRACING-01")
 def test_bind_correlation_scopes_and_restores() -> None:
     set_trace_id("outer-trace")
     set_span_id("outer-span")
@@ -194,6 +195,7 @@ def test_correlation_filter_installed_once_under_concurrency() -> None:
     assert len(installed) == 1
 
 
+@pytest.mark.req("TRACING-01")
 def test_ids_propagate_across_await() -> None:
     async def _run() -> tuple[str | None, str | None]:
         with bind_correlation(trace_id="async-trace", span_id="async-span"):
@@ -208,6 +210,7 @@ def test_ids_propagate_across_await() -> None:
 # ----- contextvars bridge across threads (OBS-24, ASYNC-8..12) --------------
 
 
+@pytest.mark.req("OBS-24")
 def test_capture_context_propagates_submission_snapshot_across_threads() -> None:
     # Capture on the ORIGINATING side (submission time), reinstall on a worker
     # thread. The worker observes the value as it was AT CAPTURE, not the value

@@ -358,6 +358,7 @@ async def test_async_in_range_unregistered_status_returns_response() -> None:
             assert await response.body.bytes() == payload
 
 
+@pytest.mark.req("TRANSPORT-24")
 async def test_async_out_of_range_status_surfaces_with_readable_body() -> None:
     """TRANSPORT-24: an out-of-range status surfaces intact with its body."""
 

@@ -316,6 +316,7 @@ def test_promotion_shares_one_bundle_not_three_copies() -> None:
         request_ctx.close()
 
 
+@pytest.mark.req("CTX-4")
 def test_registration_happens_at_promotion_not_construction() -> None:
     """Constructing a `DispatchContext` does not touch the store.
 

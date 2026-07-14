@@ -129,6 +129,7 @@ def test_wire_fields_load_as_bytes_never_str() -> None:
 # ----- query codec (HTTP-29) ----------------------------------------------
 
 
+@pytest.mark.req("HTTP-29")
 def test_query_codec_render_and_parse_match_claims() -> None:
     for vector in load_query_codec():
         canonical = [(n.decode(), v.decode()) for n, v in vector.params]
@@ -164,6 +165,7 @@ def test_query_codec_pins_named_edge_cases() -> None:
 # ----- redirect (REDIR-12) ------------------------------------------------
 
 
+@pytest.mark.req("REDIR-12")
 def test_redirect_resolution_matches_raw_splice() -> None:
     for vector in load_redirect():
         expected = _resolve(vector.base.decode(), vector.location.decode())
@@ -188,6 +190,7 @@ def test_redirect_keeps_ipv6_brackets_and_percent_encoding() -> None:
 # ----- pagination splice (PAGE-21) ----------------------------------------
 
 
+@pytest.mark.req("PAGE-21")
 def test_pagination_splice_adds_param_and_preserves_untouched() -> None:
     for vector in load_pagination_splice():
         assert vector.param + b"=" + vector.value in vector.spliced, vector.id
@@ -206,6 +209,7 @@ def test_pagination_splice_preserves_bytes_verbatim() -> None:
 # ----- SSE (SSE-14) -------------------------------------------------------
 
 
+@pytest.mark.req("SSE-14")
 def test_sse_streams_preserve_declared_terminators() -> None:
     for vector in load_sse():
         assert vector.stream, vector.id
@@ -244,6 +248,7 @@ def test_sse_binary_sensitive_fixtures_are_byte_exact() -> None:
 # ----- retry pacing (RETRY-19) --------------------------------------------
 
 
+@pytest.mark.req("RETRY-19")
 def test_retry_pacing_classification_is_self_consistent() -> None:
     for vector in load_retry_pacing():
         token = vector.raw.decode("ascii")
@@ -292,6 +297,7 @@ def test_retry_pacing_365_day_clamp() -> None:
 # ----- RFC 1123 dates (CFG-29) --------------------------------------------
 
 
+@pytest.mark.req("CFG-29")
 def test_rfc1123_render_and_parse_match_oracle() -> None:
     for vector in load_rfc1123_dates():
         text = vector.text.decode("ascii")

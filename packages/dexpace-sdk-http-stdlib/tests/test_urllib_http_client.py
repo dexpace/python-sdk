@@ -296,6 +296,7 @@ def test_in_range_unregistered_status_is_preserved_not_discarded() -> None:
     assert body.bytes() == b"hello"
 
 
+@pytest.mark.req("TRANSPORT-24")
 def test_out_of_range_status_surfaces_with_readable_body() -> None:
     # TRANSPORT-24: a genuinely out-of-range status code (outside 100..599)
     # no longer maps to an error — Status is total over integers, so the

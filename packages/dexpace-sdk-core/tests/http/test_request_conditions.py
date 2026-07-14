@@ -77,6 +77,7 @@ def test_apply_to_returns_new_instance() -> None:
 # --- Conformance battery (HTTP-50; RFC 7232 §3) -----------------------------
 
 
+@pytest.mark.req("HTTP-50")
 class TestETagListRendering:
     def test_if_match_multiple_comma_joined(self) -> None:
         cond = RequestConditions(if_match=[ETag(value="a"), ETag(value="b")])

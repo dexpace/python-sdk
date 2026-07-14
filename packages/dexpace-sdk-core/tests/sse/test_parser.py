@@ -29,6 +29,7 @@ def test_single_event() -> None:
     assert events == [SseEvent(data="hello")]
 
 
+@pytest.mark.req("SSE-09")
 def test_multi_line_data_joined_with_newline() -> None:
     stream = b"data: line1\ndata: line2\n\n"
     events = _events(stream)
