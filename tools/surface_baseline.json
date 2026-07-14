@@ -1118,8 +1118,8 @@
         "status_is_retryable": "status_is_retryable(status: int | None, retryable_statuses: Collection[int]) -> bool"
       },
       "dexpace.sdk.core.pipeline._pure.pacing": {
-        "parse_rate_limit_reset": "parse_rate_limit_reset(value: str | None, now: float) -> float | None",
-        "parse_retry_after": "parse_retry_after(value: str | None, now: float) -> float | None"
+        "parse_rate_limit_reset": "parse_rate_limit_reset(value: str | None, now: float, *, max_delay: float) -> float | None",
+        "parse_retry_after": "parse_retry_after(value: str | None, now: float, *, max_delay: float) -> float | None"
       },
       "dexpace.sdk.core.pipeline.async_pipeline": {
         "AsyncPipeline": {

@@ -11,6 +11,7 @@ error construction) import instead of restating: the retryability classifier
 
 from __future__ import annotations
 
+import math
 import random
 
 import pytest
@@ -31,9 +32,12 @@ from dexpace.sdk.core.pipeline._pure.classifier import (
     status_is_retryable,
 )
 from dexpace.sdk.core.pipeline._pure.pacing import (
+    MAX_RETRY_AFTER_SECONDS,
     parse_rate_limit_reset,
     parse_retry_after,
 )
+
+from ..golden_corpus import RetryPacingVector, load_retry_pacing
 
 # ----- classifier: status table -------------------------------------------
 
@@ -215,6 +219,10 @@ class TestApplyJitter:
 
 # ----- pacing --------------------------------------------------------------
 
+#: 365-day sanity ceiling, restated as a literal so a drift in the production
+#: constant is caught here rather than tautologically re-derived from it.
+_365_DAYS_SECONDS = 365 * 24 * 60 * 60
+
 
 class TestParseRetryAfter:
     def test_delta_seconds(self) -> None:
@@ -222,21 +230,67 @@ class TestParseRetryAfter:
         assert parse_retry_after("0", now=0.0) == pytest.approx(0.0)
         assert parse_retry_after("0.5", now=0.0) == pytest.approx(0.5)
 
+    def test_surrounding_ascii_whitespace_is_tolerated(self) -> None:
+        # RFC 7231 OWS around the numeric core is stripped; the core stays strict.
+        assert parse_retry_after(" 30 ", now=0.0) == pytest.approx(30.0)
+        assert parse_retry_after("\t30\t", now=0.0) == pytest.approx(30.0)
+
     def test_http_date_uses_injected_now(self) -> None:
         epoch_2000 = 946_684_800.0
         assert parse_retry_after("Sat, 01 Jan 2000 00:00:00 GMT", now=epoch_2000 - 60.0) == (
             pytest.approx(60.0)
         )
 
-    def test_http_date_past_clamps_to_zero(self) -> None:
-        assert parse_retry_after("Mon, 01 Jan 1990 00:00:00 GMT", now=2_000_000_000.0) == (
-            pytest.approx(0.0)
+    def test_http_date_tolerates_zone_aliases_and_informational_weekday(self) -> None:
+        # The date grammar is shared with util.http_date: tolerant on the
+        # weekday name / zone alias, strict on the numeric structure.
+        epoch = 946_684_800.0  # Sat, 01 Jan 2000 00:00:00 UTC
+        assert parse_retry_after("Sat, 01 Jan 2000 00:00:00 UTC", now=epoch - 10.0) == (
+            pytest.approx(10.0)
         )
+        # A wrong-but-informational weekday name is ignored (only the date counts).
+        assert parse_retry_after("Mon, 01 Jan 2000 00:00:00 GMT", now=epoch - 10.0) == (
+            pytest.approx(10.0)
+        )
+
+    def test_past_http_date_floors_to_zero_not_none(self) -> None:
+        # NOTE (past-date -> 0 vs malformed -> None): a date already in the past
+        # is a *valid* signal meaning "retry now" and floors to 0.0; only an
+        # unparseable value is the absence-of-signal None.
+        assert parse_retry_after("Mon, 01 Jan 1990 00:00:00 GMT", now=2_000_000_000.0) == 0.0
+        assert parse_retry_after("not-a-date", now=2_000_000_000.0) is None
 
     def test_invalid_and_missing_return_none(self) -> None:
         assert parse_retry_after("not-a-date", now=0.0) is None
         assert parse_retry_after("", now=0.0) is None
+        assert parse_retry_after("   ", now=0.0) is None
         assert parse_retry_after(None, now=0.0) is None
+
+    @pytest.mark.parametrize(
+        "token",
+        # float() would accept every one of these; the strict pre-screen must not.
+        # The last two are non-ASCII digits (Arabic-Indic and fullwidth "3")
+        # that float() happily reads as 3 but the ASCII-only grammar rejects.
+        ["nan", "inf", "+30", "-30", "1_000", "1e3", "0x1p4", "\u0663", "\uff13"],
+    )
+    def test_strict_screen_rejects_what_float_over_accepts(self, token: str) -> None:
+        assert parse_retry_after(token, now=0.0) is None
+
+    def test_multi_dot_and_trailing_unit_rejected(self) -> None:
+        assert parse_retry_after("1.2.3", now=0.0) is None
+        assert parse_retry_after("30d", now=0.0) is None
+
+    def test_365_day_clamp_caps_absurd_delta(self) -> None:
+        # NOTE (365-day clamp): a hint far in the future is capped, not obeyed.
+        assert parse_retry_after("999999999", now=0.0) == pytest.approx(_365_DAYS_SECONDS)
+        assert MAX_RETRY_AFTER_SECONDS == _365_DAYS_SECONDS
+
+    def test_max_delay_override_disables_and_tightens_clamp(self) -> None:
+        # math.inf yields the raw un-clamped delta; a tighter ceiling caps sooner.
+        assert parse_retry_after("999999999", now=0.0, max_delay=math.inf) == pytest.approx(
+            999_999_999.0
+        )
+        assert parse_retry_after("999999999", now=0.0, max_delay=10.0) == pytest.approx(10.0)
 
 
 class TestParseRateLimitReset:
@@ -250,3 +304,92 @@ class TestParseRateLimitReset:
         assert parse_rate_limit_reset(None, now=0.0) is None
         assert parse_rate_limit_reset("   ", now=0.0) is None
         assert parse_rate_limit_reset("soon", now=0.0) is None
+
+    def test_strict_screen_rejects_float_over_accepted_epochs(self) -> None:
+        for token in ("nan", "inf", "1_000", "+150", "1e3"):
+            assert parse_rate_limit_reset(token, now=0.0) is None
+
+    def test_365_day_clamp_caps_absurd_reset(self) -> None:
+        # A reset epoch absurdly far in the future is capped at the 365-day ceiling.
+        assert parse_rate_limit_reset("999999999999", now=0.0) == pytest.approx(_365_DAYS_SECONDS)
+
+
+class TestPacingPrecedence:
+    def test_retry_after_is_authoritative_over_rate_limit_reset(self) -> None:
+        # NOTE (precedence order): the resolution order is Retry-After (seconds
+        # or HTTP-date), then X-RateLimit-Reset. Enforced in
+        # RetryPolicy._server_delay and proven end-to-end in
+        # test_retry_tuning.TestRateLimitResetHonored; here we pin the pure
+        # building blocks the policy composes in that order.
+        now = 1_000.0
+        retry_after = parse_retry_after("5", now)
+        reset = parse_rate_limit_reset("9999999", now)
+        assert retry_after is not None and reset is not None
+        # A present Retry-After wins; the reset value is only the fallback.
+        resolved = retry_after if retry_after is not None else reset
+        assert resolved == pytest.approx(5.0)
+        # With Retry-After absent/unparseable, the reset fallback is consulted.
+        absent = parse_retry_after("garbage", now)
+        assert (absent if absent is not None else reset) == reset
+
+
+class TestPacingGoldenCorpus:
+    """Point the production parser at every ``retry_pacing`` corpus vector.
+
+    The corpus (RETRY-19 family) is the byte-exact source of truth for the
+    pacing grammar; ``test_golden_corpus`` validates the fixtures with stdlib
+    oracles, while this suite proves the shipped ``parse_retry_after`` agrees
+    with every one of them — including that no reject vector ever raises.
+    """
+
+    @pytest.mark.req("RETRY-19")
+    @pytest.mark.parametrize("vector", load_retry_pacing(), ids=lambda v: v.id)
+    def test_vector_matches_production_parser(self, vector: RetryPacingVector) -> None:
+        token = vector.raw.decode("ascii")
+        now = vector.now if vector.now is not None else 0.0
+        # max_delay=inf recovers the pre-clamp seconds the vector pins; the call
+        # must never raise, for any vector (rejects included).
+        raw_parsed = parse_retry_after(token, now, max_delay=math.inf)
+        if vector.kind == "reject":
+            assert raw_parsed is None, vector.id
+            assert parse_retry_after(token, now) is None, vector.id
+            return
+        assert raw_parsed == pytest.approx(vector.seconds), vector.id
+        if vector.clamp_max is not None:
+            clamped = parse_retry_after(token, now, max_delay=vector.clamp_max)
+            assert clamped == pytest.approx(vector.clamped), vector.id
+            # The default 365-day ceiling reproduces the pinned clamp result.
+            assert parse_retry_after(token, now) == pytest.approx(vector.clamped), vector.id
+        else:
+            # No clamp expected: the default ceiling leaves the value untouched.
+            assert parse_retry_after(token, now) == pytest.approx(vector.seconds), vector.id
+
+    def test_reject_vectors_diverge_from_float(self) -> None:
+        # Directly pins the "screened before float()" property against the
+        # corpus's own float_accepts flag: every reject that float would take.
+        for vector in load_retry_pacing():
+            if vector.kind != "reject" or not vector.float_accepts:
+                continue
+            token = vector.raw.decode("ascii")
+            assert isinstance(float(token), float)  # float() accepts it (no raise)...
+            assert parse_retry_after(token, now=0.0) is None, vector.id  # ...the parser won't
+
+
+class TestPacingTotality:
+    """The parsers are total: they return None or a sane delay, never raise."""
+
+    @given(
+        value=st.one_of(
+            st.none(),
+            st.text(),
+            st.binary().map(lambda b: b.decode("latin-1")),
+        ),
+        now=st.floats(allow_nan=False, allow_infinity=False, min_value=-1e12, max_value=1e12),
+    )
+    def test_never_raises_for_arbitrary_input(self, value: str | None, now: float) -> None:
+        for result in (parse_retry_after(value, now), parse_rate_limit_reset(value, now)):
+            assert result is None or (
+                isinstance(result, float)
+                and math.isfinite(result)
+                and 0.0 <= result <= MAX_RETRY_AFTER_SECONDS
+            )
