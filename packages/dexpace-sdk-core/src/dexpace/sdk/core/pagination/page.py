@@ -45,6 +45,7 @@ class Page[T]:
     next_request: Request | None = None
     prev_request: Request | None = None
     raw: object | None = field(default=None, compare=False)
+    _closed: bool = field(default=False, init=False, compare=False, repr=False)
 
     @property
     def has_next(self) -> bool:
@@ -52,7 +53,17 @@ class Page[T]:
         return self.next_request is not None
 
     def close(self) -> None:
-        """Close the underlying synchronous response, if any. Idempotent."""
+        """Close the underlying synchronous response exactly once.
+
+        Idempotent: the first call performs the close and later calls are
+        no-ops, so the response is closed exactly once however many abandon
+        paths run over it (an eager item-view close, a page-view release, a
+        caller ``with page:`` exit). The closed latch is set before the
+        underlying close runs, so a close that raises is never retried.
+        """
+        if self._closed:
+            return
+        object.__setattr__(self, "_closed", True)
         close = getattr(self.raw, "close", None)
         if close is None:
             return
@@ -64,7 +75,10 @@ class Page[T]:
             cast(Coroutine[object, object, object], result).close()
 
     async def aclose(self) -> None:
-        """Close the underlying asynchronous response, if any. Idempotent."""
+        """Close the underlying asynchronous response exactly once. Idempotent."""
+        if self._closed:
+            return
+        object.__setattr__(self, "_closed", True)
         close = getattr(self.raw, "close", None)
         if close is None:
             return
