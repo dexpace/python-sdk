@@ -6,7 +6,16 @@
 Shares the per-attempt classification helpers with the sync variant by
 delegating into the same private methods on ``RetryPolicy``. The async
 twin reimplements only the dispatch loop (using ``await``) and the sleep
-helper (using an async sleep callable).
+helper (using an async sleep callable). The two-axis re-send safety gate and
+the terminal-failure trail (``_annotate_terminal_failure``) are inherited
+unchanged from the sync policy, so both stacks refuse to re-send a
+non-replayable body and surface the same prior-attempt trail on exhaustion.
+
+Cancellation on the async stack is native: ``asyncio.CancelledError`` is a
+``BaseException``, so the ``except SdkError`` clause cannot catch it and a
+cancelled attempt — including one parked in the backoff ``await`` — unwinds
+immediately without a retry. No cooperative ``CancellationToken`` is needed
+here; task cancellation is the async equivalent.
 
 Auto-buffering a single-use body for replay drains a synchronous
 iterator/stream, which is blocking; the async loop offloads that drain to a
@@ -31,7 +40,12 @@ from ..async_policy import AsyncPolicy
 from ..stage import Stage
 from ._history import RequestHistory
 from .redirect import resolve_http_tracer
-from .retry import RetryMode, RetryPolicy, _StatusRetryError
+from .retry import (
+    RetryMode,
+    RetryPolicy,
+    _annotate_terminal_failure,
+    _StatusRetryError,
+)
 
 if TYPE_CHECKING:
     from ...http.request.request import Request
@@ -169,6 +183,7 @@ class AsyncRetryPolicy(AsyncPolicy):
                 if not cfg._decrement_for_error(settings, request, err):
                     tracer.attempt_retries_exhausted()
                     ctx.data["retry_history"] = tuple(history)
+                    _annotate_terminal_failure(err, history)
                     raise
                 ctx.data["retry_count"] = len(history)
                 delay = cfg._delay_for(settings, None)
@@ -185,12 +200,16 @@ class AsyncRetryPolicy(AsyncPolicy):
                 ctx.data["retry_history"] = tuple(history)
                 return response
             ctx.data["retry_count"] = len(history)
-            delay = cfg._delay_for(settings, response)
-            tracer.attempt_failed(_StatusRetryError(int(response.status)), delay)
-            # The intermediate response is not handed back to the caller, so
-            # close it to release the pooled connection before sleeping. The
-            # return branches above keep the response open — the caller owns it.
-            await response.close()
+            status = int(response.status)
+            # Compute the pacing delay from the still-open response, then close
+            # it in a ``finally`` so the pooled connection is released even if
+            # the delay computation throws. The return branches above keep the
+            # response open — the caller owns it.
+            try:
+                delay = cfg._delay_for(settings, response)
+            finally:
+                await response.close()
+            tracer.attempt_failed(_StatusRetryError(status), delay)
             await self._sleep_bounded(delay, absolute_deadline)
 
     async def _sleep_bounded(

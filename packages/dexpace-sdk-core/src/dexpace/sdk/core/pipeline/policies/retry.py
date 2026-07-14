@@ -8,6 +8,20 @@ succeeds, the retry budget is exhausted, or a non-retryable error is
 raised. State is kept in ``ctx.data["retry_settings"]`` for the duration of
 one ``send`` call; per-attempt history lands in ``ctx.data["retry_history"]``.
 
+The re-send safety gate has two axes and applies uniformly to both retryable
+HTTP statuses and transport-level errors: a body-less request is re-sent based
+on method idempotency, while a request carrying a body is re-sent only when that
+body is replayable (see ``_request_is_resendable``). A non-replayable body is
+never re-emitted, regardless of method.
+
+A caller may pass a ``CancellationToken`` as the ``cancellation`` per-call
+option: it is observed at every attempt boundary and drives the backoff wait
+through an interruptible sleep, so a cooperative cancel aborts a pending backoff
+promptly with ``RequestCancelledError`` rather than running the full delay. When
+the budget is exhausted on the error path the surfaced exception carries a
+prior-attempt trail (``add_note`` lines plus an ``attempts`` count) that excludes
+the exception instance itself.
+
 Single-use request bodies (``RequestBody.from_stream`` /
 ``RequestBody.from_iter``) are auto-buffered at the top of ``send`` when
 the *effective* per-call retry total is positive: the policy calls
@@ -24,18 +38,19 @@ from __future__ import annotations
 
 import logging
 import random
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from ...errors import (
     ClientAuthenticationError,
+    RequestCancelledError,
     SdkError,
     ServiceRequestError,
     ServiceResponseError,
     ServiceResponseTimeoutError,
 )
-from ...util.clock import SYSTEM_CLOCK, Clock
+from ...util.clock import SYSTEM_CLOCK, CancellationToken, Clock
 from .._pure.backoff import apply_jitter, compute_backoff
 from .._pure.classifier import DEFAULT_RETRYABLE_STATUS, status_is_retryable
 from .._pure.pacing import parse_rate_limit_reset, parse_retry_after
@@ -224,12 +239,14 @@ class RetryPolicy(Policy):
 
     def send(self, request: Request, ctx: PipelineContext) -> Response:
         settings = self._configure_settings(ctx.options)
+        cancellation: CancellationToken | None = ctx.options.get("cancellation")
         if settings["total"] > 0 and request.body is not None and not request.body.is_replayable():
             request = request.with_body(request.body.to_replayable())
         absolute_deadline = self._clock.monotonic() + settings["timeout"]
         history: list[RequestHistory[Response]] = settings["history"]
         tracer = resolve_http_tracer(ctx)
         while True:
+            _raise_if_cancelled(cancellation)
             tracer.attempt_started(len(history))
             try:
                 response = self.next.send(request, ctx)
@@ -240,6 +257,7 @@ class RetryPolicy(Policy):
                 if not self._decrement_for_error(settings, request, err):
                     tracer.attempt_retries_exhausted()
                     ctx.data["retry_history"] = tuple(history)
+                    _annotate_terminal_failure(err, history)
                     raise
                 ctx.data["retry_count"] = len(history)
                 delay = self._delay_for(settings, None)
@@ -247,7 +265,7 @@ class RetryPolicy(Policy):
                 # Sleep outside the try so a deadline crossed during the
                 # backoff raises ``ServiceResponseTimeoutError`` straight to
                 # the caller instead of being swallowed by ``except SdkError``.
-                self._sleep_bounded(delay, absolute_deadline)
+                self._sleep_bounded(delay, absolute_deadline, cancellation)
                 _LOGGER.debug("retrying after %s: %s", type(err).__name__, err)
                 continue
             if not self._is_retry(settings, request, response):
@@ -259,13 +277,15 @@ class RetryPolicy(Policy):
                 ctx.data["retry_history"] = tuple(history)
                 return response
             ctx.data["retry_count"] = len(history)
-            delay = self._delay_for(settings, response)
-            tracer.attempt_failed(_StatusRetryError(int(response.status)), delay)
-            # The intermediate response is not handed back to the caller, so
-            # close it to release the pooled connection before sleeping. The
-            # return branches above keep the response open — the caller owns it.
-            response.close()
-            self._sleep_bounded(delay, absolute_deadline)
+            status = int(response.status)
+            # Close the intermediate response before the backoff, in a
+            # ``finally`` so it closes even if the delay computation throws.
+            try:
+                delay = self._delay_for(settings, response)
+            finally:
+                response.close()
+            tracer.attempt_failed(_StatusRetryError(status), delay)
+            self._sleep_bounded(delay, absolute_deadline, cancellation)
 
     # ----- configuration --------------------------------------------------
 
@@ -296,6 +316,8 @@ class RetryPolicy(Policy):
     ) -> bool:
         status = int(response.status)
         if status < 400:
+            return False
+        if not _request_is_resendable(request):
             return False
         if not self._method_is_retryable(settings, request, response):
             return False
@@ -352,6 +374,11 @@ class RetryPolicy(Policy):
         Returns:
             ``True`` if the budget allows another attempt.
         """
+        # The re-send safety gate applies to transport errors too: a request
+        # whose body cannot be replayed is never re-sent, regardless of method
+        # idempotency or which transport phase failed.
+        if not _request_is_resendable(request):
+            return False
         if isinstance(error, ServiceRequestError):
             settings["total"] -= 1
             settings["connect"] -= 1
@@ -443,7 +470,12 @@ class RetryPolicy(Policy):
             delay, self._rand, full_jitter=self._full_jitter, symmetric=self._jitter
         )
 
-    def _sleep_bounded(self, duration: float, absolute_deadline: float) -> None:
+    def _sleep_bounded(
+        self,
+        duration: float,
+        absolute_deadline: float,
+        cancellation: CancellationToken | None = None,
+    ) -> None:
         """Sleep for ``duration`` seconds, clamped to the absolute deadline.
 
         Both the pre-sleep ("deadline already in the past") and post-sleep
@@ -454,23 +486,38 @@ class RetryPolicy(Policy):
         budget-exhausted condition (the chain ran out of time waiting for a
         response, not establishing the request).
 
+        When a ``CancellationToken`` is supplied the wait runs through its
+        interruptible ``sleep`` (a ``threading.Event.wait``), so a cooperative
+        cancel from another thread aborts the backoff promptly with
+        ``RequestCancelledError`` instead of running the full delay. Cancellation
+        is discriminated by exception type, never by message text.
+
         Args:
             duration: Desired sleep length in seconds. Non-positive values
                 return immediately.
             absolute_deadline: ``Clock.monotonic()`` value beyond which the
                 retry budget is considered spent.
+            cancellation: Optional cooperative-cancellation handle. When present
+                and already cancelled, or cancelled during the wait, the backoff
+                aborts with ``RequestCancelledError``.
 
         Raises:
+            RequestCancelledError: When ``cancellation`` is cancelled before or
+                during the wait.
             ServiceResponseTimeoutError: When ``absolute_deadline`` is reached
                 before or during the sleep.
         """
+        _raise_if_cancelled(cancellation)
         if duration <= 0:
             return
         remaining = absolute_deadline - self._clock.monotonic()
         if remaining <= 0:
             raise ServiceResponseTimeoutError("Retry budget exhausted (timeout reached)")
         actual = min(duration, remaining)
-        self._clock.sleep(actual)
+        if cancellation is None:
+            self._clock.sleep(actual)
+        elif not cancellation.sleep(actual):
+            raise RequestCancelledError("Retry backoff aborted by cooperative cancellation")
         if self._clock.monotonic() >= absolute_deadline:
             raise ServiceResponseTimeoutError("Retry budget exhausted (timeout reached)")
 
@@ -498,6 +545,82 @@ def _has_budget(settings: dict[str, Any]) -> bool:
         settings["status"],
     )
     return min(counts) >= 0
+
+
+def _request_is_resendable(request: Request) -> bool:
+    """Return whether ``request`` can be safely re-sent on a retry.
+
+    The body axis of the two-axis re-send safety gate: a body-less request is
+    always re-sendable (idempotency is decided separately by method), while a
+    request carrying a body may only be re-sent when that body is replayable.
+    A non-replayable body — one the caller declined or is unable to buffer — is
+    never re-emitted, regardless of the method or which failure triggered the
+    retry.
+
+    Args:
+        request: The request whose body is inspected.
+
+    Returns:
+        ``True`` when the request has no body or a replayable one.
+    """
+    body = request.body
+    return body is None or body.is_replayable()
+
+
+def _raise_if_cancelled(cancellation: CancellationToken | None) -> None:
+    """Raise ``RequestCancelledError`` when a cooperative token is cancelled.
+
+    A no-op when ``cancellation`` is ``None`` or still live, so the retry loop
+    can call it unconditionally at attempt boundaries.
+
+    Args:
+        cancellation: The cooperative-cancellation handle, if any.
+
+    Raises:
+        RequestCancelledError: When the token has been cancelled.
+    """
+    if cancellation is not None and cancellation.cancelled:
+        raise RequestCancelledError("Retry cancelled by cooperative cancellation")
+
+
+def _annotate_terminal_failure[ResponseT](
+    error: BaseException,
+    history: Sequence[RequestHistory[ResponseT]],
+) -> None:
+    """Attach the prior-attempt trail to a terminal (retries-exhausted) failure.
+
+    Records the total attempt count on an ``attempts`` attribute and appends one
+    ``add_note`` line per PRIOR attempt. The currently-surfacing exception is the
+    last history entry; it is excluded from its own trail so an exception never
+    notes itself.
+
+    Args:
+        error: The exception about to surface to the caller.
+        history: The full per-attempt trail, ending with ``error``'s own entry.
+    """
+    # Stamp the count as a dynamic instance attribute — the SDK exception types
+    # carry no static ``attempts`` field, so this writes straight into __dict__.
+    error.__dict__["attempts"] = len(history)
+    prior = [entry for entry in history if entry.error is not error]
+    for index, entry in enumerate(prior, start=1):
+        error.add_note(f"prior attempt {index}: {_describe_attempt(entry)}")
+
+
+def _describe_attempt[ResponseT](entry: RequestHistory[ResponseT]) -> str:
+    """Render a one-line summary of a single retry attempt for the trail.
+
+    Args:
+        entry: The per-attempt history record.
+
+    Returns:
+        A short human-readable description of how the attempt ended.
+    """
+    if entry.error is not None:
+        return f"raised {type(entry.error).__name__}: {entry.error}"
+    status = getattr(entry.response, "status", None)
+    if status is not None:
+        return f"returned HTTP {int(status)}"
+    return "produced no response"
 
 
 __all__ = ["RetryMode", "RetryPolicy"]
