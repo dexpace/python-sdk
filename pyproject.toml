@@ -39,7 +39,11 @@ testpaths = [
     "packages/dexpace-sdk-http-aiohttp/tests",
     "packages/dexpace-sdk-http-httpx/tests",
     "packages/dexpace-sdk-http-requests/tests",
+    "examples/petstore/tests",
 ]
+# The petstore canary lives outside the packaged workspace members, so its
+# generated SDK is importable in tests without an editable install.
+pythonpath = ["examples/petstore/src"]
 addopts = "-ra --strict-markers"
 asyncio_mode = "auto"
 markers = [
@@ -82,7 +86,8 @@ src = ["packages/dexpace-sdk-core/src", "packages/dexpace-sdk-core/tests",
        "packages/dexpace-sdk-http-stdlib/src", "packages/dexpace-sdk-http-stdlib/tests",
        "packages/dexpace-sdk-http-aiohttp/src", "packages/dexpace-sdk-http-aiohttp/tests",
        "packages/dexpace-sdk-http-httpx/src", "packages/dexpace-sdk-http-httpx/tests",
-       "packages/dexpace-sdk-http-requests/src", "packages/dexpace-sdk-http-requests/tests"]
+       "packages/dexpace-sdk-http-requests/src", "packages/dexpace-sdk-http-requests/tests",
+       "examples/petstore/src", "examples/petstore/tests"]
 
 [tool.ruff.lint]
 select = [
@@ -135,6 +140,7 @@ mypy_path = [
     "packages/dexpace-sdk-http-aiohttp/src",
     "packages/dexpace-sdk-http-httpx/src",
     "packages/dexpace-sdk-http-requests/src",
+    "examples/petstore/src",
 ]
 files = [
     "packages/dexpace-sdk-core/src",
@@ -147,6 +153,8 @@ files = [
     "packages/dexpace-sdk-http-httpx/tests",
     "packages/dexpace-sdk-http-requests/src",
     "packages/dexpace-sdk-http-requests/tests",
+    "examples/petstore/src",
+    "examples/petstore/tests",
 ]
 
 [[tool.mypy.overrides]]

@@ -1,0 +1,115 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Dexpace Petstore Canary",
+    "version": "1.0.0",
+    "description": "A small, frozen OpenAPI document driving the petstore codegen canary. It is a fixture, not a real service: it exercises paginate, SSE events, a merge-patch body with three-valued fields, typed status errors, and a tiered auth requirement end to end through the generated facades."
+  },
+  "x-dexpace-codegen": {
+    "package": "dexpace_petstore",
+    "client_class": "PetStoreClient",
+    "async_client_class": "AsyncPetStoreClient"
+  },
+  "paths": {
+    "/pets": {
+      "get": {
+        "operationId": "list_pets",
+        "summary": "List pets, paginating by opaque cursor.",
+        "x-dexpace": {
+          "kind": "paginate",
+          "item_model": "Pet",
+          "strategy": "PET_PAGE_STRATEGY"
+        },
+        "responses": {
+          "200": {"description": "A page of pets plus the next cursor."}
+        }
+      }
+    },
+    "/pets/events": {
+      "get": {
+        "operationId": "watch_pets",
+        "summary": "Stream pet lifecycle events over Server-Sent Events.",
+        "x-dexpace": {
+          "kind": "events",
+          "event_model": "PetEvent",
+          "mapper": "PET_EVENT_MAPPER"
+        },
+        "responses": {
+          "200": {"description": "An SSE stream of pet events."}
+        }
+      }
+    },
+    "/pets/{pet_id}": {
+      "get": {
+        "operationId": "get_pet",
+        "summary": "Fetch one pet by id.",
+        "parameters": [
+          {"name": "pet_id", "in": "path", "required": true, "schema": {"type": "string"}}
+        ],
+        "x-dexpace": {
+          "kind": "unary",
+          "returns": "Pet",
+          "auth": [{"scheme": "bearer", "scopes": ["pets:read"]}]
+        },
+        "responses": {
+          "200": {"description": "The requested pet."},
+          "404": {"description": "No pet with that id."}
+        }
+      },
+      "patch": {
+        "operationId": "update_pet",
+        "summary": "Apply a merge-patch update to a pet.",
+        "parameters": [
+          {"name": "pet_id", "in": "path", "required": true, "schema": {"type": "string"}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/merge-patch+json": {
+              "schema": {"$ref": "#/components/schemas/PetPatch"}
+            }
+          }
+        },
+        "x-dexpace": {
+          "kind": "unary",
+          "returns": "Pet",
+          "body": {"param": "patch", "model": "PetPatch"}
+        },
+        "responses": {
+          "200": {"description": "The updated pet."},
+          "404": {"description": "No pet with that id."}
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Pet": {
+        "type": "object",
+        "required": ["id", "name"],
+        "properties": {
+          "id": {"type": "string"},
+          "name": {"type": "string"},
+          "tag": {"type": ["string", "null"]}
+        }
+      },
+      "PetEvent": {
+        "type": "object",
+        "required": ["kind", "pet_id"],
+        "properties": {
+          "kind": {"type": "string"},
+          "pet_id": {"type": "string"}
+        }
+      },
+      "PetPatch": {
+        "type": "object",
+        "description": "A merge-patch body: an omitted field leaves the target unchanged, an explicit null clears it, and a value sets it.",
+        "properties": {
+          "name": {"type": ["string", "null"]},
+          "tag": {"type": ["string", "null"]},
+          "weight_kg": {"type": ["number", "null"]}
+        }
+      }
+    }
+  }
+}
