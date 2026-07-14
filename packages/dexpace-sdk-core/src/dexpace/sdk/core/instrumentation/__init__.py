@@ -16,7 +16,12 @@ from __future__ import annotations
 
 from .client_logger import ClientLogger, CorrelationFilter, LogEvent
 from .correlation import (
+    activate_span,
     bind_correlation,
+    bind_to_context,
+    capture_context,
+    correlation_scope,
+    get_current_span,
     get_span_id,
     get_trace_id,
     set_span_id,
@@ -79,7 +84,12 @@ __all__ = [
     "TracingScope",
     "UpDownCounter",
     "UrlRedactor",
+    "activate_span",
     "bind_correlation",
+    "bind_to_context",
+    "capture_context",
+    "correlation_scope",
+    "get_current_span",
     "get_span_id",
     "get_trace_id",
     "set_span_id",
