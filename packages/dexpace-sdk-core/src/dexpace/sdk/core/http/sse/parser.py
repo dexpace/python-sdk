@@ -83,6 +83,12 @@ _CR: Final[int] = 0x0D
 _COLON: Final[int] = 0x3A
 _UTF8_BOM: Final[bytes] = b"\xef\xbb\xbf"
 
+#: Upper bound for a ``retry:`` value, in milliseconds. The reconnection time
+#: is a signed 64-bit millisecond count in the reference implementations, so a
+#: digits-only value above ``2**63 - 1`` is rejected (ignored) rather than
+#: stored as an unbounded Python integer.
+_RETRY_MAX_MS: Final[int] = (1 << 63) - 1
+
 
 @dataclass(frozen=True, slots=True)
 class SseEvent:
@@ -100,8 +106,10 @@ class SseEvent:
             ``retry`` as a connection-level reconnection-time setting that
             persists until the server sends a new value, so subsequent
             events repeat the last observed integer (milliseconds) until
-            superseded. ``None`` means no ``retry:`` line has been seen
-            yet on this stream.
+            superseded. Only a value of ASCII digits within the signed
+            64-bit millisecond range (``0`` .. ``2**63 - 1``) is honoured;
+            anything else is ignored. ``None`` means no valid ``retry:``
+            line has been seen yet on this stream.
     """
 
     data: str
@@ -118,6 +126,10 @@ class SseParser:
     queue and are yielded by `drain`. Callers typically use the
     free functions `parse_events` / `parse_async_events` rather
     than holding a parser directly.
+
+    Not thread-safe: a single reader must drive `feed` / `drain` / `end` in
+    sequence. The mutable buffer and accumulators are unguarded, so concurrent
+    use from multiple threads is undefined.
     """
 
     _buffer: bytearray = field(default_factory=bytearray)
@@ -233,11 +245,31 @@ class SseParser:
                 if "\0" not in value:  # spec: ignore IDs containing NULL
                     self._last_id = value
             case "retry":
-                if value.isdigit():
-                    self._retry = int(value)
+                self._set_retry(value)
             case _:
                 # Unknown field — spec says ignore.
                 pass
+
+    def _set_retry(self, value: str) -> None:
+        """Set the sticky reconnect hint from a ``retry:`` field value.
+
+        Per the WHATWG spec only ASCII digits are honoured. The ``isascii``
+        guard is deliberate: ``str.isdigit`` also accepts non-ASCII digits —
+        superscripts such as ``²`` that ``int`` rejects with ``ValueError``,
+        and script digits such as ``٤`` that ``int`` would silently accept —
+        so restricting to ASCII keeps a raw ``ValueError`` from escaping `feed`
+        and keeps non-ASCII digits out. A value above the signed 64-bit
+        millisecond ceiling (``2**63 - 1``) is rejected cleanly (ignored)
+        rather than stored as an unbounded integer.
+
+        Args:
+            value: The raw ``retry:`` field value (one leading space already
+                stripped).
+        """
+        if value.isascii() and value.isdigit():
+            parsed = int(value)
+            if parsed <= _RETRY_MAX_MS:
+                self._retry = parsed
 
     def _dispatch(self) -> None:
         if not self._data_lines:

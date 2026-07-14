@@ -60,6 +60,37 @@ def test_retry_ignored_when_non_numeric() -> None:
     assert events[0].retry is None
 
 
+def test_retry_at_signed_64bit_ceiling_is_accepted() -> None:
+    ceiling = (1 << 63) - 1
+    stream = b"retry: " + str(ceiling).encode() + b"\ndata: x\n\n"
+    events = _events(stream)
+    assert events[0].retry == ceiling
+
+
+def test_retry_above_signed_64bit_ceiling_is_rejected_cleanly() -> None:
+    # A digits-only value beyond the 2**63-1 millisecond cap is ignored (the
+    # sticky retry stays unset) rather than stored as an unbounded integer.
+    stream = b"retry: " + str(1 << 63).encode() + b"\ndata: x\n\n"
+    events = _events(stream)
+    assert events[0].retry is None
+
+
+def test_retry_unicode_superscript_digit_does_not_raise() -> None:
+    # "²".isdigit() is True but int("²") raises; the parser must treat
+    # non-ASCII digits as non-numeric instead of leaking ValueError out of feed.
+    stream = "retry: ²\ndata: x\n\n".encode()
+    events = _events(stream)
+    assert events[0].retry is None
+
+
+def test_retry_non_ascii_decimal_digit_is_ignored() -> None:
+    # Arabic-Indic four (U+0664) is a Unicode decimal digit that int() accepts,
+    # but the WHATWG spec restricts retry to ASCII digits, so it is ignored.
+    stream = "retry: ٤\ndata: x\n\n".encode()
+    events = _events(stream)
+    assert events[0].retry is None
+
+
 def test_comment_lines_ignored() -> None:
     stream = b": keepalive\ndata: x\n\n"
     events = _events(stream)
