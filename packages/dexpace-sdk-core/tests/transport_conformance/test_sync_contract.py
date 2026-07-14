@@ -145,6 +145,8 @@ def test_read_timeout_maps_to_response_timeout_type(sync_harness: SyncTransportH
 
 
 def test_cancellation_maps_to_terminal_cancelled(sync_harness: SyncTransportHarness) -> None:
+    if not sync_harness.supports_cancellation:
+        pytest.skip("harness cannot program a native cooperative-cancellation outcome")
     sync_harness.expect_cancellation()
     err = _execute_error(sync_harness, _get())
     assert isinstance(err, RequestCancelledError)
@@ -158,6 +160,8 @@ def test_cancellation_maps_to_terminal_cancelled(sync_harness: SyncTransportHarn
 def test_timeout_is_discriminated_before_cancellation(sync_harness: SyncTransportHarness) -> None:
     # Both a timeout and a cancellation are OSErrors, yet the type-ordered
     # classifier keeps them apart: timeout -> retryable, cancellation -> terminal.
+    if not sync_harness.supports_cancellation:
+        pytest.skip("harness cannot program a native cooperative-cancellation outcome")
     sync_harness.expect_connect_timeout()
     timeout_err = _execute_error(sync_harness, _get())
     sync_harness.expect_cancellation()
@@ -212,6 +216,8 @@ def test_content_length_is_computed_by_adapter(sync_harness: SyncTransportHarnes
 def test_unknown_length_body_is_chunked_without_content_length(
     sync_harness: SyncTransportHarness,
 ) -> None:
+    if not sync_harness.supports_unknown_length_chunked_framing:
+        pytest.skip("harness always buffers the body fully before send")
     sync_harness.expect_response(200)
     request = Request(
         method=Method.POST,
@@ -280,6 +286,8 @@ def test_native_rejected_drop_log_is_bounded(sync_harness: SyncTransportHarness)
 def test_malformed_inbound_header_dropped_obs_text_preserved(
     sync_harness: SyncTransportHarness,
 ) -> None:
+    if not sync_harness.supports_defensive_inbound_headers:
+        pytest.skip("harness cannot recover a good header following a malformed one")
     sync_harness.expect_response(
         200,
         headers=[("X-Good", "ok"), ("Bad Name", "x"), ("X-Obs", "caf\xe9")],
@@ -361,6 +369,8 @@ def test_replayable_buffering_failure_is_clean(sync_harness: SyncTransportHarnes
 
 def test_adaptation_failure_closes_native_response(sync_harness: SyncTransportHarness) -> None:
     # A non-numeric status models a native response the adapter cannot adapt.
+    if not sync_harness.supports_adaptation_failure:
+        pytest.skip("harness cannot obtain a native response that then fails adaptation")
     sync_harness.expect_response("BAD")
     with pytest.raises(ServiceResponseError):
         sync_harness.new_client().execute(_get())

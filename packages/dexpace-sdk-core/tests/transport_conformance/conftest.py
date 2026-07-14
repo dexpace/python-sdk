@@ -26,6 +26,7 @@ from .harness import (
     AsyncTransportHarness,
     SyncTransportHarness,
 )
+from .stdlib_transport import StdlibAsyncHarness, StdlibSyncHarness
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -39,6 +40,10 @@ def _register(registry: list[tuple[str, type]], label: str, factory: type) -> No
 
 _register(SYNC_HARNESS_FACTORIES, "in-memory", InMemorySyncHarness)
 _register(ASYNC_HARNESS_FACTORIES, "in-memory", InMemoryAsyncHarness)
+# PY-M8-02: real transport-adapter certification. Same mechanism, no test
+# body changes — see `stdlib_transport.py`'s module docstring.
+_register(SYNC_HARNESS_FACTORIES, "stdlib-urllib", StdlibSyncHarness)
+_register(ASYNC_HARNESS_FACTORIES, "stdlib-asyncio", StdlibAsyncHarness)
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
@@ -59,15 +64,21 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 
 @pytest.fixture
 def sync_harness(request: pytest.FixtureRequest) -> Iterator[SyncTransportHarness]:
-    """Yield a fresh synchronous harness for the parametrized transport."""
+    """Yield a fresh synchronous harness, shutting it down on teardown."""
     harness = request.param()
     assert isinstance(harness, SyncTransportHarness)
-    yield harness
+    try:
+        yield harness
+    finally:
+        harness.shutdown()
 
 
 @pytest.fixture
 def async_harness(request: pytest.FixtureRequest) -> Iterator[AsyncTransportHarness]:
-    """Yield a fresh asynchronous harness for the parametrized transport."""
+    """Yield a fresh asynchronous harness, shutting it down on teardown."""
     harness = request.param()
     assert isinstance(harness, AsyncTransportHarness)
-    yield harness
+    try:
+        yield harness
+    finally:
+        harness.shutdown()
