@@ -62,6 +62,22 @@ executable specs, so each flips to a hard failure as its underlying logic is
 fixed — forcing this gate to be revisited, and the twin re-wired into
 `default_async_pipeline()`, once all three close.
 
+**IMPORTANT — this is not an async-only gap.** A separate task built the
+equivalent battery against the SYNC `RedirectPolicy`
+(`packages/dexpace-sdk-core/tests/pipeline/test_sync_redirect_battery.py`) and
+confirmed the same three dimensions are unmet there too, since `AsyncRedirectPolicy`
+delegates every per-hop decision to the sync policy rather than restating its
+own logic — there is only one resolution core, and it is wired into
+`default_pipeline()` **by default, right now**. Concretely, as shipped:
+an HTTPS `https://` request that gets redirected to `http://` is followed rather
+than refused, and a cross-origin hop does not strip `Cookie` /
+`Proxy-Authorization` (only `Authorization`). This is a live gap in the default
+SYNC pipeline, not a theoretical one gated behind an async opt-in — it is
+ledgered here rather than under a separate entry because it is the exact same
+root cause and the exact same fix closes both. The sync battery's three
+corresponding tests are also committed as `xfail(strict=True)`, so a fix to the
+shared core flips both suites at once.
+
 ## `furl` is a sanctioned runtime dependency, not a violation of "stdlib-only"
 
 **Conflict.** The toolkit's stated rule is that `dexpace-sdk-core` ships against
