@@ -93,22 +93,6 @@ class Request:
             f"timeout={self.timeout!r}, retries={self.retries!r})"
         )
 
-    def __repr__(self) -> str:
-        """Return a repr with the URL redacted via the shared ``UrlRedactor``.
-
-        The default dataclass repr would render the ``Url`` in full, leaking any
-        userinfo or query-string secrets into logs and tracebacks. Routing the
-        URL through the one shared redactor keeps that surface consistent with
-        the logging and tracing emitters.
-        """
-        from ...instrumentation.url_redactor import UrlRedactor
-
-        url = UrlRedactor().redact(self.url)
-        return (
-            f"Request(method={self.method!r}, url={url!r}, "
-            f"headers={self.headers!r}, body={self.body!r})"
-        )
-
     def with_method(self, method: Method) -> Self:
         """Return a copy with ``method`` replaced.
 
