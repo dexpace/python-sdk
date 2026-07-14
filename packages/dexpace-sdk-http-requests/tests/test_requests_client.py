@@ -17,11 +17,13 @@ import requests
 import requests.structures
 
 from dexpace.sdk.core.errors import (
+    RequestCancelledError,
     ServiceRequestError,
     ServiceResponseError,
     ServiceResponseTimeoutError,
 )
 from dexpace.sdk.core.http.common import Headers, Url
+from dexpace.sdk.core.http.common.media_type import MediaType
 from dexpace.sdk.core.http.common.protocol import Protocol
 from dexpace.sdk.core.http.request import Method, Request, RequestBody
 from dexpace.sdk.core.http.response import Status
@@ -107,6 +109,9 @@ class _SlowHandler(socketserver.StreamRequestHandler):
 class _TestServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
+    #: Request count, used by the redirect/flaky fixtures to prove exactly one
+    #: exchange reached the server; unused (stays 0) by the other fixtures.
+    hits: int = 0
 
 
 @pytest.fixture
@@ -667,3 +672,256 @@ def test_content_length_propagated_without_encoding() -> None:
         body = response.body
         assert body is not None
         assert body.content_length() == 5
+
+
+def test_media_type_derived_from_content_type_header(echo_server: str) -> None:
+    """The response body's media type reflects a real Content-Type header."""
+    client = RequestsHttpClient()
+    request = Request(method=Method.GET, url=Url.parse(f"{echo_server}/"))
+    with client:
+        response = client.execute(request)
+        body = response.body
+        assert body is not None
+        assert body.media_type() == MediaType.of("application", "json")
+        body.bytes()
+
+
+# --------------------------------------------------------------------------- #
+# Cooperative cancellation: InterruptedError -> RequestCancelledError.
+# --------------------------------------------------------------------------- #
+
+
+class _RaisingAdapter(requests.adapters.BaseAdapter):
+    """Adapter that raises a fixed exception from ``send``."""
+
+    def __init__(self, exc: Exception) -> None:
+        super().__init__()
+        self._exc = exc
+
+    def send(  # signature mirrors BaseAdapter.send
+        self,
+        request: requests.PreparedRequest,
+        stream: bool = False,
+        timeout: float | tuple[float | None, float | None] | None = None,
+        verify: bool | str = True,
+        cert: str | tuple[str, str] | None = None,
+        proxies: dict[str, str] | None = None,
+    ) -> requests.Response:
+        raise self._exc
+
+    def close(self) -> None:  # pragma: no cover - nothing to release
+        pass
+
+
+def test_interrupted_error_maps_to_request_cancelled_error() -> None:
+    """An ``InterruptedError`` (an aborted blocking call) is terminal, not retryable."""
+    session = requests.Session()
+    session.mount("http://", _RaisingAdapter(InterruptedError("signal")))
+    client = RequestsHttpClient(session=session)
+    request = Request(method=Method.GET, url=Url.parse("http://example.test/"))
+    with client, pytest.raises(RequestCancelledError) as excinfo:
+        client.execute(request)
+    err = excinfo.value
+    assert isinstance(err, OSError)
+    assert err.retryable is False
+
+
+# --------------------------------------------------------------------------- #
+# Per-call timeout override.
+# --------------------------------------------------------------------------- #
+
+
+class _TimeoutCapturingAdapter(requests.adapters.BaseAdapter):
+    """Adapter recording the effective ``timeout`` it was handed."""
+
+    def __init__(self, captured: dict[str, object]) -> None:
+        super().__init__()
+        self._captured = captured
+
+    def send(  # signature mirrors BaseAdapter.send
+        self,
+        request: requests.PreparedRequest,
+        stream: bool = False,
+        timeout: float | tuple[float | None, float | None] | None = None,
+        verify: bool | str = True,
+        cert: str | tuple[str, str] | None = None,
+        proxies: dict[str, str] | None = None,
+    ) -> requests.Response:
+        self._captured["timeout"] = timeout
+        response = requests.Response()
+        response.status_code = 200
+        response.reason = "OK"
+        response.raw = io.BytesIO(b"")
+        return response
+
+    def close(self) -> None:  # pragma: no cover - nothing to release
+        pass
+
+
+def test_per_call_timeout_overrides_client_default() -> None:
+    """A ``Request.timeout`` overrides the client's constructor-level default."""
+    captured: dict[str, object] = {}
+    session = requests.Session()
+    session.mount("http://", _TimeoutCapturingAdapter(captured))
+    client = RequestsHttpClient(timeout=30.0, session=session)
+    request = Request(method=Method.GET, url=Url.parse("http://example.test/"), timeout=0.25)
+    with client:
+        client.execute(request)
+    assert captured["timeout"] == 0.25
+
+
+def test_no_override_falls_back_to_client_default_timeout() -> None:
+    """Without a per-call override, the client's constructor-level default is used."""
+    captured: dict[str, object] = {}
+    session = requests.Session()
+    session.mount("http://", _TimeoutCapturingAdapter(captured))
+    client = RequestsHttpClient(timeout=7.5, session=session)
+    request = Request(method=Method.GET, url=Url.parse("http://example.test/"))
+    with client:
+        client.execute(request)
+    assert captured["timeout"] == 7.5
+
+
+# --------------------------------------------------------------------------- #
+# trust_env / native-retry hardening matrix.
+#
+# ``requests`` defaults ``Session.trust_env=True`` (implicitly merging
+# ``HTTP_PROXY`` / ``HTTPS_PROXY`` / ``.netrc`` from the environment) and its
+# default ``HTTPAdapter`` may not be zero-retry depending on version/caller
+# configuration. A session this client CREATES gets both hardened; a
+# caller-supplied (BYO) session is left exactly as configured.
+# --------------------------------------------------------------------------- #
+
+
+def test_owned_session_has_trust_env_disabled() -> None:
+    """A session the client creates itself opts out of environment proxy trust."""
+    client = RequestsHttpClient()
+    with client:
+        assert client._session.trust_env is False
+
+
+@pytest.mark.parametrize("initial_trust_env", [True, False])
+def test_byo_session_trust_env_left_untouched(initial_trust_env: bool) -> None:
+    """A caller-supplied session's ``trust_env`` is never overridden."""
+    session = requests.Session()
+    session.trust_env = initial_trust_env
+    client = RequestsHttpClient(session=session)
+    with client:
+        assert client._session.trust_env is initial_trust_env
+
+
+def test_owned_session_adapters_have_zero_retries() -> None:
+    """A session the client creates mounts zero-retry adapters on both schemes."""
+    client = RequestsHttpClient()
+    with client:
+        for scheme in ("http://", "https://"):
+            adapter = client._session.get_adapter(f"{scheme}example.test/")
+            assert isinstance(adapter, requests.adapters.HTTPAdapter)
+            assert adapter.max_retries.total == 0
+
+
+def test_byo_session_adapters_left_untouched() -> None:
+    """A caller-supplied session's own mounted adapter is never replaced."""
+    session = requests.Session()
+    dangerous = requests.adapters.HTTPAdapter(max_retries=5)
+    session.mount("http://", dangerous)
+    client = RequestsHttpClient(session=session)
+    with client:
+        adapter = client._session.get_adapter("http://example.test/")
+        assert adapter is dangerous
+        assert adapter.max_retries.total == 5
+
+
+# --------------------------------------------------------------------------- #
+# Behavioral proof, against real servers: redirects and retries are off.
+# --------------------------------------------------------------------------- #
+
+
+class _RedirectHandler(socketserver.StreamRequestHandler):
+    """Handler that always replies 302 and counts how many requests it served."""
+
+    def handle(self) -> None:
+        while True:
+            line = self.rfile.readline()
+            if not line or line in (b"\r\n", b"\n"):
+                break
+        self.server.hits += 1  # type: ignore[attr-defined]
+        response = (
+            b"HTTP/1.1 302 Found\r\n"
+            b"Location: http://127.0.0.1:1/should-not-be-followed\r\n"
+            b"Content-Length: 0\r\n"
+            b"Connection: close\r\n"
+            b"\r\n"
+        )
+        self.wfile.write(response)
+
+
+class _FlakyHandler(socketserver.BaseRequestHandler):
+    """Handler that accepts a connection, counts it, then resets it unanswered."""
+
+    def handle(self) -> None:
+        self.server.hits += 1  # type: ignore[attr-defined]
+        self.request.close()
+
+
+@pytest.fixture
+def redirect_server() -> Iterator[tuple[str, _TestServer]]:
+    """Start a real server that always 302s, tracking how many hits it served."""
+    server = _TestServer(("127.0.0.1", 0), _RedirectHandler)
+    server.hits = 0
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{port}", server
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.fixture
+def flaky_server() -> Iterator[tuple[str, _TestServer]]:
+    """Start a real server that resets every connection unanswered."""
+    server = _TestServer(("127.0.0.1", 0), _FlakyHandler)
+    server.hits = 0
+    port = int(server.server_address[1])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{port}", server
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_native_redirects_are_disabled_behaviorally(
+    redirect_server: tuple[str, _TestServer],
+) -> None:
+    """A real redirecting server proves ``allow_redirects=False`` end to end.
+
+    If the adapter had followed the 302, it would also have tried to connect
+    to the unreachable ``Location`` and raised instead of returning cleanly —
+    and the real server would have logged a second hit for a followed
+    redirect that looped back to it. Neither happens.
+    """
+    base_url, server = redirect_server
+    client = RequestsHttpClient(timeout=2.0)
+    request = Request(method=Method.GET, url=Url.parse(f"{base_url}/"))
+    with client:
+        response = client.execute(request)
+        assert response.status == Status(302)
+        assert response.headers.get("location") == "http://127.0.0.1:1/should-not-be-followed"
+        response.close()
+    assert server.hits == 1
+
+
+def test_native_retries_are_disabled_behaviorally(
+    flaky_server: tuple[str, _TestServer],
+) -> None:
+    """A real flaky/connection-reset server proves urllib3-level retries are off."""
+    base_url, server = flaky_server
+    client = RequestsHttpClient(timeout=2.0)
+    request = Request(method=Method.GET, url=Url.parse(f"{base_url}/"))
+    with client, pytest.raises(ServiceRequestError):
+        client.execute(request)
+    assert server.hits == 1
