@@ -71,13 +71,20 @@ one span per attempt / hop.
 
 | Policy                              | Purpose                                                  |
 |-------------------------------------|----------------------------------------------------------|
-| `RetryPolicy` / `AsyncRetryPolicy`  | Retry transient failures with backoff + `Retry-After`. Auto-buffers single-use request bodies when `total_retries > 0`.    |
-| `LoggingPolicy`                     | Structured request/response logs with URL redaction.      |
-| `OperationTracingPolicy`            | Emit the per-operation lifecycle (`operation_started`, then one `operation_succeeded`/`operation_failed`) from outside the retry/redirect loop. |
-| `TracingPolicy`                     | Open a span per attempt and emit per-request tracer events; OTel semantic-conv attributes. |
-| `BearerTokenPolicy` (auth)          | Acquire + cache + apply OAuth bearer tokens.              |
+| `RetryPolicy` / `AsyncRetryPolicy`  | Retry transient failures with backoff + `Retry-After`. Auto-buffers single-use request bodies when `total_retries > 0`. Retryable status set is configurable (see below). |
+| `RedirectPolicy` / `AsyncRedirectPolicy` | Follow `301`/`302`/`303`/`307`/`308`, stripping credentials across origins. The async twin is gated off by default (see below). |
+| `LoggingPolicy` / `AsyncLoggingPolicy` | Structured request/response wire logs with URL redaction and a bounded body preview. |
+| `OperationTracingPolicy` / `AsyncOperationTracingPolicy` | Emit the per-operation lifecycle (`operation_started`, then one `operation_succeeded`/`operation_failed`) from outside the retry/redirect loop. |
+| `TracingPolicy` / `AsyncTracingPolicy` | Open a span per attempt and emit per-request tracer events; OTel semantic-conv attributes. |
+| `BearerTokenPolicy` / `AsyncBearerTokenPolicy` (auth) | Acquire + cache + apply OAuth bearer tokens.  |
 | `KeyCredentialPolicy` (auth)        | Stamp an API key into a configurable header.              |
 | `BasicAuthPolicy` (auth)            | `Authorization: Basic <base64>`.                          |
+
+Both observability policies now ship an async twin. `AsyncLoggingPolicy` and
+`AsyncTracingPolicy` are wired into `default_async_pipeline` at the same stages
+their sync counterparts occupy, so the async stack emits the same per-attempt
+wire logs and per-attempt tracing span as the sync default — the two pillars are
+at parity here.
 
 ## Mutable scratchpad — `PipelineContext`
 
@@ -117,3 +124,45 @@ buffers, and a per-call `retry_total=0` (or `RetryPolicy.no_retries()`) skips
 the buffering so callers who opt out of retries pay no memory cost for a copy
 they will never use. Already-replayable bodies (`from_bytes`, `from_string`,
 `from_form`) flow through untouched because `to_replayable()` returns `self`.
+
+## Retryable HTTP status codes
+
+`RetryPolicy` treats a fixed set of status codes as transient and retryable:
+`408`, `429`, and the transient `5xx` family (`500`, `502`, `503`, `504`) —
+`DEFAULT_RETRYABLE_STATUS`. Permanent `5xx` codes (for example `501`) are not
+retried. The set is configurable per policy through the
+`retry_on_status_codes` constructor argument, and a per-call `retry_status`
+override in `ctx.options` caps how many status-driven retries a single call
+spends.
+
+The classification is *baked once* into `HttpResponseError.retryable` at
+construction time, so changing a policy's configured status set later never
+mutates an already-built error — see [`errors.md`](errors.md).
+
+## Default stacks and the redirect asymmetry
+
+`default_pipeline(client)` and `default_async_pipeline(client)` assemble the
+canonical stack. The stage order is operation-tracing → redirect → idempotency →
+retry → set-date → client-identity → [auth] → logging → tracing. Each policy is
+opt-out (pass `None`) or opt-in-with-override (pass a pre-configured instance).
+
+The two stacks are at parity on observability — both wire per-attempt wire
+logging and a per-attempt tracing span, bracketed by the per-operation tracer —
+but they differ on **redirect**:
+
+- `default_pipeline` wires `RedirectPolicy` by default.
+- `default_async_pipeline` does **not** wire `AsyncRedirectPolicy` unless the
+  caller passes one explicitly (`default_async_pipeline(client,
+  redirect=AsyncRedirectPolicy(...))`).
+
+This is not an async-only quirk. `AsyncRedirectPolicy` delegates every per-hop
+decision to the same shared `RedirectPolicy` core the sync default wires
+unconditionally, so the gaps are shared: an `https://` → `http://` downgrade is
+followed rather than default-denied, and a cross-origin hop strips only
+`Authorization` (not `Cookie` / `Proxy-Authorization`), judged against the
+previous hop rather than the seed origin. Gating the async twin off — rather
+than also removing redirect from the sync default, a larger behaviour change — is
+the narrower fix while the shared core is certified against the full redirect
+security battery. `Location` resolution itself is wire-exact. The full battery,
+its `xfail`-tracked dimensions, and the rationale are in
+[`deviations.md`](deviations.md).

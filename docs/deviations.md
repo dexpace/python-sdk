@@ -183,37 +183,6 @@ read timeout or use the async stack, where task cancellation unwinds at the next
 `await`. Ledgered here so the absence of mid-read sync cancellation reads as a
 deliberate boundary of the threading model, not an oversight in the retry policy.
 
-## The async pipeline ships without wire logging or a per-attempt tracing span
-
-**Conflict.** `default_pipeline()` wires two per-attempt observability policies —
-`LoggingPolicy` (request/response wire log with a body preview) and `TracingPolicy`
-(a per-attempt OpenTelemetry span). Parity would have `default_async_pipeline()`
-carry async twins of both. It does not: the async stack keeps per-operation
-tracing (`AsyncOperationTracingPolicy`) but omits per-attempt wire logging and
-the per-attempt span entirely.
-
-**Decision.** Ledgered as a tracked, deliberate gap — not silently dropped. Both
-omissions are documented at the point of use: the "Known gap — async wire
-logging" paragraph on `default_async_pipeline()`'s docstring in
-`packages/dexpace-sdk-core/src/dexpace/sdk/core/pipeline/defaults.py`, and the
-"per-attempt OpenTelemetry span machinery is sync-only and has no async
-counterpart" note on `TracingPolicy` in
-`packages/dexpace-sdk-core/src/dexpace/sdk/core/pipeline/policies/tracing_policy.py`.
-Correlation ids still propagate across `await` boundaries (bound by
-`AsyncOperationTracingPolicy`), so an async caller's own log records stay
-correlated; only the SDK's built-in per-attempt wire log and span are absent.
-
-**Why.** The sync `LoggingPolicy` and per-attempt `TracingPolicy` were written
-against synchronous body iteration and a synchronous span lifecycle; a correct
-async twin is real work (async-safe body-preview capture, span start/stop across
-`await` points), not a mechanical rename, and shipping a subtly wrong async
-logger is worse than shipping none. Rather than block the async stack on that
-work or fake parity, the gap is made explicit at the two docstrings above and
-recorded here, with the documented escape hatch: an async caller who needs
-request/response logging wraps the transport or adds a custom `AsyncPolicy`. An
-async logging policy is planned for a later milestone; until it lands this stays
-a known, opt-out-able gap rather than a defect.
-
 ## The reference stdlib transport accepts capability gaps its siblings don't
 
 **Conflict.** The `HttpClient` / `AsyncHttpClient` Protocols promise a uniform

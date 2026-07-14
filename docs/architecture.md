@@ -71,6 +71,29 @@ Same layering, with `AsyncPipeline` / `AsyncPolicy` / `AsyncHttpClient` /
 `(value, ctx) -> value`) work in both sync and async pipelines — the
 async pipeline auto-awaits any coroutine return.
 
+The two pillars are at parity on observability: `default_async_pipeline`
+carries per-attempt wire logging (`AsyncLoggingPolicy`) and a per-attempt
+tracing span (`AsyncTracingPolicy`) alongside the per-operation tracer, matching
+the sync default. The one deliberate asymmetry is redirect — the async redirect
+twin is gated off by default while the shared redirect core is certified against
+the full security battery. See [`pipelines.md`](pipelines.md) and
+[`deviations.md`](deviations.md).
+
+## Extension points
+
+The toolkit is defined by the seams a consuming library plugs into. Each has a
+practical guide:
+
+- Transport (`HttpClient` / `AsyncHttpClient`) — [`write-a-transport.md`](write-a-transport.md).
+- Wire format (`Serde`) — [`write-a-serde.md`](write-a-serde.md).
+- Pagination convention (`PaginationStrategy`) — [`write-a-paging-strategy.md`](write-a-paging-strategy.md).
+- Result production (`ResponseHandler`) — [`write-a-response-handler.md`](write-a-response-handler.md).
+
+A code generator sits one level up, emitting a projection over the shared
+executor. The contract it targets — `Operation` / `assemble`, `ServiceCore`,
+`StatusErrorMap`, `ServiceDefaults`, and the tiered auth resolver — is
+[`codegen-target.md`](codegen-target.md).
+
 ## Why no `IoProvider`
 
 The Java port has an `IoProvider` / `Buffer` / `Source` / `Sink` layer
