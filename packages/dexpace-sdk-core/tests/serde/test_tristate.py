@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import copy
 import pickle
+from dataclasses import dataclass
 
 import pytest
 
 from dexpace.sdk.core.serde import (
     ABSENT,
+    JSON_SERDE,
     NULL,
+    Codec,
     Present,
     Tristate,
     fold,
@@ -201,3 +204,101 @@ def test_serialize_semantics_via_fold() -> None:
     assert encode("name", ABSENT) == {}
     assert encode("name", NULL) == {"name": None}
     assert encode("name", present("Ada")) == {"name": "Ada"}
+
+
+# --------------------------------------------------------------------------- #
+# Present(None) is unrepresentable                                             #
+# --------------------------------------------------------------------------- #
+
+
+def test_present_rejects_none() -> None:
+    # "Present but null" is the NULL variant, never Present(None); the wrapper
+    # must refuse None so the absent/null/present partition stays disjoint.
+    with pytest.raises(ValueError, match="Present"):
+        Present(None)
+
+
+def test_present_helper_rejects_none() -> None:
+    with pytest.raises(ValueError, match="Present"):
+        present(None)
+
+
+# --------------------------------------------------------------------------- #
+# Pattern-matching ergonomics                                                  #
+# --------------------------------------------------------------------------- #
+
+
+def test_present_exposes_match_args() -> None:
+    assert Present.__match_args__ == ("value",)
+
+
+def test_match_statement_distinguishes_all_three() -> None:
+    def describe(state: Tristate[int]) -> str:
+        match state:
+            case Present(v):
+                return f"present:{v}"
+            case _ if is_null(state):
+                return "null"
+            case _:
+                return "absent"
+
+    assert describe(present(7)) == "present:7"
+    assert describe(NULL) == "null"
+    assert describe(ABSENT) == "absent"
+    # Falsy present values still match the Present arm, not a null/absent arm.
+    assert describe(present(0)) == "present:0"
+
+
+# --------------------------------------------------------------------------- #
+# Codec / wire round-trip over the three shapes                                #
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True, slots=True)
+class _Patch:
+    """A minimal PATCH-style model with a single tristate field."""
+
+    x: Tristate[str] = ABSENT
+
+
+@pytest.mark.parametrize(
+    ("wire", "state"),
+    [
+        ({}, ABSENT),
+        ({"x": None}, NULL),
+        ({"x": "v"}, Present("v")),
+    ],
+    ids=["absent-omits-key", "null-explicit", "present-value"],
+)
+def test_codec_round_trip_triple(wire: dict[str, object], state: Tristate[str]) -> None:
+    # Decode inverts the three wire shapes back to their tristate inhabitant,
+    # and encoding that inhabitant reproduces the exact same wire shape.
+    codec = Codec()
+    decoded = codec.decode(wire, _Patch)
+    assert decoded.x == state
+    assert codec.encode(decoded) == wire
+
+
+def test_default_serde_round_trips_tristate_over_json() -> None:
+    # The default codec handles Tristate with no opt-in, and pairing it with
+    # the default JSON serde preserves each shape across a full wire round-trip.
+    codec = Codec()
+    serializer = JSON_SERDE.serializer
+    deserializer = JSON_SERDE.deserializer
+    for wire in ({}, {"x": None}, {"x": "v"}):
+        model = codec.decode(wire, _Patch)
+        text = serializer.serialize(codec.encode(model))
+        assert deserializer.deserialize(text) == wire
+
+
+def test_tristate_as_array_element_degrades_absent_to_null() -> None:
+    # As a dataclass field the absent/null distinction is fully observable, but
+    # an array element has no key to omit, so ABSENT degrades to an explicit
+    # null on encode; decode only ever yields NULL / Present for array elements.
+    @dataclass(frozen=True, slots=True)
+    class _Box:
+        items: list[Tristate[str]]
+
+    codec = Codec()
+    assert codec.decode({"items": ["a", None]}, _Box).items == [Present("a"), NULL]
+    assert codec.encode(_Box([Present("a"), NULL, ABSENT])) == {"items": ["a", None, None]}
