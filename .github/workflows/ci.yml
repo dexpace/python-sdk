@@ -45,7 +45,7 @@ jobs:
       # listed N/A in docs/traceability-na-ids.txt (the deviations-ledger bridge).
       - name: Run traceability audit (blocking)
         env:
-          DEXPACE_TRACEABILITY_ENABLE: "retry,redirect,idempotency,auth,bodies,http,sse,webhooks,tracing,pagination"
+          DEXPACE_TRACEABILITY_ENABLE: "seams,http,bodies,io,context,pipeline,recovery,redirect,retry,auth,xcut,serde,pagination,sse,observability,config,transport,async,nfr"
           DEXPACE_TRACEABILITY_NA: docs/traceability-na-ids.txt
           DEXPACE_TRACEABILITY_MATRIX: build/traceability-matrix.json
           DEXPACE_TRACEABILITY_GATE: "1"
