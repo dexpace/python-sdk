@@ -10,25 +10,37 @@ from typing import TYPE_CHECKING
 
 from ...http.request.loggable_request_body import LoggableRequestBody
 from ...http.response.async_loggable_response_body import AsyncLoggableResponseBody
-from ...instrumentation import ClientLogger, UrlRedactor
+from ...instrumentation import ClientLogger, HeaderRedactor, UrlRedactor
 from ..async_policy import AsyncPolicy
 from ..stage import Stage
-from .logging_policy import DEFAULT_PREVIEW_BYTES, _preview_text
+from .logging_policy import (
+    DEFAULT_PREVIEW_BYTES,
+    HttpLogDetailLevel,
+    _error_fields,
+    _preview_text,
+    _request_fields,
+    _response_fields,
+)
 
 if TYPE_CHECKING:
+    from ...http.common.headers import Headers
     from ...http.request.request import Request
     from ...http.response.async_response import AsyncResponse
     from ..context import PipelineContext
+
+_REQUEST_EVENT = "http.request"
+_RESPONSE_EVENT = "http.response"
 
 
 class AsyncLoggingPolicy(AsyncPolicy):
     """Async twin of `LoggingPolicy`: one structured log per request/response.
 
-    Emits the same event model as the sync policy — ``http.request`` before the
-    send, ``http.response`` on success, ``http.error`` on failure — with the
-    same field keys (method, redacted URL, status, duration, trace id) so log
+    Emits the same event model and field vocabulary as the sync policy —
+    ``http.request`` before the send, ``http.response`` on success, and an
+    ``http.response`` event carrying ``error.type`` on failure — so log
     consumers see one naming across both pillars. The URL is redacted through
-    the shared ``UrlRedactor``.
+    the shared ``UrlRedactor`` and header values through the shared
+    ``HeaderRedactor``, so the sync and async redaction rules cannot drift.
 
     Body previews are bounded at ``preview_bytes`` (default 8 KiB) and never
     truncate what flows onward:
@@ -42,20 +54,26 @@ class AsyncLoggingPolicy(AsyncPolicy):
       length. A body of unknown size is passed through untouched and left
       un-previewed, since it cannot be safely bound-previewed.
 
-    Disable per-call by setting ``ctx.options["logging_enabled"] = False``.
+    The ``detail_level`` selects granularity exactly as the sync policy does:
+    ``NONE`` emits nothing, ``HEADERS`` emits events and header fields with no
+    body capture, ``BODY`` adds the body previews. Disable per-call by setting
+    ``ctx.options["logging_enabled"] = False``.
 
     Attributes:
+        detail_level: The logging granularity (``NONE`` / ``HEADERS`` / ``BODY``).
         preview_bytes: Byte ceiling on each captured body preview.
     """
 
     STAGE = Stage.LOGGING
-    __slots__ = ("_logger", "_redactor", "preview_bytes")
+    __slots__ = ("_header_redactor", "_logger", "_redactor", "detail_level", "preview_bytes")
 
     def __init__(
         self,
         *,
         logger: ClientLogger | None = None,
         redactor: UrlRedactor | None = None,
+        header_redactor: HeaderRedactor | None = None,
+        detail_level: HttpLogDetailLevel = HttpLogDetailLevel.BODY,
         preview_bytes: int = DEFAULT_PREVIEW_BYTES,
     ) -> None:
         """Configure the policy.
@@ -65,6 +83,10 @@ class AsyncLoggingPolicy(AsyncPolicy):
                 ``dexpace.sdk.core.http`` (the same name the sync policy uses,
                 so both pillars log under one logger).
             redactor: URL redactor. Defaults to a stock ``UrlRedactor``.
+            header_redactor: Header-name allow-list + URL-valued-header redactor,
+                shared with the sync policy. Defaults to a stock
+                ``HeaderRedactor``.
+            detail_level: Logging granularity. Defaults to ``BODY``.
             preview_bytes: Byte ceiling on each body preview.
 
         Raises:
@@ -74,18 +96,20 @@ class AsyncLoggingPolicy(AsyncPolicy):
             raise ValueError(f"preview_bytes must be positive, got {preview_bytes}")
         self._logger = logger or ClientLogger("dexpace.sdk.core.http")
         self._redactor = redactor or UrlRedactor()
+        self._header_redactor = header_redactor or HeaderRedactor()
+        self.detail_level = detail_level
         self.preview_bytes = preview_bytes
 
     async def send(self, request: Request, ctx: PipelineContext) -> AsyncResponse:
-        if not ctx.options.get("logging_enabled", True):
+        if not self.detail_level.logs_events or not ctx.options.get("logging_enabled", True):
             return await self.next.send(request, ctx)
         url = self._redactor.redact(str(request.url))
         trace_id = ctx.call.instrumentation_context.trace_id.value
         method = str(request.method)
-        tap = self._tap_request(request)
+        tap = self._tap_request(request) if self.detail_level.logs_body else None
         if tap is not None:
             request = request.with_body(tap)
-        self._logger.info("http.request", method=method, url=url, trace_id=trace_id)
+        self._log_request(method, url, request.headers, trace_id)
         started = time.monotonic()
         try:
             response = await self.next.send(request, ctx)
@@ -121,18 +145,18 @@ class AsyncLoggingPolicy(AsyncPolicy):
             return body
         return AsyncLoggableResponseBody(body, max_capture_bytes=self.preview_bytes)
 
+    def _log_request(self, method: str, url: str, headers: Headers, trace_id: str) -> None:
+        fields = _request_fields(method, url, headers, self._header_redactor)
+        fields["trace_id"] = trace_id
+        self._logger.info(_REQUEST_EVENT, **fields)
+
     def _log_error(
         self, method: str, url: str, err: BaseException, started: float, trace_id: str
     ) -> None:
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        self._logger.error(
-            "http.error",
-            method=method,
-            url=url,
-            error_type=type(err).__name__,
-            duration_ms=elapsed_ms,
-            trace_id=trace_id,
-        )
+        fields = _error_fields(method, url, elapsed_ms, err)
+        fields["trace_id"] = trace_id
+        self._logger.error(_RESPONSE_EVENT, **fields)
 
     async def _log_response(
         self,
@@ -149,22 +173,19 @@ class AsyncLoggingPolicy(AsyncPolicy):
         wrapped) response is returned for the caller to consume.
         """
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        fields: dict[str, object] = {
-            "method": method,
-            "url": url,
-            "status": int(response.status),
-            "duration_ms": elapsed_ms,
-            "trace_id": trace_id,
-        }
+        fields = _response_fields(
+            method, url, int(response.status), elapsed_ms, response.headers, self._header_redactor
+        )
+        fields["trace_id"] = trace_id
         if request_tap is not None:
             preview = request_tap.snapshot(self.preview_bytes)
             fields["request_body_preview"] = _preview_text(preview, request_tap.media_type())
-        response_tap = self._tap_response(response)
+        response_tap = self._tap_response(response) if self.detail_level.logs_body else None
         if response_tap is not None:
             response = response.with_body(response_tap)
             preview = await response_tap.snapshot(self.preview_bytes)
             fields["response_body_preview"] = _preview_text(preview, response_tap.media_type())
-        self._logger.info("http.response", **fields)
+        self._logger.info(_RESPONSE_EVENT, **fields)
         return response
 
 

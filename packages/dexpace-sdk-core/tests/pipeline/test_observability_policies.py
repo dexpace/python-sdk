@@ -14,6 +14,7 @@ from _pytest.logging import LogCaptureFixture
 from dexpace.sdk.core.client.http_client import HttpClient
 from dexpace.sdk.core.errors import ServiceRequestError
 from dexpace.sdk.core.http.common import Protocol, Url
+from dexpace.sdk.core.http.common.headers import Headers
 from dexpace.sdk.core.http.context import DispatchContext
 from dexpace.sdk.core.http.request import (
     LoggableRequestBody,
@@ -23,6 +24,7 @@ from dexpace.sdk.core.http.request import (
 )
 from dexpace.sdk.core.http.response import Response, Status
 from dexpace.sdk.core.instrumentation import (
+    HeaderRedactor,
     InstrumentationContext,
     SpanId,
     TraceFlags,
@@ -33,7 +35,12 @@ from dexpace.sdk.core.instrumentation import (
 )
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import Pipeline
-from dexpace.sdk.core.pipeline.policies import LoggingPolicy, RetryPolicy, TracingPolicy
+from dexpace.sdk.core.pipeline.policies import (
+    HttpLogDetailLevel,
+    LoggingPolicy,
+    RetryPolicy,
+    TracingPolicy,
+)
 
 from ..conftest import FakeClock
 
@@ -55,15 +62,22 @@ def _request(url: str = "https://api.example.com/v1?token=secret&api-version=1.0
 
 class _OkClient(HttpClient):
     def __init__(
-        self, *, status: Status = Status.OK, raise_exc: BaseException | None = None
+        self,
+        *,
+        status: Status = Status.OK,
+        raise_exc: BaseException | None = None,
+        headers: Headers | None = None,
     ) -> None:
         self.status = status
         self.raise_exc = raise_exc
+        self.headers = headers or Headers()
 
     def execute(self, request: Request) -> Response:
         if self.raise_exc is not None:
             raise self.raise_exc
-        return Response(request=request, protocol=Protocol.HTTP_1_1, status=self.status)
+        return Response(
+            request=request, protocol=Protocol.HTTP_1_1, status=self.status, headers=self.headers
+        )
 
 
 class _CapturingClient(HttpClient):
@@ -100,7 +114,10 @@ class TestLoggingPolicy:
         assert "secret" not in joined
         assert "REDACTED" in joined
 
+    @pytest.mark.req("OBS-39")
     def test_logs_error_on_exception(self, caplog: LogCaptureFixture) -> None:
+        # A failure emits an ``http.response`` event carrying ``error.type`` and
+        # the throwable cause, not a separate error event name.
         caplog.set_level(logging.ERROR, logger="dexpace.sdk.core.http")
         boom = ServiceRequestError("connect failed")
         with (
@@ -109,8 +126,10 @@ class TestLoggingPolicy:
         ):
             p.run(_request(), DispatchContext(_instr("0" * 16 + "2")))
         assert any(
-            "http.error" in rec.getMessage() and "ServiceRequestError" in rec.getMessage()
-            for rec in caplog.records
+            m.split()[0] == "http.response"
+            and "error.type=ServiceRequestError" in m
+            and "connect failed" in m
+            for m in (rec.getMessage() for rec in caplog.records)
         )
 
     @pytest.mark.req("BODY-34")
@@ -189,6 +208,139 @@ class TestLoggingPolicy:
         body = LoggableRequestBody(RequestBody.from_bytes(b"z" * (9 * 1024)))
         list(body.iter_bytes())
         assert body.captured_size == 9 * 1024
+
+
+def _response_events(caplog: LogCaptureFixture) -> list[str]:
+    return [m for m in (r.getMessage() for r in caplog.records) if m.split()[0] == "http.response"]
+
+
+def _request_events(caplog: LogCaptureFixture) -> list[str]:
+    return [m for m in (r.getMessage() for r in caplog.records) if m.split()[0] == "http.request"]
+
+
+class TestLogDetailLevel:
+    """OBS-34: selectable none / headers / body granularity."""
+
+    @pytest.mark.req("OBS-34")
+    def test_none_emits_no_events(self, caplog: LogCaptureFixture) -> None:
+        caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
+        policy = LoggingPolicy(detail_level=HttpLogDetailLevel.NONE)
+        with Pipeline(_OkClient(), policies=[policy]) as p:
+            p.run(_request(), DispatchContext(_instr("0" * 15 + "b0")))
+        # Even with the logger explicitly enabled, NONE emits nothing.
+        assert not any(
+            m.split()[0].startswith("http.") for m in (r.getMessage() for r in caplog.records)
+        )
+
+    @pytest.mark.req("OBS-34")
+    def test_headers_level_omits_body_preview(self, caplog: LogCaptureFixture) -> None:
+        caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
+        payload = b"x" * 4096
+        client = _CapturingClient()
+        policy = LoggingPolicy(detail_level=HttpLogDetailLevel.HEADERS)
+        with Pipeline(client, policies=[policy]) as p:
+            p.run(_post(RequestBody.from_bytes(payload)), DispatchContext(_instr("0" * 15 + "b1")))
+        # Events fire, but body capture happens only at BODY level.
+        assert _request_events(caplog) and _response_events(caplog)
+        assert "request_body_preview=" not in _response_events(caplog)[0]
+        # The transport still received the full body untouched.
+        assert bytes(client.received) == payload
+
+    @pytest.mark.req("OBS-34")
+    def test_body_level_captures_body_preview(self, caplog: LogCaptureFixture) -> None:
+        caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
+        client = _CapturingClient()
+        policy = LoggingPolicy(detail_level=HttpLogDetailLevel.BODY)
+        with Pipeline(client, policies=[policy]) as p:
+            p.run(_post(RequestBody.from_bytes(b"body")), DispatchContext(_instr("0" * 15 + "b2")))
+        assert "request_body_preview=" in _response_events(caplog)[0]
+
+    @pytest.mark.req("OBS-34")
+    def test_none_silences_logs_but_tracing_still_records(self, caplog: LogCaptureFixture) -> None:
+        # Span lifecycle runs on every request independent of the log level:
+        # NONE silences log events without disabling tracing.
+        caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
+        tracer = _RecordingTracer()
+        policies = [
+            TracingPolicy(tracer=tracer),
+            LoggingPolicy(detail_level=HttpLogDetailLevel.NONE),
+        ]
+        with Pipeline(_OkClient(), policies=policies) as p:
+            p.run(_request(), DispatchContext(_instr("0" * 15 + "b3")))
+        assert not _request_events(caplog) and not _response_events(caplog)
+        assert tracer.spans and tracer.spans[0].ended
+
+
+class TestNormativeFieldVocabulary:
+    """OBS-39: stable event names and OTel-style field keys."""
+
+    @pytest.mark.req("OBS-39")
+    def test_success_events_use_normative_field_keys(self, caplog: LogCaptureFixture) -> None:
+        caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
+        with Pipeline(_OkClient(), policies=[LoggingPolicy()]) as p:
+            p.run(_request(), DispatchContext(_instr("0" * 15 + "c0")))
+        request_event = _request_events(caplog)[0]
+        response_event = _response_events(caplog)[0]
+        assert "http.request.method=GET" in request_event
+        assert "url.full=" in request_event
+        assert "http.request.method=GET" in response_event
+        assert "url.full=" in response_event
+        assert "http.response.status_code=200" in response_event
+        assert "http.response.duration_ms=" in response_event
+
+    @pytest.mark.req("OBS-39")
+    def test_url_full_is_always_redacted(self, caplog: LogCaptureFixture) -> None:
+        caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
+        with Pipeline(_OkClient(), policies=[LoggingPolicy()]) as p:
+            p.run(_request(), DispatchContext(_instr("0" * 15 + "c1")))
+        joined = " ".join(r.getMessage() for r in caplog.records)
+        assert "secret" not in joined
+        assert "url.full=" in joined and "REDACTED" in joined
+
+
+class TestHeaderLogging:
+    """OBS-17/18: response-header logging, URL-value redaction, name allow-list."""
+
+    def _client(self) -> _OkClient:
+        headers = Headers.outbound(
+            [
+                ("Location", "https://idp.example.com/cb?code=SEKRET&api-version=1"),
+                ("Content-Type", "application/json"),
+                ("Authorization", "Bearer super-secret-token"),
+            ]
+        )
+        return _OkClient(headers=headers)
+
+    @pytest.mark.req("OBS-17")
+    def test_url_valued_response_header_is_redacted(self, caplog: LogCaptureFixture) -> None:
+        caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
+        with Pipeline(self._client(), policies=[LoggingPolicy()]) as p:
+            p.run(_request(), DispatchContext(_instr("0" * 15 + "d0")))
+        response_event = _response_events(caplog)[0]
+        assert "SEKRET" not in response_event
+        assert "http.response.header.location=" in response_event
+        assert "REDACTED=REDACTED" in response_event
+
+    @pytest.mark.req("OBS-18")
+    def test_credential_header_value_is_never_logged(self, caplog: LogCaptureFixture) -> None:
+        caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
+        with Pipeline(self._client(), policies=[LoggingPolicy()]) as p:
+            p.run(_request(), DispatchContext(_instr("0" * 15 + "d1")))
+        response_event = _response_events(caplog)[0]
+        assert "super-secret-token" not in response_event
+        assert "http.response.header.authorization=REDACTED" in response_event
+        assert "http.response.header.content-type=application/json" in response_event
+
+    @pytest.mark.req("OBS-17")
+    def test_header_redactor_is_shared_injectable_into_both_pillars(self) -> None:
+        from dexpace.sdk.core.pipeline.policies.async_logging_policy import AsyncLoggingPolicy
+
+        shared = HeaderRedactor()
+        sync_policy = LoggingPolicy(header_redactor=shared)
+        async_policy = AsyncLoggingPolicy(header_redactor=shared)
+        # One redaction policy, wired into both pillars, so it cannot drift.
+        assert sync_policy._header_redactor is shared
+        assert async_policy._header_redactor is shared
 
 
 class _RecordingSpan:

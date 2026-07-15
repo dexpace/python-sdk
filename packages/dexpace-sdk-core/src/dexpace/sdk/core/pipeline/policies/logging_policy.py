@@ -6,14 +6,18 @@
 from __future__ import annotations
 
 import time
+from enum import Enum
 from typing import TYPE_CHECKING, Final
 
 from ...http.request.loggable_request_body import LoggableRequestBody
-from ...instrumentation import ClientLogger, UrlRedactor
+from ...instrumentation import ClientLogger, HeaderRedactor, UrlRedactor
 from ..policy import Policy
 from ..stage import Stage
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from ...http.common.headers import Headers
     from ...http.common.media_type import MediaType
     from ...http.request.request import Request
     from ...http.response.response import Response
@@ -27,32 +31,78 @@ if TYPE_CHECKING:
 #: copied whole into the log tap.
 DEFAULT_PREVIEW_BYTES: Final[int] = 8 * 1024
 
+#: Stable structured event names emitted by the logging policies. A failure
+#: reuses ``http.response`` (carrying ``error.type``) so a log consumer sees one
+#: response event whether the exchange succeeded or failed.
+_REQUEST_EVENT: Final[str] = "http.request"
+_RESPONSE_EVENT: Final[str] = "http.response"
+
+#: Field-key prefixes for logged request / response headers.
+_REQUEST_HEADER_PREFIX: Final[str] = "http.request.header."
+_RESPONSE_HEADER_PREFIX: Final[str] = "http.response.header."
+
+
+class HttpLogDetailLevel(Enum):
+    """Selectable granularity for HTTP wire logging.
+
+    ``NONE`` emits no request/response log events at all. ``HEADERS`` emits the
+    events with allow-listed header fields but captures no body. ``BODY`` adds a
+    bounded body preview on top of the headers. Span lifecycle and metric
+    recording are owned by the tracing policy, not this one, so they run on every
+    request independent of this level — ``NONE`` silences log events without
+    disabling tracing or metrics.
+    """
+
+    NONE = "none"
+    HEADERS = "headers"
+    BODY = "body"
+
+    @property
+    def logs_events(self) -> bool:
+        """True when request/response log events are emitted at this level."""
+        return self is not HttpLogDetailLevel.NONE
+
+    @property
+    def logs_body(self) -> bool:
+        """True only at ``BODY`` level, where a body preview is captured."""
+        return self is HttpLogDetailLevel.BODY
+
 
 class LoggingPolicy(Policy):
     """Emit one structured log line per request and per response.
 
-    Logged fields include the HTTP method, redacted URL, response status,
-    duration in milliseconds, and the current trace id. The URL is run
-    through ``UrlRedactor`` to strip userinfo and sensitive query
-    parameters. When the request carries a body, a bounded preview of it
-    (capped at ``preview_bytes``, default 8 KiB) is attached to the response
-    line as ``request_body_preview``; the full body still streams to the
-    transport uncut — only the diagnostic tap truncates.
+    Emitted fields use a stable vocabulary: ``http.request.method``,
+    ``url.full`` (always the redacted URL), ``http.response.status_code``,
+    ``http.response.duration_ms``, allow-listed request/response header fields,
+    and — at ``BODY`` level — a bounded ``request_body_preview``. A failed
+    exchange emits an ``http.response`` event carrying ``error.type`` and the
+    exception cause. The URL is run through ``UrlRedactor`` to strip userinfo
+    and sensitive query parameters; URL-valued response headers (``Location`` /
+    ``Content-Location``) are redacted through the shared ``HeaderRedactor``.
+
+    The ``detail_level`` selects granularity: ``NONE`` emits nothing (tracing
+    and metrics still run via the tracing policy), ``HEADERS`` emits events and
+    header fields with no body capture, ``BODY`` adds the body preview. It
+    defaults to ``BODY``; wire logging as a whole stays off until the underlying
+    stdlib logger is raised to ``INFO`` (this port's opt-in gate).
 
     Disable per-call by setting ``ctx.options["logging_enabled"] = False``.
 
     Attributes:
+        detail_level: The logging granularity (``NONE`` / ``HEADERS`` / ``BODY``).
         preview_bytes: Byte ceiling on the captured request-body preview.
     """
 
     STAGE = Stage.LOGGING
-    __slots__ = ("_logger", "_redactor", "preview_bytes")
+    __slots__ = ("_header_redactor", "_logger", "_redactor", "detail_level", "preview_bytes")
 
     def __init__(
         self,
         *,
         logger: ClientLogger | None = None,
         redactor: UrlRedactor | None = None,
+        header_redactor: HeaderRedactor | None = None,
+        detail_level: HttpLogDetailLevel = HttpLogDetailLevel.BODY,
         preview_bytes: int = DEFAULT_PREVIEW_BYTES,
     ) -> None:
         """Configure the policy.
@@ -61,6 +111,10 @@ class LoggingPolicy(Policy):
             logger: Structured logger. Defaults to one named
                 ``dexpace.sdk.core.http``.
             redactor: URL redactor. Defaults to a stock ``UrlRedactor``.
+            header_redactor: Header-name allow-list + URL-valued-header redactor,
+                shared with the async policy. Defaults to a stock
+                ``HeaderRedactor``.
+            detail_level: Logging granularity. Defaults to ``BODY``.
             preview_bytes: Byte ceiling on the request-body preview.
 
         Raises:
@@ -70,18 +124,20 @@ class LoggingPolicy(Policy):
             raise ValueError(f"preview_bytes must be positive, got {preview_bytes}")
         self._logger = logger or ClientLogger("dexpace.sdk.core.http")
         self._redactor = redactor or UrlRedactor()
+        self._header_redactor = header_redactor or HeaderRedactor()
+        self.detail_level = detail_level
         self.preview_bytes = preview_bytes
 
     def send(self, request: Request, ctx: PipelineContext) -> Response:
-        if not ctx.options.get("logging_enabled", True):
+        if not self.detail_level.logs_events or not ctx.options.get("logging_enabled", True):
             return self.next.send(request, ctx)
         url = self._redactor.redact(str(request.url))
         trace_id = ctx.call.instrumentation_context.trace_id.value
         method = str(request.method)
-        tap = self._tap_body(request)
+        tap = self._tap_body(request) if self.detail_level.logs_body else None
         if tap is not None:
             request = request.with_body(tap)
-        self._logger.info("http.request", method=method, url=url, trace_id=trace_id)
+        self._log_request(method, url, request.headers, trace_id)
         started = time.monotonic()
         try:
             response = self.next.send(request, ctx)
@@ -105,18 +161,18 @@ class LoggingPolicy(Policy):
             return body
         return LoggableRequestBody(body, max_capture_bytes=self.preview_bytes)
 
+    def _log_request(self, method: str, url: str, headers: Headers, trace_id: str) -> None:
+        fields = _request_fields(method, url, headers, self._header_redactor)
+        fields["trace_id"] = trace_id
+        self._logger.info(_REQUEST_EVENT, **fields)
+
     def _log_error(
         self, method: str, url: str, err: BaseException, started: float, trace_id: str
     ) -> None:
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        self._logger.error(
-            "http.error",
-            method=method,
-            url=url,
-            error_type=type(err).__name__,
-            duration_ms=elapsed_ms,
-            trace_id=trace_id,
-        )
+        fields = _error_fields(method, url, elapsed_ms, err)
+        fields["trace_id"] = trace_id
+        self._logger.error(_RESPONSE_EVENT, **fields)
 
     def _log_response(
         self,
@@ -128,20 +184,61 @@ class LoggingPolicy(Policy):
         tap: LoggableRequestBody | None,
     ) -> None:
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        fields: dict[str, object] = {
-            "method": method,
-            "url": url,
-            "status": int(response.status),
-            "duration_ms": elapsed_ms,
-            "trace_id": trace_id,
-        }
+        fields = _response_fields(
+            method, url, int(response.status), elapsed_ms, response.headers, self._header_redactor
+        )
+        fields["trace_id"] = trace_id
         if tap is not None:
             # Bound the preview at ``preview_bytes`` even when the tap captured
             # more (a caller-supplied wrapper may carry a larger ceiling): the
             # logging preview is a small, fixed diagnostic slice regardless.
             preview = tap.snapshot(self.preview_bytes)
             fields["request_body_preview"] = _preview_text(preview, tap.media_type())
-        self._logger.info("http.response", **fields)
+        self._logger.info(_RESPONSE_EVENT, **fields)
+
+
+def _header_fields(prefix: str, redacted: Mapping[str, str]) -> dict[str, object]:
+    """Prefix redacted ``name -> value`` header pairs into log field keys."""
+    return {f"{prefix}{name}": value for name, value in redacted.items()}
+
+
+def _request_fields(
+    method: str, url: str, headers: Headers, header_redactor: HeaderRedactor
+) -> dict[str, object]:
+    """Build the stable ``http.request`` field set (method, url, headers)."""
+    fields: dict[str, object] = {"http.request.method": method, "url.full": url}
+    fields.update(_header_fields(_REQUEST_HEADER_PREFIX, header_redactor.redact(headers)))
+    return fields
+
+
+def _response_fields(
+    method: str,
+    url: str,
+    status_code: int,
+    duration_ms: int,
+    headers: Headers,
+    header_redactor: HeaderRedactor,
+) -> dict[str, object]:
+    """Build the stable ``http.response`` field set (excluding the body preview)."""
+    fields: dict[str, object] = {
+        "http.request.method": method,
+        "url.full": url,
+        "http.response.status_code": status_code,
+        "http.response.duration_ms": duration_ms,
+    }
+    fields.update(_header_fields(_RESPONSE_HEADER_PREFIX, header_redactor.redact(headers)))
+    return fields
+
+
+def _error_fields(method: str, url: str, duration_ms: int, err: BaseException) -> dict[str, object]:
+    """Build the failure ``http.response`` field set with the throwable cause."""
+    return {
+        "http.request.method": method,
+        "url.full": url,
+        "http.response.duration_ms": duration_ms,
+        "error.type": type(err).__name__,
+        "error.message": err,
+    }
 
 
 def _preview_text(data: bytes, media_type: MediaType | None) -> str:
@@ -164,4 +261,4 @@ def _preview_text(data: bytes, media_type: MediaType | None) -> str:
     return data.decode(charset or "utf-8", errors="replace")
 
 
-__all__ = ["DEFAULT_PREVIEW_BYTES", "LoggingPolicy"]
+__all__ = ["DEFAULT_PREVIEW_BYTES", "HttpLogDetailLevel", "LoggingPolicy"]

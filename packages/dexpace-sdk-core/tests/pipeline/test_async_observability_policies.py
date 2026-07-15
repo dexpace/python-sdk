@@ -25,6 +25,7 @@ from _pytest.logging import LogCaptureFixture
 from dexpace.sdk.core.client.async_http_client import AsyncHttpClient
 from dexpace.sdk.core.errors import ServiceRequestError
 from dexpace.sdk.core.http.common import Protocol, Url
+from dexpace.sdk.core.http.common.headers import Headers
 from dexpace.sdk.core.http.common.media_type import MediaType
 from dexpace.sdk.core.http.context import DispatchContext
 from dexpace.sdk.core.http.request import Method, Request, RequestBody
@@ -105,10 +106,12 @@ class _StubAsyncClient(AsyncHttpClient):
         status: Status = Status.OK,
         raise_exc: BaseException | None = None,
         body_factory: Any | None = None,
+        headers: Headers | None = None,
     ) -> None:
         self.status = status
         self.raise_exc = raise_exc
         self.body_factory = body_factory
+        self.headers = headers or Headers()
         self.received = bytearray()
         self.calls = 0
 
@@ -121,7 +124,11 @@ class _StubAsyncClient(AsyncHttpClient):
                 self.received.extend(chunk)
         body = self.body_factory() if self.body_factory is not None else None
         return AsyncResponse(
-            request=request, protocol=Protocol.HTTP_1_1, status=self.status, body=body
+            request=request,
+            protocol=Protocol.HTTP_1_1,
+            status=self.status,
+            headers=self.headers,
+            body=body,
         )
 
 
@@ -141,7 +148,10 @@ class TestAsyncLoggingPolicy:
         assert "secret" not in joined
         assert "REDACTED" in joined
 
+    @pytest.mark.req("OBS-39")
     async def test_logs_error_on_exception(self, caplog: LogCaptureFixture) -> None:
+        # Parity with the sync policy: a failure emits an ``http.response`` event
+        # carrying ``error.type`` and the throwable cause.
         caplog.set_level(logging.ERROR, logger="dexpace.sdk.core.http")
         boom = ServiceRequestError("connect failed")
         async with AsyncPipeline(
@@ -149,7 +159,12 @@ class TestAsyncLoggingPolicy:
         ) as p:
             with pytest.raises(ServiceRequestError):
                 await p.run(_request(), DispatchContext(_instr("0" * 16 + "2")))
-        assert any("http.error" in m and "ServiceRequestError" in m for m in _messages(caplog))
+        assert any(
+            m.split()[0] == "http.response"
+            and "error.type=ServiceRequestError" in m
+            and "connect failed" in m
+            for m in _messages(caplog)
+        )
 
     async def test_opt_out_via_options(self, caplog: LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
@@ -244,6 +259,26 @@ class TestAsyncLoggingPolicy:
         assert responses
         # No preview for a body whose size was not declared.
         assert "response_body_preview=" not in responses[0]
+
+    @pytest.mark.req("OBS-17")
+    async def test_url_valued_response_header_is_redacted(self, caplog: LogCaptureFixture) -> None:
+        # Parity with the sync policy via the shared HeaderRedactor: a Location
+        # secret is redacted and a credential header value is never logged.
+        caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
+        headers = Headers.outbound(
+            [
+                ("Location", "https://idp.example.com/cb?code=SEKRET"),
+                ("Authorization", "Bearer super-secret-token"),
+            ]
+        )
+        client = _StubAsyncClient(headers=headers)
+        async with AsyncPipeline(client, policies=[AsyncLoggingPolicy()]) as p:
+            await p.run(_request(), DispatchContext(_instr("0" * 15 + "d2")))
+        response_event = next(m for m in _messages(caplog) if m.split()[0] == "http.response")
+        assert "SEKRET" not in response_event
+        assert "super-secret-token" not in response_event
+        assert "http.response.header.location=" in response_event
+        assert "http.response.header.authorization=REDACTED" in response_event
 
     @pytest.mark.req("OBS-38")
     async def test_binary_response_body_preview_never_throws(
@@ -400,6 +435,7 @@ class TestAsyncTracingPolicy:
 
 
 class TestLevelIndependence:
+    @pytest.mark.req("OBS-34")
     async def test_span_and_tracer_events_fire_when_logging_disabled(
         self, caplog: LogCaptureFixture
     ) -> None:

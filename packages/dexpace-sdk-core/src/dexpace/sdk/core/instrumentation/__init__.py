@@ -27,6 +27,11 @@ from .correlation import (
     set_span_id,
     set_trace_id,
 )
+from .header_redactor import (
+    DEFAULT_LOGGED_HEADER_ALLOWLIST,
+    DEFAULT_URL_VALUED_HEADERS,
+    HeaderRedactor,
+)
 from .http_tracer import HttpTracer, HttpTracerFactory
 from .identifiers import SpanId, TraceFlags, TraceId, TraceIdType, TraceState
 from .instrumentation_context import InstrumentationContext
@@ -54,7 +59,9 @@ from .tracing_scope import TracingScope
 from .url_redactor import DEFAULT_QUERY_ALLOWLIST, UrlRedactor
 
 __all__ = [
+    "DEFAULT_LOGGED_HEADER_ALLOWLIST",
     "DEFAULT_QUERY_ALLOWLIST",
+    "DEFAULT_URL_VALUED_HEADERS",
     "NOOP_COUNTER",
     "NOOP_HISTOGRAM",
     "NOOP_HTTP_TRACER",
@@ -67,6 +74,7 @@ __all__ = [
     "ClientLogger",
     "CorrelationFilter",
     "Counter",
+    "HeaderRedactor",
     "Histogram",
     "HttpTracer",
     "HttpTracerFactory",

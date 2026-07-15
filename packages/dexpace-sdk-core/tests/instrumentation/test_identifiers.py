@@ -90,3 +90,44 @@ def test_ids_are_frozen_value_objects() -> None:
 def test_trace_id_type_members() -> None:
     assert set(TraceIdType) == {TraceIdType.NOOP, TraceIdType.W3C, TraceIdType.DATADOG}
     assert str(TraceIdType.W3C) == "w3c"
+
+
+@pytest.mark.req("OBS-27")
+def test_generate_w3c_flavour_is_32_lowercase_hex() -> None:
+    # The W3C flavour is a 128-bit value rendered as 32 lowercase hex chars, and
+    # the bare (argument-less) call keeps yielding it for backwards compatibility.
+    for trace_id in (TraceId.generate(), TraceId.generate(TraceIdType.W3C)):
+        assert len(trace_id.value) == 32
+        assert trace_id.value == trace_id.value.lower()
+        assert int(trace_id.value, 16) != 0  # parses as hex, never all-zero
+        assert trace_id.is_valid is True
+
+
+@pytest.mark.req("OBS-27")
+def test_generate_datadog_flavour_is_decimal_uint64() -> None:
+    for _ in range(_GENERATIONS):
+        trace_id = TraceId.generate(TraceIdType.DATADOG)
+        assert trace_id.value == str(int(trace_id.value))  # canonical decimal, no leading zeros
+        as_int = int(trace_id.value)
+        assert 1 <= as_int <= (1 << 64) - 1  # non-zero 64-bit unsigned
+        assert trace_id.is_valid is True
+
+
+@pytest.mark.req("OBS-27")
+def test_generate_noop_flavour_always_yields_invalid_sentinel() -> None:
+    for _ in range(100):
+        trace_id = TraceId.generate(TraceIdType.NOOP)
+        assert trace_id == TraceId.NOOP
+        assert trace_id.value == "0" * 32
+        assert trace_id.is_valid is False
+
+
+@pytest.mark.req("OBS-27")
+def test_datadog_zero_draw_is_coerced_to_non_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The reserved all-zero id must never be produced: a zero draw is coerced.
+    from dexpace.sdk.core.instrumentation import identifiers
+
+    monkeypatch.setattr(identifiers, "_draw_datadog_bits", lambda: 0)
+    trace_id = TraceId.generate(TraceIdType.DATADOG)
+    assert trace_id.value == "1"
+    assert trace_id.is_valid is True

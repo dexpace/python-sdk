@@ -63,6 +63,54 @@ class TestUserinfo:
         assert redacted == "https://api.example.com/path"
 
 
+class TestHeaderValueRedaction:
+    """``redact_header_value`` handles both absolute and relative URL values."""
+
+    @pytest.mark.req("OBS-16")
+    def test_absolute_value_redacted_like_a_request_url(self) -> None:
+        # A parseable absolute value is redacted exactly like a request URL:
+        # userinfo stripped, non-allowlisted query collapsed.
+        out = UrlRedactor().redact_header_value(
+            "https://alice:pw@api.example.com/cb?code=SEKRET&api-version=1.0"
+        )
+        assert "alice" not in out
+        assert "SEKRET" not in out
+        assert "REDACTED=REDACTED" in out
+        assert "api-version=1.0" in out
+        assert out.startswith("https://api.example.com/cb?")
+
+    @pytest.mark.req("OBS-16")
+    def test_relative_value_with_query_keeps_path_and_marks(self) -> None:
+        # A relative value keeps its path and drops the query, since the query
+        # can carry an OAuth code / pre-signed signature.
+        out = UrlRedactor().redact_header_value("/callback?code=SEKRET&state=xyz")
+        assert out == "/callback?***"
+        assert "SEKRET" not in out
+
+    @pytest.mark.req("OBS-16")
+    def test_relative_value_with_fragment_only_keeps_path_and_marks(self) -> None:
+        # An implicit-flow token can ride in the fragment, so a fragment alone
+        # still triggers the drop-and-mark behaviour.
+        out = UrlRedactor().redact_header_value("/callback#access_token=SEKRET")
+        assert out == "/callback?***"
+        assert "SEKRET" not in out
+
+    @pytest.mark.req("OBS-16")
+    def test_relative_value_without_query_or_fragment_is_verbatim(self) -> None:
+        assert UrlRedactor().redact_header_value("/callback/next") == "/callback/next"
+
+    @pytest.mark.req("OBS-16")
+    def test_unparseable_value_with_query_is_dropped(self) -> None:
+        # ``?`` inside a fragment must not be mistaken for a query separator.
+        assert UrlRedactor().redact_header_value("mailto:x#a?b") == "mailto:x?***"
+        assert UrlRedactor().redact_header_value("garbage value") == "garbage value"
+
+    @pytest.mark.req("OBS-16")
+    def test_never_raises_on_adversarial_values(self) -> None:
+        for value in ("", "#", "?", "://", "http://", "/a?b#c?d", "\x00\x01"):
+            assert isinstance(UrlRedactor().redact_header_value(value), str)
+
+
 class TestQueryParameters:
     """Query values are redacted unless explicitly allow-listed."""
 
@@ -407,7 +455,7 @@ class TestUsedByAllEmitters:
             pipeline.run(self._request(), DispatchContext(NOOP_INSTRUMENTATION_CONTEXT))
         assert logger.records
         for record in logger.records:
-            url = record.get("url")
+            url = record.get("url.full")
             assert isinstance(url, str)
             assert "s3cr3t" not in url
             assert "alice" not in url

@@ -1102,6 +1102,14 @@
         "set_span_id": "set_span_id(value: str | None) -> Token[str | None]",
         "set_trace_id": "set_trace_id(value: str | None) -> Token[str | None]"
       },
+      "dexpace.sdk.core.instrumentation.header_redactor": {
+        "HeaderRedactor": {
+          "bases": [],
+          "methods": {
+            "redact": "redact(self, headers: Headers) -> dict[str, str]"
+          }
+        }
+      },
       "dexpace.sdk.core.instrumentation.http_tracer": {
         "HttpTracer": {
           "bases": [
@@ -1145,7 +1153,7 @@
         "TraceId": {
           "bases": [],
           "methods": {
-            "generate": "generate(cls) -> Self",
+            "generate": "generate(cls, id_type: TraceIdType | None) -> Self",
             "is_valid": "is_valid(self) -> bool"
           }
         },
@@ -1251,7 +1259,8 @@
         "UrlRedactor": {
           "bases": [],
           "methods": {
-            "redact": "redact(self, url: str | Url) -> str"
+            "redact": "redact(self, url: str | Url) -> str",
+            "redact_header_value": "redact_header_value(self, value: str) -> str"
           }
         }
       },
@@ -1539,6 +1548,15 @@
         }
       },
       "dexpace.sdk.core.pipeline.policies.logging_policy": {
+        "HttpLogDetailLevel": {
+          "bases": [
+            "Enum"
+          ],
+          "methods": {
+            "logs_body": "logs_body(self) -> bool",
+            "logs_events": "logs_events(self) -> bool"
+          }
+        },
         "LoggingPolicy": {
           "bases": [
             "Policy"
@@ -1989,7 +2007,10 @@
         "ClientLogger",
         "CorrelationFilter",
         "Counter",
+        "DEFAULT_LOGGED_HEADER_ALLOWLIST",
         "DEFAULT_QUERY_ALLOWLIST",
+        "DEFAULT_URL_VALUED_HEADERS",
+        "HeaderRedactor",
         "Histogram",
         "HttpTracer",
         "HttpTracerFactory",
@@ -2071,6 +2092,7 @@
         "AsyncTracingPolicy",
         "ClientIdentityPolicy",
         "DEFAULT_PREVIEW_BYTES",
+        "HttpLogDetailLevel",
         "IdempotencyPolicy",
         "LoggingPolicy",
         "OperationTracingPolicy",

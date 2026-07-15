@@ -54,6 +54,11 @@ _REDACTED: Final[str] = "REDACTED"
 _REDACTED_PAIR: Final[str] = "REDACTED=REDACTED"
 _REDACTED_PATH: Final[str] = "/REDACTED"
 
+#: Appended to a relative / unparseable header value after its path is kept and
+#: any query or fragment is dropped. A query or fragment on such a value can
+#: carry an OAuth ``code``, a pre-signed signature, or an implicit-flow token.
+_RELATIVE_QUERY_MARKER: Final[str] = "?***"
+
 #: Returned in place of a URL that cannot be parsed. Failing closed to a fixed
 #: string keeps an unparseable, possibly secret-bearing input out of the logs.
 _MALFORMED: Final[str] = "[malformed url]"
@@ -137,6 +142,30 @@ class UrlRedactor:
             return _MALFORMED
         return self._render(parts)
 
+    def redact_header_value(self, value: str) -> str:
+        """Redact a URL that arrives as an HTTP header value.
+
+        A parseable absolute value (scheme + host) is redacted exactly like a
+        request URL, via the same rendering path as `redact`. A value that is
+        relative or otherwise unparseable keeps its path and drops everything
+        after it — both query and fragment — because either can carry an OAuth
+        ``code``, a pre-signed signature, or an implicit-flow token. When such a
+        value carried a query or a fragment, a fixed ``"?***"`` marker is
+        appended so the redaction is visible; a value with neither is returned
+        verbatim.
+
+        Args:
+            value: The raw header value (e.g. a ``Location`` or
+                ``Content-Location`` header).
+
+        Returns:
+            The redacted header value. This method never raises.
+        """
+        parts = _split(value)
+        if parts is not None:
+            return self._render(parts)
+        return _redact_relative_value(value)
+
     def _render(self, parts: _Parts) -> str:
         """Reassemble ``parts`` into a redacted wire-form string.
 
@@ -194,6 +223,28 @@ def _parts_from_url(url: Url) -> _Parts:
         query=url.query,
         fragment=url.fragment,
     )
+
+
+def _redact_relative_value(value: str) -> str:
+    """Keep the path of a relative / unparseable value, dropping query + fragment.
+
+    The fragment is peeled first and the query second, so a ``?`` living inside
+    the fragment is never mistaken for a query separator. A fixed ``"?***"``
+    marker is appended when the value carried either component; a value with
+    neither is returned unchanged.
+
+    Args:
+        value: A relative reference or otherwise unparseable header value.
+
+    Returns:
+        The path with a ``"?***"`` marker when a query or fragment was present,
+        else the original value verbatim.
+    """
+    before_fragment, hash_separator, _fragment = value.partition("#")
+    path, query_separator, _query = before_fragment.partition("?")
+    if query_separator or hash_separator:
+        return f"{path}{_RELATIVE_QUERY_MARKER}"
+    return value
 
 
 def _split(raw: str) -> _Parts | None:
