@@ -27,7 +27,11 @@ classifiers = [
 ]
 dependencies = [
     "dexpace-sdk-core>=0.1,<0.2",
-    "aiohttp>=3.9,<4.0",
+    # aiohttp 3.9 is the supported floor, but it does not run on Python 3.14
+    # (3.14 rejects `break`/`continue`/`return` inside a `finally` block, which
+    # aiohttp used until 3.13). Require the first aiohttp with a 3.14 wheel there.
+    "aiohttp>=3.9,<4.0; python_version < '3.14'",
+    "aiohttp>=3.13,<4.0; python_version >= '3.14'",
 ]
 
 [project.urls]

@@ -3,7 +3,8 @@ revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.15'",
-    "python_full_version < '3.15'",
+    "python_full_version == '3.14.*'",
+    "python_full_version < '3.14'",
 ]
 
 [manifest]
@@ -408,7 +409,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp", specifier = ">=3.9,<4.0" },
+    { name = "aiohttp", marker = "python_full_version < '3.14'", specifier = ">=3.9,<4.0" },
+    { name = "aiohttp", marker = "python_full_version >= '3.14'", specifier = ">=3.13,<4.0" },
     { name = "dexpace-sdk-core", editable = "packages/dexpace-sdk-core" },
 ]
 
