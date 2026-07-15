@@ -77,6 +77,7 @@ def _load_baseline() -> dict[str, dict[str, object]]:
     return parsed
 
 
+@pytest.mark.req("NFR-3", "NFR-4")
 def test_live_surface_matches_committed_baseline(snapshot_tool: ModuleType) -> None:
     live = snapshot_tool.build_surface(_REPO_ROOT)
     baseline = _load_baseline()
@@ -87,6 +88,7 @@ def test_live_surface_matches_committed_baseline(snapshot_tool: ModuleType) -> N
     )
 
 
+@pytest.mark.req("NFR-4")
 def test_baseline_is_canonical_and_round_trips(snapshot_tool: ModuleType) -> None:
     # The committed file must match the tool's own canonical rendering exactly,
     # so a hand-edited or non-canonical baseline (different key order, missing
@@ -113,6 +115,7 @@ def test_every_distribution_has_exports_and_definitions() -> None:
         assert surface["definitions"], f"{dist} baseline has no public definitions"
 
 
+@pytest.mark.req("NFR-3")
 def test_core_init_packages_declare_all(snapshot_tool: ModuleType) -> None:
     # Every re-exporting subpackage of core must declare a static ``__all__``;
     # the snapshot tool only records packages that do, so a populated exports

@@ -3,22 +3,24 @@
 
 """Async twin of ``RedirectPolicy``.
 
-Mirrors `RedirectPolicy` exactly — same status-code matrix, same
-cross-origin credential stripping (a caller-set ``Authorization`` header is
-dropped only when the reissue crosses origin), same loop guard — but
-``send`` is ``async`` and operates on ``AsyncResponse``. The per-hop
-decision helpers are shared via delegation to a wrapped sync
-``RedirectPolicy`` instance, so the cross-origin behaviour is identical.
+Mirrors `RedirectPolicy` exactly — same status-code matrix, same credential
+stripping (``Authorization`` on every reissue, ``Cookie`` /
+``Proxy-Authorization`` on a cross-origin hop judged against the seed origin),
+same HTTPS→HTTP downgrade denial, same loop guard — but ``send`` is ``async``
+and operates on ``AsyncResponse``. The per-hop decision is shared via
+delegation to a wrapped sync ``RedirectPolicy`` instance, so the behaviour is
+identical on both pillars.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar, Literal
 
+from ...http.common.url import _origin
 from ...http.request.method import Method
 from ..async_policy import AsyncPolicy
 from ..stage import Stage
-from .redirect import _REDIRECT_STATUSES, RedirectPolicy, resolve_http_tracer
+from .redirect import RedirectPolicy, RedirectPredicate, resolve_http_tracer
 
 if TYPE_CHECKING:
     from ...http.request.request import Request
@@ -52,18 +54,23 @@ class AsyncRedirectPolicy(AsyncPolicy):
         follow_303: bool = True,
         allowed_methods: frozenset[Method] = frozenset({Method.GET, Method.HEAD}),
         strip_authorization: bool = True,
+        allow_scheme_downgrade: bool = False,
+        should_redirect: RedirectPredicate | None = None,
     ) -> None:
         self.config = RedirectPolicy(
             max_hops=max_hops,
             follow_303=follow_303,
             allowed_methods=allowed_methods,
             strip_authorization=strip_authorization,
+            allow_scheme_downgrade=allow_scheme_downgrade,
+            should_redirect=should_redirect,
         )
 
     async def send(self, request: Request, ctx: PipelineContext) -> AsyncResponse:
         cfg = self.config
         tracer = resolve_http_tracer(ctx)
         tracer.request_url_resolved(str(request.url))
+        seed_origin = _origin(request.url)
         visited: dict[str, None] = {str(request.url): None}
         hops = 0
         current_request = request
@@ -71,14 +78,10 @@ class AsyncRedirectPolicy(AsyncPolicy):
             response = await self.next.send(current_request, ctx)
             if hops >= cfg.max_hops:
                 return response
-            status = int(response.status)
-            if status not in _REDIRECT_STATUSES:
-                return response
-            location = response.headers.get("Location")
-            if location is None or not location.strip():
-                return response
             try:
-                next_request = cfg._build_next_request(current_request, status, location)
+                next_request = cfg._decide_next(
+                    current_request, response, seed_origin, hops, tuple(visited)
+                )
             except RuntimeError:
                 # A body-preserving redirect with a non-replayable body cannot
                 # be reissued. Close the in-hand 3xx response before the error

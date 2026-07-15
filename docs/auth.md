@@ -13,7 +13,9 @@ policies, and a pluggable token cache.
 | `TokenCredential`        | Sync Protocol for OAuth-style providers (`get_token_info`).        |
 | `AsyncTokenCredential`   | Async Protocol for OAuth-style providers.                          |
 
-All concrete credentials redact secrets in their `__repr__`.
+All concrete credentials redact secrets in their `__repr__` and reject
+empty inputs at construction, so a blank secret fails fast rather than at
+first use.
 
 ## Policies
 
@@ -24,6 +26,12 @@ All concrete credentials redact secrets in their `__repr__`.
 | `BearerTokenPolicy`          | Acquire + cache + apply OAuth bearer tokens (sync).       |
 | `AsyncBearerTokenPolicy`     | Async twin.                                               |
 
+Every credentialed policy enforces HTTPS on its stamping path by default:
+the credential is never fetched, read, or written onto a plaintext-HTTP
+request. Opt out per call with `ctx.options["enforce_https"] = False`. The
+guard runs only while the request stays on its original origin — a redirect
+to a foreign origin drops the credential entirely instead.
+
 `BearerTokenPolicy`:
 
 - Enforces HTTPS by default (opt out per call with
@@ -33,10 +41,17 @@ All concrete credentials redact secrets in their `__repr__`.
 - Calls `AccessTokenInfo.needs_refresh()` before each request; refreshes
   proactively when `refresh_on` has passed or `expires_on - leeway`
   (default 300 s) has been reached.
-- On any 401 response, invalidates the cached token. If the response
-  also carries a `WWW-Authenticate` header, then calls
-  `on_challenge(request, response)`. Override `on_challenge` in a
-  subclass to handle CAE / claims-challenge flows.
+- On a 401 response, invalidates the cached token — but only when that
+  token still matches the `Authorization` header this request carried, so
+  a stale rejection cannot discard a token a concurrent refresh already
+  replaced. A 401 without a `WWW-Authenticate` header is then surfaced
+  unchanged. When the header is present, `on_challenge(request, response)`
+  is consulted; override it in a subclass to handle CAE / claims-challenge
+  flows. If it authorizes a retry, the request is re-issued at most once
+  with a refreshed token — but a single-use (non-replayable) body is
+  surfaced un-replayed rather than corrupting a half-consumed stream. The
+  replayed response is returned regardless of its status; there is no
+  challenge loop. Both the sync and async policies enforce this identically.
 
 ## Token cache
 

@@ -1,22 +1,40 @@
 # Copyright (c) 2026 dexpace and Omar Aljarrah.
 # Licensed under the MIT License. See LICENSE.md in the repository root for details.
 
-"""Layered runtime configuration with override + env-var lookup.
+"""Layered runtime configuration with override + env-var + property lookup.
 
 ``Configuration`` provides a small, dependency-free way for SDK consumers to
 tune runtime behaviour (retry caps, proxy URLs, default timeouts) without
-threading kwargs through every constructor. Lookup is layered:
+threading kwargs through every constructor. Lookup is layered, highest
+precedence first:
 
 1. Explicit ``overrides`` passed to the constructor or set via the builder.
-2. The injected env source (defaults to ``os.environ.get``).
-   Empty strings from the env source are treated as absent — this matches
-   the Java SDK's behaviour where ``System.getenv`` returning ``""`` is
-   considered "not configured".
-3. The caller-supplied default.
+2. The injected env source (defaults to ``os.environ.get``), keyed by the
+   exact name. Empty strings from the env source are treated as absent — this
+   matches the Java SDK's behaviour where ``System.getenv`` returning ``""``
+   is considered "not configured".
+3. The injected property source (defaults to a no-op that resolves nothing),
+   keyed by a dotted-lowercase normalisation of the name — for example the
+   env-style ``MAX_RETRY_ATTEMPTS`` becomes the property-style
+   ``max.retry.attempts``. The ``get_raw`` accessor variant skips this
+   normalisation and queries the property source with the name verbatim. Like
+   the env source, an empty property value is treated as absent.
+4. The caller-supplied default.
 
-Typed accessors (``get_int`` / ``get_bool`` / ``get_duration``) return the
-default on any parse failure. They never raise at the lookup site — bad
-configuration should degrade, not crash.
+Typed accessors (``get_int`` / ``get_bool`` / ``get_duration``) resolve
+through the full layered lookup above and return the default on any parse
+failure. They never raise at the lookup site — bad configuration should
+degrade, not crash.
+
+Built configurations are immutable; the override map is copied at construction
+so a caller cannot mutate a live configuration. Derive a modified copy with
+``with_override`` (copy-on-write — the derived configuration shares the
+source's env and property seams); ``without_override`` peels a single key back
+off the override layer so lookups fall through to env / property / default
+again. A process-wide default slot is available via
+``default_configuration`` / ``set_default_configuration`` with last-write-wins
+semantics. Environment and property sources are substitutable objects: tests
+inject fakes rather than mutating ``os.environ``.
 """
 
 from __future__ import annotations
@@ -24,14 +42,64 @@ from __future__ import annotations
 import math
 import os
 import re
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import ClassVar, Final, Self
 
-__all__ = ["Configuration", "ConfigurationBuilder"]
+__all__ = [
+    "Configuration",
+    "ConfigurationBuilder",
+    "default_configuration",
+    "set_default_configuration",
+]
 
 
 EnvSource = Callable[[str], str | None]
+PropertySource = Callable[[str], str | None]
+
+
+def _no_properties(name: str) -> str | None:
+    """Default property source: resolve nothing.
+
+    Args:
+        name: The (normalised) property key. Ignored.
+
+    Returns:
+        Always ``None`` — no injected property source is configured.
+    """
+    return None
+
+
+def _to_property_key(name: str) -> str:
+    """Normalise an env-style key to a dotted-lowercase property key.
+
+    Underscores become dots and the whole key is lower-cased, so the
+    env-style ``MAX_RETRY_ATTEMPTS`` maps to the property-style
+    ``max.retry.attempts``.
+
+    Args:
+        name: The configuration key in any case.
+
+    Returns:
+        The dotted-lowercase property-key form.
+    """
+    return name.replace("_", ".").lower()
+
+
+def _require_name(name: str) -> None:
+    """Reject a ``None`` configuration key with a clear error.
+
+    Args:
+        name: The candidate key. Typed ``str``, but guarded at runtime so an
+            untyped caller passing ``None`` fails loudly rather than deep in
+            the lookup.
+
+    Raises:
+        TypeError: If ``name`` is ``None``.
+    """
+    if name is None:
+        raise TypeError("configuration key must not be None")
 
 
 _SHORTHAND_RE: Final = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)\s*$", re.IGNORECASE)
@@ -49,16 +117,22 @@ _ISO_RE: Final = re.compile(
 
 @dataclass(frozen=True, slots=True)
 class Configuration:
-    """Layered runtime configuration: override -> env var -> default.
+    """Layered runtime configuration: override -> env -> property -> default.
 
     Attributes:
         overrides: Explicit string-keyed overrides that always win.
         env: Callable mapping a name to its environment value or ``None``.
-            Defaults to ``os.environ.get``.
+            Defaults to ``os.environ.get``. Substitutable — inject a fake in
+            tests instead of mutating ``os.environ``.
+        props: Callable mapping a dotted-lowercase property key to its value
+            or ``None``. Defaults to a no-op source. Substitutable, and
+            queried under key normalisation by ``get`` (verbatim by
+            ``get_raw``).
     """
 
     overrides: dict[str, str] = field(default_factory=dict)
     env: EnvSource = field(default=os.environ.get, repr=False)
+    props: PropertySource = field(default=_no_properties, repr=False)
 
     def __post_init__(self) -> None:
         # Defensive copy: ``frozen=True`` protects the attribute binding, not
@@ -91,21 +165,61 @@ class Configuration:
     # Lookup
 
     def get(self, name: str, default: str | None = None) -> str | None:
-        """Resolve ``name`` honouring override -> env -> default ordering.
+        """Resolve ``name`` honouring override -> env -> property -> default.
+
+        The property source is queried under dotted-lowercase key
+        normalisation (``MAX_RETRY_ATTEMPTS`` -> ``max.retry.attempts``); use
+        ``get_raw`` to query it with the name verbatim.
 
         Args:
             name: Configuration key.
-            default: Value to return when neither override nor env supplies one.
+            default: Value to return when no layer supplies one.
 
         Returns:
-            The resolved value or ``default``. Empty env strings are treated
-            as absent; an empty override is honoured as an intentional value.
+            The resolved value or ``default``. Empty env / property strings are
+            treated as absent; an empty override is honoured as an intentional
+            value.
+        """
+        _require_name(name)
+        return self._resolve(name, _to_property_key(name), default)
+
+    def get_raw(self, name: str, default: str | None = None) -> str | None:
+        """Resolve ``name`` like ``get`` but query the property source verbatim.
+
+        The override and env layers are keyed by the exact name (as in
+        ``get``); only the property layer differs — this accessor skips the
+        dotted-lowercase normalisation and looks the name up unchanged.
+
+        Args:
+            name: Configuration key, used verbatim against every layer.
+            default: Value to return when no layer supplies one.
+
+        Returns:
+            The resolved value or ``default``.
+        """
+        _require_name(name)
+        return self._resolve(name, name, default)
+
+    def _resolve(self, name: str, property_key: str, default: str | None) -> str | None:
+        """Run the layered lookup for ``name`` against a chosen property key.
+
+        Args:
+            name: Key used for the override and env layers.
+            property_key: Key used for the property layer (normalised by
+                ``get``, verbatim by ``get_raw``).
+            default: Fallback when no layer resolves a non-empty value.
+
+        Returns:
+            The first resolved value, or ``default``.
         """
         if name in self.overrides:
             return self.overrides[name]
         env_value = self.env(name)
-        if env_value is not None and env_value != "":
+        if env_value:
             return env_value
+        prop_value = self.props(property_key)
+        if prop_value:
+            return prop_value
         return default
 
     def get_int(self, name: str, default: int) -> int:
@@ -178,6 +292,51 @@ class Configuration:
             return default_seconds
         return parsed
 
+    # ------------------------------------------------------------------
+    # Derivation (copy-on-write)
+
+    def with_override(self, name: str, value: str) -> Configuration:
+        """Return a copy with ``name`` set to ``value`` in the override layer.
+
+        Copy-on-write: the source is left untouched and the derived
+        configuration shares the source's env and property seams (same
+        objects), so a single injected fake seam drives both.
+
+        Args:
+            name: Override key to set.
+            value: Override value that wins over env / property / default.
+
+        Returns:
+            A new ``Configuration`` carrying the merged overrides.
+        """
+        _require_name(name)
+        merged = dict(self.overrides)
+        merged[name] = value
+        return Configuration(overrides=merged, env=self.env, props=self.props)
+
+    def without_override(self, name: str) -> Configuration:
+        """Return a copy with ``name`` dropped from the override layer.
+
+        Removing an override peels off only that one layer: a later lookup for
+        ``name`` falls through to env -> property -> default exactly as if the
+        override had never been set. Removal never forces the key to resolve to
+        ``None`` — a lower layer still supplies its value. Removing a key that
+        carries no override is a harmless no-op that returns an equivalent
+        copy. Copy-on-write, like ``with_override``: the source is left
+        untouched and the derived configuration shares the source's env and
+        property seams (same objects).
+
+        Args:
+            name: Override key to drop from the override layer.
+
+        Returns:
+            A new ``Configuration`` with ``name`` absent from the overrides.
+        """
+        _require_name(name)
+        merged = dict(self.overrides)
+        merged.pop(name, None)
+        return Configuration(overrides=merged, env=self.env, props=self.props)
+
 
 def _parse_duration_seconds(raw: str) -> float | None:
     """Parse a duration string into seconds, returning ``None`` on failure.
@@ -244,17 +403,23 @@ class ConfigurationBuilder:
     Calls to ``put`` mutate the builder in place and return ``self`` so calls
     chain. ``build`` produces a frozen ``Configuration`` snapshot — further
     builder mutations do not affect already-built configurations.
+
+    The builder is single-threaded by contract: a single builder instance must
+    not be mutated concurrently from multiple threads. Build once, then share
+    the immutable ``Configuration``, which is safe to read concurrently.
     """
 
-    __slots__ = ("_env", "_overrides")
+    __slots__ = ("_env", "_overrides", "_props")
 
     _overrides: dict[str, str]
     _env: EnvSource
+    _props: PropertySource
 
     def __init__(self) -> None:
-        """Initialise with empty overrides and ``os.environ.get`` as env."""
+        """Initialise with empty overrides, ``os.environ.get`` env, no props."""
         self._overrides = {}
         self._env = os.environ.get
+        self._props = _no_properties
 
     def put(self, name: str, value: str) -> Self:
         """Set ``name`` to ``value`` in the override layer.
@@ -281,10 +446,66 @@ class ConfigurationBuilder:
         self._env = source
         return self
 
+    def props(self, source: PropertySource) -> Self:
+        """Replace the property source.
+
+        Args:
+            source: Callable that maps a (normalised) property key to its
+                value or ``None``.
+
+        Returns:
+            ``self`` for chaining.
+        """
+        self._props = source
+        return self
+
     def build(self) -> Configuration:
         """Snapshot the builder into an immutable ``Configuration``.
 
         Returns:
-            A frozen ``Configuration`` carrying a copy of the overrides.
+            A frozen ``Configuration`` carrying a copy of the overrides and the
+            configured env / property seams.
         """
-        return Configuration(overrides=dict(self._overrides), env=self._env)
+        return Configuration(overrides=dict(self._overrides), env=self._env, props=self._props)
+
+
+# ----------------------------------------------------------------------
+# Process-wide default slot (last-write-wins)
+
+_default_lock: Final = threading.Lock()
+_default_configuration: Configuration | None = None
+
+
+def default_configuration() -> Configuration:
+    """Return the process-wide default configuration.
+
+    Lazily initialises to an empty ``Configuration`` (env-only lookup) on
+    first access if none has been set. Thread-safe.
+
+    Returns:
+        The current default ``Configuration``.
+    """
+    global _default_configuration
+    with _default_lock:
+        current = _default_configuration
+        if current is None:
+            current = Configuration()
+            _default_configuration = current
+        return current
+
+
+def set_default_configuration(config: Configuration) -> None:
+    """Install ``config`` as the process-wide default (last-write-wins).
+
+    Args:
+        config: The configuration to publish as the default. A later call
+            replaces an earlier one.
+
+    Raises:
+        TypeError: If ``config`` is ``None``.
+    """
+    if config is None:
+        raise TypeError("default configuration must not be None")
+    global _default_configuration
+    with _default_lock:
+        _default_configuration = config

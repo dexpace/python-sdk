@@ -112,7 +112,9 @@ def test_exchange_records_per_hop_request_after_redirect() -> None:
     class _Observer(Policy):
         def send(self, request: Request, ctx: PipelineContext) -> Response:
             response = self.next.send(request, ctx)
-            stored = ContextStore.get(instr.trace_id.value)
+            live = ContextStore.contexts_for_trace(instr.trace_id.value)
+            assert len(live) == 1
+            stored = live[0]
             assert isinstance(stored, ExchangeContext)
             seen.append(stored)
             return response
@@ -142,7 +144,9 @@ def test_exchange_request_and_response_traveled_together() -> None:
     class _Observer(Policy):
         def send(self, request: Request, ctx: PipelineContext) -> Response:
             response = self.next.send(request, ctx)
-            stored = ContextStore.get(instr.trace_id.value)
+            live = ContextStore.contexts_for_trace(instr.trace_id.value)
+            assert len(live) == 1
+            stored = live[0]
             assert isinstance(stored, ExchangeContext)
             seen.append((stored.request, stored.response))
             return response
@@ -165,7 +169,9 @@ def test_async_exchange_records_per_hop_request_after_redirect() -> None:
     class _Observer(AsyncPolicy):
         async def send(self, request: Request, ctx: PipelineContext) -> AsyncResponse:
             response = await self.next.send(request, ctx)
-            stored = ContextStore.get(instr.trace_id.value)
+            live = ContextStore.contexts_for_trace(instr.trace_id.value)
+            assert len(live) == 1
+            stored = live[0]
             assert isinstance(stored, ExchangeContext)
             seen.append(stored)
             return response

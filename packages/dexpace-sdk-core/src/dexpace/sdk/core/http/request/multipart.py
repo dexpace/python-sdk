@@ -3,12 +3,21 @@
 
 """Multipart/form-data ``RequestBody`` builder.
 
-Generates a deterministic-boundary ``multipart/form-data`` payload from a
-list of fields. Each field has a name, value (bytes or string), optional
-filename, optional media type, and optional extra headers.
+Generates a random-boundary ``multipart/form-data`` payload from a list of
+fields. Each field has a name, a payload (bytes, string, or a nested
+``RequestBody``), an optional filename, an optional media type, and optional
+extra headers.
 
-The resulting body is replayable (the boundary and field bytes are
-captured once at construction), so retries are safe.
+The wire layout is produced by the shared, pure framing routine in
+``_multipart_framing`` — the same routine a logging tap uses to preview the
+payload, so logged bytes and wire bytes can never diverge.
+
+Replayability propagates from the fields: the body is replayable if and only
+if every field payload is replayable. A payload of ``bytes``/``str`` is always
+replayable; a nested ``RequestBody`` payload defers to its own
+``is_replayable``. A body with any single-use payload streams once and then
+raises ``RuntimeError`` on a second ``iter_bytes`` — call ``to_replayable``
+first if retries may be needed.
 """
 
 from __future__ import annotations
@@ -20,6 +29,7 @@ from typing import Self
 from urllib.parse import quote
 
 from ..common.media_type import MediaType
+from . import _multipart_framing as _framing
 from .request_body import RequestBody, _check_chunk_size
 
 
@@ -68,7 +78,9 @@ class MultipartField:
         name: Form field name (mandatory). Must be pure ASCII so the
             generated ``Content-Disposition`` header is safe across the
             full range of HTTP/1.1 parsers.
-        value: Field content as bytes or string. Strings are UTF-8 encoded.
+        value: Field payload. ``bytes`` and ``str`` (UTF-8 encoded) are
+            always replayable; a nested ``RequestBody`` streams its own bytes
+            and contributes its own replayability (see ``is_replayable``).
         filename: Optional filename for file parts; included in
             ``Content-Disposition``. Must be pure ASCII unless the caller
             has supplied a matching ``filename*`` parameter (e.g. via
@@ -84,7 +96,7 @@ class MultipartField:
     """
 
     name: str
-    value: bytes | str
+    value: bytes | str | RequestBody
     filename: str | None = None
     media_type: MediaType | None = None
     headers: Sequence[tuple[str, str]] = field(default_factory=tuple)
@@ -114,12 +126,23 @@ class MultipartField:
             _reject_control_chars("header name", header_name)
             _reject_control_chars("header value", header_value)
 
+    def is_replayable(self) -> bool:
+        """Return whether this field's payload can be re-read on retry.
+
+        Returns:
+            ``True`` for ``bytes``/``str`` payloads; for a nested
+            ``RequestBody`` payload, whatever that body reports.
+        """
+        if isinstance(self.value, RequestBody):
+            return self.value.is_replayable()
+        return True
+
     @classmethod
     def with_utf8_filename(
         cls,
         *,
         name: str,
-        value: bytes | str,
+        value: bytes | str | RequestBody,
         filename: str,
         media_type: MediaType | None = None,
         headers: Sequence[tuple[str, str]] = (),
@@ -134,7 +157,7 @@ class MultipartField:
 
         Args:
             name: Form field name (must be ASCII).
-            value: Field content as bytes or string.
+            value: Field payload (bytes, string, or nested ``RequestBody``).
             filename: The intended filename, possibly containing
                 non-ASCII characters.
             media_type: Optional content type for the part.
@@ -146,7 +169,7 @@ class MultipartField:
         Returns:
             A ``MultipartField`` with the synthesised disposition stored
             as an extra header. The dataclass ``filename`` attribute is
-            set to ``None`` so ``_build_part`` does not emit a second
+            set to ``None`` so the framing routine does not emit a second
             disposition line.
 
         Raises:
@@ -155,8 +178,8 @@ class MultipartField:
         legacy = filename if _is_ascii(filename) else ascii_fallback
         encoded = quote(filename, safe="", encoding="utf-8")
         disposition = (
-            f'form-data; name="{_escape_quoted(name)}"; '
-            f'filename="{_escape_quoted(legacy)}"; '
+            f'form-data; name="{_framing.escape_quoted(name)}"; '
+            f'filename="{_framing.escape_quoted(legacy)}"; '
             f"filename*=UTF-8''{encoded}"
         )
         new_headers: tuple[tuple[str, str], ...] = (
@@ -177,58 +200,27 @@ def _generate_boundary() -> str:
     return "----dexpace-" + secrets.token_hex(16)
 
 
-def _build_part(part: MultipartField, boundary: str) -> bytes:
-    """Render one part as bytes (terminating CRLF included).
-
-    Header lines are encoded as Latin-1 (the HTTP/1.1 wire-form charset).
-    ``MultipartField.__post_init__`` rejects names/filenames that are not
-    pure ASCII (unless the caller supplied a matching ``filename*=UTF-8''…``
-    parameter via ``headers`` or built the field through
-    ``with_utf8_filename``).
-
-    If any caller-supplied header already begins with ``Content-Disposition``
-    (case-insensitive), the auto-generated disposition is suppressed so the
-    custom one (typically carrying ``filename*=UTF-8''…``) is the only one
-    emitted.
-    """
-    custom_disposition = any(name.lower() == "content-disposition" for name, _ in part.headers)
-    lines: list[bytes] = [f"--{boundary}".encode("latin-1")]
-    if not custom_disposition:
-        disposition = f'form-data; name="{_escape_quoted(part.name)}"'
-        if part.filename is not None:
-            disposition += f'; filename="{_escape_quoted(part.filename)}"'
-        lines.append(f"Content-Disposition: {disposition}".encode("latin-1"))
-    if part.media_type is not None:
-        lines.append(f"Content-Type: {part.media_type}".encode("latin-1"))
-    for header_name, header_value in part.headers:
-        lines.append(f"{header_name}: {header_value}".encode("latin-1"))
-    lines.append(b"")
-    if isinstance(part.value, str):
-        lines.append(part.value.encode("utf-8"))
-    else:
-        lines.append(part.value)
-    return b"\r\n".join(lines) + b"\r\n"
-
-
-def _escape_quoted(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
 class MultipartRequestBody(RequestBody):
-    """Replayable ``multipart/form-data`` body.
+    """``multipart/form-data`` body assembled from a sequence of fields.
 
     Build via ``RequestBody.from_multipart(fields)`` or instantiate directly.
-    The boundary is generated once at construction so retries see identical
-    bytes (and so loggable wrappers can capture the payload deterministically).
-    A caller-supplied ``boundary`` is rejected if it contains CR, LF, or NUL,
-    since it is interpolated into delimiter and header lines.
+    The boundary is generated once at construction (via ``secrets``) so retries
+    and loggable wrappers see identical bytes. A caller-supplied ``boundary`` is
+    rejected if it contains CR, LF, or NUL, since it is interpolated into
+    delimiter and header lines.
+
+    The payload is streamed lazily through the shared framing routine rather
+    than buffered up front, so a single-use field payload stays single-use.
+    ``is_replayable`` is ``True`` only when every field payload is replayable;
+    otherwise ``iter_bytes`` may be called once and a second call raises
+    ``RuntimeError`` (call ``to_replayable`` first to buffer for retries).
 
     Raises:
         ValueError: If ``fields`` is empty, or if ``boundary`` contains CR,
             LF, or NUL.
     """
 
-    __slots__ = ("_boundary", "_payload")
+    __slots__ = ("_boundary", "_consumed", "_fields", "_replayable")
 
     def __init__(
         self,
@@ -243,34 +235,43 @@ class MultipartRequestBody(RequestBody):
         # and the ``Content-Type`` header, so a caller-supplied boundary with
         # CR/LF/NUL would inject delimiter or header lines into the payload.
         _reject_control_chars("boundary", self._boundary)
-        parts: list[bytes] = [_build_part(f, self._boundary) for f in fields]
-        parts.append(f"--{self._boundary}--\r\n".encode("ascii"))
-        self._payload = b"".join(parts)
+        self._fields: tuple[MultipartField, ...] = tuple(fields)
+        self._replayable = all(f.is_replayable() for f in self._fields)
+        self._consumed = False
 
     @property
     def boundary(self) -> str:
         return self._boundary
 
+    @property
+    def fields(self) -> tuple[MultipartField, ...]:
+        return self._fields
+
     def media_type(self) -> MediaType | None:
         return MediaType.of("multipart", "form-data", {"boundary": self._boundary})
 
     def content_length(self) -> int:
-        return len(self._payload)
+        return _framing.content_length(self._fields, self._boundary)
 
     def is_replayable(self) -> bool:
-        return True
+        return self._replayable
 
     def to_replayable(self) -> RequestBody:
-        return self
+        if self._replayable:
+            return self
+        return super().to_replayable()
 
     def iter_bytes(self, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
         _check_chunk_size(chunk_size)
-        return self._iter(chunk_size)
-
-    def _iter(self, chunk_size: int) -> Iterator[bytes]:
-        view = memoryview(self._payload)
-        for start in range(0, len(view), chunk_size):
-            yield bytes(view[start : start + chunk_size])
+        if not self._replayable:
+            if self._consumed:
+                raise RuntimeError(
+                    "MultipartRequestBody.iter_bytes was already called — one or "
+                    "more field payloads are single-use. Call to_replayable() "
+                    "BEFORE iter_bytes if retries may be needed."
+                )
+            self._consumed = True
+        return _framing.iter_frames(self._fields, self._boundary, chunk_size)
 
 
 __all__ = ["MultipartField", "MultipartRequestBody"]

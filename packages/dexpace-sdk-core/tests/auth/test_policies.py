@@ -9,12 +9,13 @@ import asyncio
 import threading
 import time
 from collections.abc import AsyncIterator, Iterator
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from dexpace.sdk.core.client.async_http_client import AsyncHttpClient
 from dexpace.sdk.core.client.http_client import HttpClient
-from dexpace.sdk.core.errors import ClientAuthenticationError, ServiceRequestError
+from dexpace.sdk.core.errors import ServiceRequestError
 from dexpace.sdk.core.http.auth import (
     AccessTokenInfo,
     AsyncBearerTokenPolicy,
@@ -24,12 +25,13 @@ from dexpace.sdk.core.http.auth import (
     BasicChallengeHandler,
     BearerTokenPolicy,
     DigestChallengeHandler,
+    InMemoryTokenCache,
     KeyCredential,
     KeyCredentialPolicy,
 )
 from dexpace.sdk.core.http.common import Protocol, Url
 from dexpace.sdk.core.http.context import DispatchContext
-from dexpace.sdk.core.http.request import Method, Request
+from dexpace.sdk.core.http.request import Method, Request, RequestBody
 from dexpace.sdk.core.http.response import AsyncResponse, Response, Status
 from dexpace.sdk.core.http.response.async_response_body import AsyncResponseBody
 from dexpace.sdk.core.http.response.response_body import ResponseBody
@@ -87,6 +89,7 @@ class _CapturingClient(HttpClient):
         )
 
 
+@pytest.mark.req("AUTH-26")
 def test_key_credential_policy_stamps_header() -> None:
     client = _CapturingClient()
     policy = KeyCredentialPolicy(KeyCredential("hunter2"), "X-API-Key")
@@ -95,6 +98,7 @@ def test_key_credential_policy_stamps_header() -> None:
     assert client.calls[0].headers.get("x-api-key") == "hunter2"
 
 
+@pytest.mark.req("AUTH-26")
 def test_key_credential_policy_prefix() -> None:
     client = _CapturingClient()
     policy = KeyCredentialPolicy(KeyCredential("k"), "Authorization", prefix="SharedKey")
@@ -136,6 +140,7 @@ class _RedirectingClient(HttpClient):
         return Response(request=request, protocol=Protocol.HTTP_1_1, status=Status.OK)
 
 
+@pytest.mark.req("AUTH-29")
 def test_key_credential_policy_withholds_credential_cross_origin() -> None:
     from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
 
@@ -189,6 +194,7 @@ class _StaticCredential:
         return None
 
 
+@pytest.mark.req("AUTH-34")
 def test_bearer_token_policy_stamps_header() -> None:
     client = _CapturingClient()
     cred = _StaticCredential()
@@ -198,6 +204,7 @@ def test_bearer_token_policy_stamps_header() -> None:
     assert client.calls[0].headers.get("authorization") == "Bearer abc"
 
 
+@pytest.mark.req("AUTH-14")
 def test_bearer_token_policy_caches_token() -> None:
     client = _CapturingClient()
     cred = _StaticCredential()
@@ -224,6 +231,7 @@ def test_bearer_policy_refreshes_when_clock_advances_past_expiry() -> None:
     assert cred.calls == 2
 
 
+@pytest.mark.req("XCUT-16")
 def test_bearer_token_policy_enforces_https() -> None:
     client = _CapturingClient()
     cred = _StaticCredential()
@@ -235,16 +243,23 @@ def test_bearer_token_policy_enforces_https() -> None:
         )
 
 
-def test_bearer_token_policy_raises_on_401_without_challenge() -> None:
+@pytest.mark.req("AUTH-33")
+def test_bearer_token_policy_surfaces_401_without_challenge() -> None:
+    """A 401 without ``WWW-Authenticate`` is surfaced unchanged, hook untouched."""
     client = _CapturingClient(status=Status.UNAUTHORIZED)
     cred = _StaticCredential()
     policy = BearerTokenPolicy(cred, "scope-a")
-    with Pipeline(client, policies=[policy]) as p, pytest.raises(ClientAuthenticationError):
-        p.run(_request(), DispatchContext(_instr("0" * 16 + "8")))
+    with Pipeline(client, policies=[policy]) as p:
+        response = p.run(_request(), DispatchContext(_instr("0" * 16 + "8")))
+    assert response.status is Status.UNAUTHORIZED
+    # No challenge header: no re-issue, no extra token acquisition.
+    assert len(client.calls) == 1
+    assert cred.calls == 1
 
 
+@pytest.mark.req("AUTH-30")
 def test_bearer_token_policy_on_challenge_hook() -> None:
-    """Subclass that handles the challenge by re-requesting once."""
+    """Subclass that authorizes one replay; the still-401 result is surfaced."""
 
     client = _CapturingClient(status=Status.UNAUTHORIZED, www_auth=True)
     cred = _StaticCredential()
@@ -254,13 +269,15 @@ def test_bearer_token_policy_on_challenge_hook() -> None:
             return True
 
     policy = _Retrying(cred, "scope-a")
-    with Pipeline(client, policies=[policy]) as p, pytest.raises(ClientAuthenticationError):
-        # Server keeps responding 401; eventually the policy gives up.
-        p.run(_request(), DispatchContext(_instr("0" * 16 + "9")))
-    # Two attempts: initial + one re-issue after challenge.
+    with Pipeline(client, policies=[policy]) as p:
+        # Server keeps responding 401; after one replay the response surfaces.
+        response = p.run(_request(), DispatchContext(_instr("0" * 16 + "9")))
+    assert response.status is Status.UNAUTHORIZED
+    # Two attempts: initial + one re-issue after challenge, then no loop.
     assert len(client.calls) == 2
 
 
+@pytest.mark.req("AUTH-29")
 def test_bearer_token_policy_withholds_token_cross_origin() -> None:
     """A redirect to a foreign host must not receive the bearer token."""
     from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
@@ -276,16 +293,19 @@ def test_bearer_token_policy_withholds_token_cross_origin() -> None:
     assert cred.calls == 1
 
 
+@pytest.mark.req("AUTH-29", "XCUT-16")
 def test_bearer_token_policy_skips_https_enforcement_cross_origin() -> None:
     """A cross-origin reissue to http:// forwards unchanged, no HTTPS error."""
     from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
 
     # http:// target is cross-origin (scheme + host differ); the bearer policy
-    # must forward it unchanged rather than raising the HTTPS-only error.
+    # must forward it unchanged rather than raising the HTTPS-only error. The
+    # http target is also an HTTPS->HTTP downgrade, which the redirect policy
+    # denies by default, so opt in here to exercise the bearer-policy path.
     client = _RedirectingClient("http://other.example.org/next")
     cred = _StaticCredential()
     policy = BearerTokenPolicy(cred, "scope-a")
-    with Pipeline(client, policies=[RedirectPolicy(), policy]) as p:
+    with Pipeline(client, policies=[RedirectPolicy(allow_scheme_downgrade=True), policy]) as p:
         response = p.run(_request(), DispatchContext(_instr("0" * 15 + "33")))
     assert response.status is Status.OK
     assert "authorization" not in client.calls[1].headers
@@ -316,6 +336,7 @@ class _SlowCredential:
         return None
 
 
+@pytest.mark.req("XCUT-12")
 def test_bearer_token_policy_serializes_concurrent_refresh() -> None:
     """Concurrent sync sends must issue exactly one token fetch."""
 
@@ -339,6 +360,28 @@ def test_bearer_token_policy_serializes_concurrent_refresh() -> None:
             t.start()
         for t in threads:
             t.join()
+
+    assert cred.calls == 1
+
+
+@pytest.mark.req("AUTH-34", "XCUT-11", "XCUT-12")
+def test_bearer_token_policy_single_flight_under_thread_pool() -> None:
+    """The sync pillar collapses N concurrent misses into one fetch (pool)."""
+
+    client = _CapturingClient()
+    cred = _SlowCredential()
+    policy = BearerTokenPolicy(cred, "scope-a")
+    trace_ids = [f"{i:032x}" for i in range(200, 208)]
+
+    with Pipeline(client, policies=[policy]) as p:
+
+        def _send(trace: str) -> None:
+            p.run(_request(), DispatchContext(_instr(trace)))
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(_send, t) for t in trace_ids]
+            for future in futures:
+                future.result(timeout=5)
 
     assert cred.calls == 1
 
@@ -513,9 +556,10 @@ def test_challenge_handler_can_handle_false_falls_through() -> None:
             return False
 
     policy = _Spy(cred, "scope-a", challenge_handler=handler)
-    with Pipeline(client, policies=[policy]) as p, pytest.raises(ClientAuthenticationError):
-        p.run(_request(), DispatchContext(_instr("0" * 16 + "d")))
+    with Pipeline(client, policies=[policy]) as p:
+        response = p.run(_request(), DispatchContext(_instr("0" * 16 + "d")))
 
+    assert response.status is Status.UNAUTHORIZED
     assert handler.can_handle_calls == 1
     assert handler.handle_calls == 0
     assert on_challenge_calls == 1
@@ -712,9 +756,9 @@ async def test_async_challenge_handler_can_handle_false_falls_through() -> None:
 
     policy = _Spy(cred, "scope-a", challenge_handler=handler)
     async with AsyncPipeline(client, policies=[policy]) as p:
-        with pytest.raises(ClientAuthenticationError):
-            await p.run(_request(), DispatchContext(_instr("0" * 15 + "14")))
+        response = await p.run(_request(), DispatchContext(_instr("0" * 15 + "14")))
 
+    assert response.status is Status.UNAUTHORIZED
     assert handler.can_handle_calls == 1
     assert handler.handle_calls == 0
     assert on_challenge_calls == 1
@@ -835,6 +879,7 @@ def test_challenge_handler_closes_discarded_401_response() -> None:
     assert not client.bodies[1].closed, "final response handed to caller must stay open"
 
 
+@pytest.mark.req("AUTH-30")
 def test_on_challenge_closes_discarded_401_response() -> None:
     """The on_challenge retry path also releases the rejected 401."""
     client = _BodyScriptedClient([(Status.UNAUTHORIZED, 'Bearer realm="x"'), (Status.OK, None)])
@@ -881,3 +926,490 @@ async def test_async_on_challenge_closes_discarded_401_response() -> None:
 
     assert client.bodies[0].closed, "discarded 401 response leaked: body was not closed"
     assert not client.bodies[1].closed, "final response handed to caller must stay open"
+
+
+# --------------------------------------------------------------------------- #
+# Replay is gated on body replayability — identically on both pillars          #
+# --------------------------------------------------------------------------- #
+
+
+class _AlwaysRetry(BearerTokenPolicy):
+    """Bearer policy whose hook always authorizes a single replay."""
+
+    def on_challenge(self, request: Request, response: Response) -> bool:
+        del request, response
+        return True
+
+
+class _AsyncAlwaysRetry(AsyncBearerTokenPolicy):
+    """Async twin of ``_AlwaysRetry``."""
+
+    async def on_challenge(self, request: Request, response: AsyncResponse) -> bool:
+        del request, response
+        return True
+
+
+def test_bearer_replays_replayable_body_after_challenge() -> None:
+    """A replayable body is re-issued once when the hook authorizes it."""
+    client = _ScriptedClient([(Status.UNAUTHORIZED, 'Bearer realm="x"'), (Status.OK, None)])
+    policy = _AlwaysRetry(_StaticCredential(), "scope-a")
+    with Pipeline(client, policies=[policy]) as p:
+        response = p.run(_request(), DispatchContext(_instr("0" * 15 + "40")))
+    assert response.status is Status.OK
+    assert len(client.calls) == 2
+
+
+@pytest.mark.req("AUTH-31", "BODY-4")
+def test_bearer_surfaces_401_for_nonreplayable_body() -> None:
+    """A single-use body surfaces the 401 un-replayed instead of resending it."""
+    client = _ScriptedClient([(Status.UNAUTHORIZED, 'Bearer realm="x"')])
+    body = RequestBody.from_iter(iter([b"hello", b"world"]))
+    request = Request(method=Method.POST, url=Url.parse("https://api.example.com/"), body=body)
+    policy = _AlwaysRetry(_StaticCredential(), "scope-a")
+    with Pipeline(client, policies=[policy]) as p:
+        response = p.run(request, DispatchContext(_instr("0" * 15 + "41")))
+    assert response.status is Status.UNAUTHORIZED
+    # No replay: the single-use body was never re-sent, so it stays intact.
+    assert len(client.calls) == 1
+    assert not body.is_replayable()
+
+
+async def test_async_bearer_replays_replayable_body_after_challenge() -> None:
+    """Async twin: a replayable body is re-issued once on challenge."""
+    client = _ScriptedAsyncClient(
+        [(Status.UNAUTHORIZED, "WWW-Authenticate", 'Bearer realm="x"'), (Status.OK, None, None)]
+    )
+    policy = _AsyncAlwaysRetry(_StaticAsyncCredential(), "scope-a")
+    async with AsyncPipeline(client, policies=[policy]) as p:
+        response = await p.run(_request(), DispatchContext(_instr("0" * 15 + "42")))
+    assert response.status is Status.OK
+    assert len(client.calls) == 2
+
+
+@pytest.mark.req("AUTH-31")
+async def test_async_bearer_surfaces_401_for_nonreplayable_body() -> None:
+    """Async twin: a single-use body surfaces the 401 un-replayed."""
+    client = _ScriptedAsyncClient([(Status.UNAUTHORIZED, "WWW-Authenticate", 'Bearer realm="x"')])
+    body = RequestBody.from_iter(iter([b"hello", b"world"]))
+    request = Request(method=Method.POST, url=Url.parse("https://api.example.com/"), body=body)
+    policy = _AsyncAlwaysRetry(_StaticAsyncCredential(), "scope-a")
+    async with AsyncPipeline(client, policies=[policy]) as p:
+        response = await p.run(request, DispatchContext(_instr("0" * 15 + "43")))
+    assert response.status is Status.UNAUTHORIZED
+    assert len(client.calls) == 1
+    assert not body.is_replayable()
+
+
+@pytest.mark.req("AUTH-33")
+async def test_async_bearer_surfaces_401_without_challenge() -> None:
+    """Async twin: a 401 without ``WWW-Authenticate`` is surfaced unchanged."""
+    client = _CapturingAsyncClient(status=Status.UNAUTHORIZED)
+    cred = _StaticAsyncCredential()
+    policy = AsyncBearerTokenPolicy(cred, "scope-a")
+    async with AsyncPipeline(client, policies=[policy]) as p:
+        response = await p.run(_request(), DispatchContext(_instr("0" * 15 + "44")))
+    assert response.status is Status.UNAUTHORIZED
+    assert len(client.calls) == 1
+    assert cred.calls == 1
+
+
+# --------------------------------------------------------------------------- #
+# A throwing challenge hook closes the 401 before the exception propagates      #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.req("AUTH-32")
+def test_sync_on_challenge_throw_closes_401_before_propagating() -> None:
+    """A raising sync hook releases the open 401 before re-raising."""
+    client = _BodyScriptedClient([(Status.UNAUTHORIZED, 'Bearer realm="x"')])
+
+    class _Boom(BearerTokenPolicy):
+        def on_challenge(self, request: Request, response: Response) -> bool:
+            del request, response
+            raise RuntimeError("boom")
+
+    policy = _Boom(_StaticCredential(), "scope-a")
+    with (
+        Pipeline(client, policies=[policy]) as p,
+        pytest.raises(RuntimeError, match="boom"),
+    ):
+        p.run(_request(), DispatchContext(_instr("0" * 15 + "50")))
+    assert client.bodies[0].closed, "throwing on_challenge leaked the 401 body"
+
+
+@pytest.mark.req("AUTH-32")
+async def test_async_on_challenge_coroutine_throw_closes_401() -> None:
+    """A raising async coroutine hook releases the open 401 before re-raising."""
+    client = _AsyncBodyScriptedClient([(Status.UNAUTHORIZED, 'Bearer realm="x"')])
+
+    class _Boom(AsyncBearerTokenPolicy):
+        async def on_challenge(self, request: Request, response: AsyncResponse) -> bool:
+            del request, response
+            raise RuntimeError("boom")
+
+    policy = _Boom(_StaticAsyncCredential(), "scope-a")
+    async with AsyncPipeline(client, policies=[policy]) as p:
+        with pytest.raises(RuntimeError, match="boom"):
+            await p.run(_request(), DispatchContext(_instr("0" * 15 + "51")))
+    assert client.bodies[0].closed, "throwing async on_challenge leaked the 401 body"
+
+
+@pytest.mark.req("AUTH-32", "AUTH-38")
+async def test_async_on_challenge_synchronous_throw_closes_401() -> None:
+    """A hook that throws synchronously (before a coroutine exists) still closes."""
+    client = _AsyncBodyScriptedClient([(Status.UNAUTHORIZED, 'Bearer realm="x"')])
+
+    class _Boom(AsyncBearerTokenPolicy):
+        def on_challenge(  # type: ignore[override]
+            self, request: Request, response: AsyncResponse
+        ) -> bool:
+            # Raises when *called*, before any awaitable is produced — the
+            # third hook-failure shape the async gate must guard against.
+            del request, response
+            raise RuntimeError("boom")
+
+    policy = _Boom(_StaticAsyncCredential(), "scope-a")
+    async with AsyncPipeline(client, policies=[policy]) as p:
+        with pytest.raises(RuntimeError, match="boom"):
+            await p.run(_request(), DispatchContext(_instr("0" * 15 + "52")))
+    assert client.bodies[0].closed, "synchronous on_challenge throw leaked the 401 body"
+
+
+# --------------------------------------------------------------------------- #
+# Eviction matches the stamped token, sparing a concurrently-refreshed one      #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.req("AUTH-36")
+def test_bearer_eviction_matches_stamped_token_only() -> None:
+    """A stale 401 must not evict a token a concurrent refresh already replaced."""
+    cache = InMemoryTokenCache()
+    fresh = AccessTokenInfo(token="fresh", expires_on=int(time.time()) + 3600)
+
+    class _SwappingClient(HttpClient):
+        def __init__(self) -> None:
+            self.calls: list[Request] = []
+
+        def execute(self, request: Request) -> Response:
+            from dexpace.sdk.core.http.common import Headers
+
+            self.calls.append(request)
+            # A concurrent refresh lands before this stale 401 is handled: the
+            # cache now holds a different, still-valid token.
+            cache.set(("scope-a",), fresh)
+            return Response(
+                request=request,
+                protocol=Protocol.HTTP_1_1,
+                status=Status.UNAUTHORIZED,
+                headers=Headers([]),
+            )
+
+    policy = BearerTokenPolicy(_StaticCredential(token="stale"), "scope-a", cache=cache)
+    with Pipeline(_SwappingClient(), policies=[policy]) as p:
+        p.run(_request(), DispatchContext(_instr("0" * 15 + "45")))
+    # The stale 401 carried "Bearer stale"; eviction keyed on the stamped
+    # header must leave the newer "Bearer fresh" token untouched.
+    surviving = cache.get(("scope-a",))
+    assert surviving is not None
+    assert surviving.token == "fresh"
+
+
+@pytest.mark.req("AUTH-36")
+async def test_async_bearer_eviction_matches_stamped_token_only() -> None:
+    """Async twin: a stale 401 leaves a concurrently-refreshed token intact."""
+    cache = InMemoryTokenCache()
+    fresh = AccessTokenInfo(token="fresh", expires_on=int(time.time()) + 3600)
+
+    class _SwappingAsyncClient(AsyncHttpClient):
+        def __init__(self) -> None:
+            self.calls: list[Request] = []
+
+        async def execute(self, request: Request) -> AsyncResponse:
+            from dexpace.sdk.core.http.common import Headers
+
+            self.calls.append(request)
+            cache.set(("scope-a",), fresh)
+            return AsyncResponse(
+                request=request,
+                protocol=Protocol.HTTP_1_1,
+                status=Status.UNAUTHORIZED,
+                headers=Headers([]),
+            )
+
+    policy = AsyncBearerTokenPolicy(_StaticAsyncCredential(token="stale"), "scope-a", cache=cache)
+    async with AsyncPipeline(_SwappingAsyncClient(), policies=[policy]) as p:
+        await p.run(_request(), DispatchContext(_instr("0" * 15 + "46")))
+    surviving = cache.get(("scope-a",))
+    assert surviving is not None
+    assert surviving.token == "fresh"
+
+
+# --------------------------------------------------------------------------- #
+# Credential hygiene: the HTTPS-only guard fires before any credential is       #
+# fetched or stamped, and before the transport is ever dialed.                  #
+# --------------------------------------------------------------------------- #
+
+
+class _NeverDialClient(HttpClient):
+    """Sync transport that fails loudly if it is ever asked to execute."""
+
+    def __init__(self) -> None:
+        self.dialed = False
+
+    def execute(self, request: Request) -> Response:
+        del request
+        self.dialed = True
+        raise AssertionError("transport dialed despite the HTTPS-only guard")
+
+
+class _NeverDialAsyncClient(AsyncHttpClient):
+    """Async twin of ``_NeverDialClient``."""
+
+    def __init__(self) -> None:
+        self.dialed = False
+
+    async def execute(self, request: Request) -> AsyncResponse:
+        del request
+        self.dialed = True
+        raise AssertionError("transport dialed despite the HTTPS-only guard")
+
+
+class _RecordingTokenCredential:
+    """TokenCredential that records whether ``get_token_info`` was called."""
+
+    def __init__(self, token: str = "s3cr3t-token") -> None:
+        self.calls = 0
+        self._token = token
+
+    def get_token_info(self, *scopes: str, options: object = None) -> AccessTokenInfo:
+        del scopes, options
+        self.calls += 1
+        return AccessTokenInfo(token=self._token, expires_on=int(time.time()) + 3600)
+
+    def close(self) -> None:
+        return None
+
+
+class _RecordingAsyncTokenCredential:
+    """Async twin of ``_RecordingTokenCredential``."""
+
+    def __init__(self, token: str = "s3cr3t-token") -> None:
+        self.calls = 0
+        self._token = token
+
+    async def get_token_info(self, *scopes: str, options: object = None) -> AccessTokenInfo:
+        del scopes, options
+        self.calls += 1
+        return AccessTokenInfo(token=self._token, expires_on=int(time.time()) + 3600)
+
+    async def close(self) -> None:
+        return None
+
+
+class _RecordingKeyCredential(KeyCredential):
+    """KeyCredential that counts reads of ``key`` to prove the guard runs first."""
+
+    def __init__(self, key: str) -> None:
+        super().__init__(key)
+        self.key_reads = 0
+
+    @property
+    def key(self) -> str:
+        self.key_reads += 1
+        return self._key
+
+
+class _RecordingBasicCredential(BasicAuthCredential):
+    """BasicAuthCredential that counts reads of ``encoded`` to prove the order."""
+
+    def __init__(self, username: str, password: str) -> None:
+        super().__init__(username, password)
+        self.encoded_reads = 0
+
+    @property
+    def encoded(self) -> str:
+        self.encoded_reads += 1
+        return self._encoded
+
+
+@pytest.mark.req("AUTH-28", "XCUT-16")
+def test_bearer_policy_https_guard_precedes_fetch_and_dial() -> None:
+    """An http:// URL errors before the credential is fetched or transport dialed."""
+    client = _NeverDialClient()
+    cred = _RecordingTokenCredential()
+    policy = BearerTokenPolicy(cred, "scope-a")
+    with Pipeline(client, policies=[policy]) as p, pytest.raises(ServiceRequestError):
+        p.run(
+            _request("http://insecure.example.com/"),
+            DispatchContext(_instr("0" * 15 + "40")),
+        )
+    assert cred.calls == 0, "credential was fetched before the HTTPS guard fired"
+    assert client.dialed is False, "transport was dialed before the HTTPS guard fired"
+
+
+@pytest.mark.req("AUTH-38")
+async def test_async_bearer_policy_https_guard_precedes_fetch_and_dial() -> None:
+    """Async twin: http:// errors before the async fetch or async dial."""
+    client = _NeverDialAsyncClient()
+    cred = _RecordingAsyncTokenCredential()
+    policy = AsyncBearerTokenPolicy(cred, "scope-a")
+    async with AsyncPipeline(client, policies=[policy]) as p:
+        with pytest.raises(ServiceRequestError):
+            await p.run(
+                _request("http://insecure.example.com/"),
+                DispatchContext(_instr("0" * 15 + "41")),
+            )
+    assert cred.calls == 0, "credential was fetched before the HTTPS guard fired"
+    assert client.dialed is False, "transport was dialed before the HTTPS guard fired"
+
+
+@pytest.mark.req("AUTH-28")
+def test_key_credential_policy_https_guard_precedes_stamp_and_dial() -> None:
+    """An http:// URL errors before the key is read or the transport dialed."""
+    client = _NeverDialClient()
+    cred = _RecordingKeyCredential("hunter2")
+    policy = KeyCredentialPolicy(cred, "X-API-Key")
+    with Pipeline(client, policies=[policy]) as p, pytest.raises(ServiceRequestError):
+        p.run(
+            _request("http://insecure.example.com/"),
+            DispatchContext(_instr("0" * 15 + "42")),
+        )
+    assert cred.key_reads == 0, "key was read before the HTTPS guard fired"
+    assert client.dialed is False, "transport was dialed before the HTTPS guard fired"
+
+
+@pytest.mark.req("AUTH-28")
+def test_basic_auth_policy_https_guard_precedes_stamp_and_dial() -> None:
+    """An http:// URL errors before the payload is read or the transport dialed."""
+    client = _NeverDialClient()
+    cred = _RecordingBasicCredential("user", "pass")
+    policy = BasicAuthPolicy(cred)
+    with Pipeline(client, policies=[policy]) as p, pytest.raises(ServiceRequestError):
+        p.run(
+            _request("http://insecure.example.com/"),
+            DispatchContext(_instr("0" * 15 + "43")),
+        )
+    assert cred.encoded_reads == 0, "payload was read before the HTTPS guard fired"
+    assert client.dialed is False, "transport was dialed before the HTTPS guard fired"
+
+
+def test_key_credential_policy_https_opt_out_stamps_over_http() -> None:
+    """``enforce_https=False`` lets the key policy stamp over plain HTTP."""
+    client = _CapturingClient()
+    policy = KeyCredentialPolicy(KeyCredential("hunter2"), "X-API-Key")
+    with Pipeline(client, policies=[policy]) as p:
+        p.run(
+            _request("http://insecure.example.com/"),
+            DispatchContext(_instr("0" * 15 + "45")),
+            enforce_https=False,
+        )
+    assert client.calls[0].headers.get("x-api-key") == "hunter2"
+
+
+def test_basic_auth_policy_https_opt_out_stamps_over_http() -> None:
+    """``enforce_https=False`` lets the basic policy stamp over plain HTTP."""
+    client = _CapturingClient()
+    policy = BasicAuthPolicy(BasicAuthCredential("user", "pass"))
+    with Pipeline(client, policies=[policy]) as p:
+        p.run(
+            _request("http://insecure.example.com/"),
+            DispatchContext(_instr("0" * 15 + "46")),
+            enforce_https=False,
+        )
+    assert client.calls[0].headers.get("authorization") == "Basic dXNlcjpwYXNz"
+
+
+# --------------------------------------------------------------------------- #
+# Credential hygiene: every credentialed policy redacts secrets in repr/str.    #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.req("AUTH-8")
+def test_credentialed_policy_reprs_redact_secrets() -> None:
+    """Render every credentialed policy and grep for the literal secrets."""
+    secret_key = "hunter2-key"
+    secret_user = "alice-user"
+    secret_pass = "hunter2-pass"
+    secret_token = "s3cr3t-token"
+    encoded = BasicAuthCredential(secret_user, secret_pass).encoded
+    policies = [
+        KeyCredentialPolicy(KeyCredential(secret_key), "X-API-Key", prefix="SharedKey"),
+        BasicAuthPolicy(BasicAuthCredential(secret_user, secret_pass)),
+        BearerTokenPolicy(_RecordingTokenCredential(secret_token), "scope-a"),
+        AsyncBearerTokenPolicy(_RecordingAsyncTokenCredential(secret_token), "scope-a"),
+    ]
+    needles = [secret_key, secret_user, secret_pass, secret_token, encoded]
+    for policy in policies:
+        for rendered in (repr(policy), str(policy)):
+            for needle in needles:
+                assert needle not in rendered, (
+                    f"{type(policy).__name__} leaked a secret in {rendered!r}"
+                )
+
+
+# --------------------------------------------------------------------------- #
+# Credential hygiene: blank secrets are rejected at construction, not first use. #
+# --------------------------------------------------------------------------- #
+
+
+def test_key_credential_policy_rejects_blank_secret_at_construction() -> None:
+    with pytest.raises((TypeError, ValueError)):
+        KeyCredentialPolicy(KeyCredential(""), "X-API-Key")
+
+
+def test_basic_auth_policy_rejects_blank_secret_at_construction() -> None:
+    with pytest.raises(ValueError):
+        BasicAuthPolicy(BasicAuthCredential("user", ""))
+    with pytest.raises(ValueError):
+        BasicAuthPolicy(BasicAuthCredential("", "pass"))
+
+
+# --------------------------------------------------------------------------- #
+# Credential hygiene: KeyCredentialPolicy header/prefix shape.                  #
+# --------------------------------------------------------------------------- #
+
+
+def test_key_credential_policy_rejects_empty_header_name() -> None:
+    with pytest.raises(ValueError):
+        KeyCredentialPolicy(KeyCredential("k"), "")
+
+
+def test_key_credential_policy_rejects_non_key_credential() -> None:
+    with pytest.raises(TypeError):
+        KeyCredentialPolicy(object(), "X-API-Key")  # type: ignore[arg-type]
+
+
+@pytest.mark.req("AUTH-26")
+def test_key_credential_policy_no_prefix_by_default() -> None:
+    client = _CapturingClient()
+    policy = KeyCredentialPolicy(KeyCredential("k"), "X-API-Key")
+    with Pipeline(client, policies=[policy]) as p:
+        p.run(_request(), DispatchContext(_instr("0" * 15 + "47")))
+    assert client.calls[0].headers.get("x-api-key") == "k"
+
+
+# --------------------------------------------------------------------------- #
+# Credential hygiene: key-style policies/credentials are identity-equal, while  #
+# the bearer-style access-token value object keeps value equality.              #
+# --------------------------------------------------------------------------- #
+
+
+def test_key_style_policies_use_identity_equality() -> None:
+    """Two policies with the same key value must not compare equal."""
+    a = KeyCredentialPolicy(KeyCredential("same"), "X-API-Key")
+    b = KeyCredentialPolicy(KeyCredential("same"), "X-API-Key")
+    assert a == a
+    assert a != b
+
+
+@pytest.mark.req("AUTH-8")
+def test_key_style_credentials_use_identity_equality() -> None:
+    assert KeyCredential("same") != KeyCredential("same")
+    assert BasicAuthCredential("u", "p") != BasicAuthCredential("u", "p")
+
+
+@pytest.mark.req("AUTH-8")
+def test_bearer_style_access_token_uses_value_equality() -> None:
+    a = AccessTokenInfo(token="t", expires_on=100, token_type="Bearer")
+    b = AccessTokenInfo(token="t", expires_on=100, token_type="Bearer")
+    assert a == b

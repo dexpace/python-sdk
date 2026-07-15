@@ -13,6 +13,7 @@ from dexpace.sdk.core.pipeline.stage import Stage
 
 
 class TestStage:
+    @pytest.mark.req("PIPE-2", "PIPE-3", "PIPE-4")
     @pytest.mark.parametrize(
         "stage",
         [
@@ -28,6 +29,7 @@ class TestStage:
     def test_pillar_stages(self, stage: Stage) -> None:
         assert stage.is_pillar
 
+    @pytest.mark.req("PIPE-3")
     @pytest.mark.parametrize(
         "stage",
         [
@@ -45,6 +47,7 @@ class TestStage:
     def test_non_pillar_stages(self, stage: Stage) -> None:
         assert not stage.is_pillar
 
+    @pytest.mark.req("PIPE-2", "PIPE-37")
     def test_stage_order(self) -> None:
         assert Stage.OPERATION < Stage.REDIRECT < Stage.RETRY < Stage.AUTH
         assert Stage.AUTH < Stage.LOGGING < Stage.SEND

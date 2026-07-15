@@ -122,6 +122,7 @@ async def test_async_non_success_status_raises() -> None:
     assert len(script.requests) == 1
 
 
+@pytest.mark.req("SSE-41")
 async def test_async_cancellation_propagates_and_closes() -> None:
     body = _AsyncDropBody([b"data: hi\n\n"], block=True)
     script = _AsyncScript([_response(body)])
@@ -179,3 +180,17 @@ async def test_async_honours_retry_then_budget() -> None:
             pass
 
     assert clock.sleeps == [1.0, 2.0]
+
+
+@pytest.mark.req("SSE-32")
+async def test_async_success_response_without_body_fails_loudly() -> None:
+    # A body-less (but successful) SSE response is a protocol violation: the
+    # async connection fails loudly rather than silently reconnecting.
+    script = _AsyncScript([_response(None, status=Status.OK)])
+    conn = AsyncSseConnection(script, _request(), clock=_RecordingAsyncClock(), rand=_LowJitter())
+
+    with pytest.raises(ServiceResponseError, match="no body"):
+        async for _ in conn:
+            pass
+
+    assert len(script.requests) == 1  # no reconnect attempted

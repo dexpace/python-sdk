@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from itertools import pairwise
 
@@ -14,6 +15,7 @@ from dexpace.sdk.core.util import (
     ASYNC_SYSTEM_CLOCK,
     SYSTEM_CLOCK,
     AsyncClock,
+    CancellationToken,
     Clock,
 )
 from dexpace.sdk.core.util.clock import _AsyncSystemClock, _SystemClock
@@ -21,6 +23,7 @@ from dexpace.sdk.core.util.clock import _AsyncSystemClock, _SystemClock
 from ..conftest import FakeClock
 
 
+@pytest.mark.req("CFG-15")
 def test_system_clock_now_advances() -> None:
     """``now()`` returns wall-clock time that advances across a sleep."""
     first = SYSTEM_CLOCK.now()
@@ -29,6 +32,7 @@ def test_system_clock_now_advances() -> None:
     assert second > first
 
 
+@pytest.mark.req("CFG-16")
 def test_system_clock_monotonic_non_decreasing() -> None:
     """``monotonic()`` never goes backwards across repeated reads."""
     samples = [SYSTEM_CLOCK.monotonic() for _ in range(50)]
@@ -92,6 +96,7 @@ def test_async_system_clock_now_and_monotonic() -> None:
     assert b >= a
 
 
+@pytest.mark.req("CFG-15")
 def test_clock_protocol_satisfied_by_system_clock() -> None:
     """``SYSTEM_CLOCK`` structurally satisfies the `Clock` protocol."""
     assert isinstance(SYSTEM_CLOCK, Clock)
@@ -127,11 +132,13 @@ def test_fake_clock_advance(fake_clock: FakeClock) -> None:
     assert fake_clock.now() == pytest.approx(3.0)
 
 
+@pytest.mark.req("CFG-15")
 def test_fake_clock_satisfies_clock_protocol(fake_clock: FakeClock) -> None:
     """``FakeClock`` is structurally a `Clock`."""
     assert isinstance(fake_clock, Clock)
 
 
+@pytest.mark.req("CFG-16")
 def test_fake_clock_monotonic_does_not_decrease_on_negative_advance() -> None:
     """``advance(-delta)`` moves wall back but monotonic is preserved."""
     clock = FakeClock(start=10.0)
@@ -146,3 +153,77 @@ def test_fake_clock_sleep_advances_both_wall_and_monotonic() -> None:
     clock.sleep(5.0)
     assert clock.now() == pytest.approx(5.0)
     assert clock.monotonic() == pytest.approx(5.0)
+
+
+# ---------------------------------------------------------------------------
+# CancellationToken — interruptible sleep
+
+
+def test_cancellation_token_starts_uncancelled() -> None:
+    token = CancellationToken()
+    assert token.cancelled is False
+
+
+def test_cancellation_token_cancel_sets_flag() -> None:
+    token = CancellationToken()
+    token.cancel()
+    assert token.cancelled is True
+
+
+def test_cancellation_token_cancel_is_idempotent() -> None:
+    token = CancellationToken()
+    token.cancel()
+    token.cancel()
+    assert token.cancelled is True
+
+
+def test_sleep_completes_when_not_cancelled() -> None:
+    """A short sleep runs to completion and reports ``True``."""
+    token = CancellationToken()
+    start = time.monotonic()
+    completed = token.sleep(0.05)
+    elapsed = time.monotonic() - start
+    assert completed is True
+    assert elapsed >= 0.04
+
+
+def test_sleep_returns_immediately_when_already_cancelled() -> None:
+    token = CancellationToken()
+    token.cancel()
+    start = time.monotonic()
+    completed = token.sleep(10.0)
+    elapsed = time.monotonic() - start
+    assert completed is False
+    assert elapsed < 0.05
+
+
+@pytest.mark.req("CFG-17")
+def test_sleep_wakes_early_when_cancelled_from_another_thread() -> None:
+    token = CancellationToken()
+    threading.Timer(0.02, token.cancel).start()
+    start = time.monotonic()
+    completed = token.sleep(10.0)
+    elapsed = time.monotonic() - start
+    assert completed is False
+    # Cancelled well before the 10s budget would have elapsed.
+    assert elapsed < 1.0
+
+
+@pytest.mark.req("CFG-17")
+def test_sleep_zero_is_noop_and_completes() -> None:
+    token = CancellationToken()
+    assert token.sleep(0.0) is True
+
+
+@pytest.mark.req("CFG-17")
+def test_sleep_rejects_negative_duration() -> None:
+    token = CancellationToken()
+    with pytest.raises(ValueError):
+        token.sleep(-1.0)
+
+
+@pytest.mark.req("CFG-17")
+def test_sleep_rejects_nan_duration() -> None:
+    token = CancellationToken()
+    with pytest.raises(ValueError):
+        token.sleep(float("nan"))

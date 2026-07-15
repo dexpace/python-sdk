@@ -7,17 +7,20 @@ from __future__ import annotations
 
 import asyncio
 import ssl
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest
 
 from dexpace.sdk.core.errors import (
     ServiceRequestError,
+    ServiceRequestTimeoutError,
     ServiceResponseError,
     ServiceResponseTimeoutError,
 )
 from dexpace.sdk.core.http.common import Url
 from dexpace.sdk.core.http.common.headers import Headers
+from dexpace.sdk.core.http.common.media_type import MediaType
 from dexpace.sdk.core.http.common.protocol import Protocol
 from dexpace.sdk.core.http.request import Method, Request, RequestBody
 from dexpace.sdk.core.http.response import Status
@@ -225,6 +228,7 @@ def _header_value(head: list[str], name: str) -> str | None:
     return None
 
 
+@pytest.mark.req("TRANSPORT-11")
 async def test_host_header_includes_non_default_port() -> None:
     # A non-default port must appear in the Host header (RFC 9112 §3.2).
     sink: dict[str, list[str]] = {}
@@ -240,6 +244,7 @@ async def test_host_header_includes_non_default_port() -> None:
     assert _header_value(sink["head"], "host") == f"127.0.0.1:{port}"
 
 
+@pytest.mark.req("TRANSPORT-26")
 async def test_empty_post_body_sends_content_length_zero() -> None:
     # A body-bearing method with no payload must advertise
     # Content-Length: 0 (RFC 9110 §8.6).
@@ -255,6 +260,7 @@ async def test_empty_post_body_sends_content_length_zero() -> None:
     assert _header_value(sink["head"], "content-length") == "0"
 
 
+@pytest.mark.req("TRANSPORT-26")
 async def test_empty_get_omits_content_length() -> None:
     # A GET with no body must not gain a spurious Content-Length: 0.
     sink: dict[str, list[str]] = {}
@@ -427,15 +433,38 @@ async def test_in_range_unregistered_status_is_preserved() -> None:
             await anext(gen)
 
 
-async def test_invalid_status_raises_service_response_error() -> None:
-    # A genuinely out-of-range status (999) is invalid HTTP and must raise.
-    async def bad_status(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+@pytest.mark.req("TRANSPORT-24")
+async def test_out_of_range_status_surfaces_with_readable_body() -> None:
+    # TRANSPORT-24: an out-of-range status (999) is total over integers now —
+    # Status synthesizes a member rather than raising, so the response
+    # surfaces intact instead of being discarded.
+    async def weird_status(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         await _read_request_head(reader)
         writer.write(b"HTTP/1.1 999 Nope\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
         await writer.drain()
         writer.close()
 
-    gen = _serve(bad_status)
+    gen = _serve(weird_status)
+    base = await anext(gen)
+    try:
+        async with AsyncioHttpClient(timeout=5.0) as client:
+            response = await client.execute(Request(method=Method.GET, url=Url.parse(f"{base}/")))
+            assert int(response.status) == 999
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await anext(gen)
+
+
+async def test_non_numeric_status_token_raises_service_response_error() -> None:
+    # A malformed status line (non-numeric token) is still a real parse
+    # failure, distinct from Status's totality over valid integers.
+    async def malformed_status(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await _read_request_head(reader)
+        writer.write(b"HTTP/1.1 OK Nope\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    gen = _serve(malformed_status)
     base = await anext(gen)
     try:
         async with AsyncioHttpClient(timeout=5.0) as client:
@@ -460,6 +489,183 @@ async def test_protocol_version_reported_from_status_line() -> None:
         async with AsyncioHttpClient(timeout=5.0) as client:
             response = await client.execute(Request(method=Method.GET, url=Url.parse(f"{base}/")))
             assert response.protocol is Protocol.HTTP_1_0
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await anext(gen)
+
+
+async def test_content_type_derived_from_body_media_type() -> None:
+    # A body with a declared media type but no caller-set Content-Type must
+    # surface that type on the wire.
+    sink: dict[str, list[str]] = {}
+    gen = _serve(await _collect_head(sink))
+    base = await anext(gen)
+    try:
+        async with AsyncioHttpClient(timeout=5.0) as client:
+            await client.execute(
+                Request(
+                    method=Method.POST,
+                    url=Url.parse(f"{base}/"),
+                    body=RequestBody.from_bytes(b"{}", MediaType.of("application", "json")),
+                )
+            )
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await anext(gen)
+    assert _header_value(sink["head"], "content-type") == "application/json"
+
+
+async def test_explicit_content_type_is_authoritative() -> None:
+    sink: dict[str, list[str]] = {}
+    gen = _serve(await _collect_head(sink))
+    base = await anext(gen)
+    try:
+        async with AsyncioHttpClient(timeout=5.0) as client:
+            await client.execute(
+                Request(
+                    method=Method.POST,
+                    url=Url.parse(f"{base}/"),
+                    headers=Headers([("Content-Type", "text/plain")]),
+                    body=RequestBody.from_bytes(b"{}", MediaType.of("application", "json")),
+                )
+            )
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await anext(gen)
+    assert _header_value(sink["head"], "content-type") == "text/plain"
+
+
+async def test_stale_content_length_header_is_recomputed() -> None:
+    # A caller-supplied Content-Length that disagrees with the real body must
+    # never reach the wire: trusting it would make the peer wait for bytes
+    # that never arrive.
+    sink: dict[str, list[str]] = {}
+    gen = _serve(await _collect_head(sink))
+    base = await anext(gen)
+    try:
+        async with AsyncioHttpClient(timeout=5.0) as client:
+            await client.execute(
+                Request(
+                    method=Method.POST,
+                    url=Url.parse(f"{base}/"),
+                    headers=Headers([("Content-Length", "999")]),
+                    body=RequestBody.from_bytes(b"hello world"),
+                )
+            )
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await anext(gen)
+    assert _header_value(sink["head"], "content-length") == "11"
+
+
+@pytest.mark.req("ASYNC-19")
+async def test_per_call_timeout_overrides_client_default() -> None:
+    # A per-request timeout must reach the connect wait_for call, not just
+    # the client's own constructor default. Proven by racing a *short*
+    # per-call timeout against a blackhole address and a *long* constructor
+    # default: if the override were ignored, this would hang for the full
+    # 30s default instead of failing in well under a second.
+    start = time.monotonic()
+    async with AsyncioHttpClient(timeout=30.0) as client:
+        with pytest.raises(ServiceRequestTimeoutError):
+            await asyncio.wait_for(
+                client.execute(
+                    Request(
+                        method=Method.GET,
+                        url=Url.parse("http://10.255.255.1:81/"),
+                        timeout=0.3,
+                    )
+                ),
+                timeout=5.0,
+            )
+    assert time.monotonic() - start < 5.0
+
+
+async def test_response_content_type_is_parsed() -> None:
+    # The response body must expose the declared Content-Type, not always
+    # None.
+    async def json_response(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await _read_request_head(reader)
+        body = b"{}"
+        writer.write(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+            + str(len(body)).encode()
+            + b"\r\nConnection: close\r\n\r\n"
+            + body
+        )
+        await writer.drain()
+        writer.close()
+
+    gen = _serve(json_response)
+    base = await anext(gen)
+    try:
+        async with AsyncioHttpClient(timeout=5.0) as client:
+            response = await client.execute(Request(method=Method.GET, url=Url.parse(f"{base}/")))
+            body = response.body
+            assert body is not None
+            assert body.media_type() == MediaType.of("application", "json")
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await anext(gen)
+
+
+@pytest.mark.req("ASYNC-7", "TRANSPORT-7")
+async def test_cancelled_task_propagates_natively_and_closes_connection() -> None:
+    # Cancelling the task running execute() must propagate asyncio.CancelledError
+    # unmodified (not swallowed, not converted to an SdkError) and must still
+    # tear down the underlying connection.
+    accepted = asyncio.Event()
+
+    async def stall(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await _read_request_head(reader)
+        accepted.set()
+        await asyncio.sleep(30.0)
+        writer.close()
+
+    gen = _serve(stall)
+    base = await anext(gen)
+    try:
+        client = AsyncioHttpClient(timeout=30.0)
+        task = asyncio.create_task(
+            client.execute(Request(method=Method.GET, url=Url.parse(f"{base}/")))
+        )
+        await accepted.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await anext(gen)
+
+
+@pytest.mark.req("TRANSPORT-14")
+async def test_malformed_inbound_header_dropped_others_preserved() -> None:
+    # A single malformed header name (one `Headers` rejects, e.g. containing
+    # a space) must be dropped without losing the good headers before *or*
+    # after it, and without aborting the exchange. `Headers`' bulk
+    # constructor raises on the first invalid entry rather than skipping it,
+    # so this exercises the per-entry lenient construction in
+    # `_read_headers`.
+    async def malformed(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await _read_request_head(reader)
+        body = b"hi"
+        writer.write(
+            b"HTTP/1.1 200 OK\r\nX-Good: ok\r\nBad Name: x\r\nX-After: yes\r\nContent-Length: "
+            + str(len(body)).encode()
+            + b"\r\nConnection: close\r\n\r\n"
+            + body
+        )
+        await writer.drain()
+        writer.close()
+
+    gen = _serve(malformed)
+    base = await anext(gen)
+    try:
+        async with AsyncioHttpClient(timeout=5.0) as client:
+            response = await client.execute(Request(method=Method.GET, url=Url.parse(f"{base}/")))
+            assert response.headers.get("x-good") == "ok"
+            assert response.headers.get("x-after") == "yes"
+            assert "bad name" not in response.headers.names()
     finally:
         with pytest.raises(StopAsyncIteration):
             await anext(gen)

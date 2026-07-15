@@ -1,6 +1,27 @@
 {
   "dexpace-sdk-core": {
     "definitions": {
+      "dexpace.sdk.core.client._async_to_sync": {
+        "AsyncToSyncHttpClient": {
+          "bases": [
+            "HttpClient"
+          ],
+          "methods": {
+            "close": "close(self) -> None",
+            "execute": "execute(self, request: Request) -> Response"
+          }
+        }
+      },
+      "dexpace.sdk.core.client._sync_to_async": {
+        "SyncToAsyncHttpClient": {
+          "bases": [
+            "AsyncHttpClient"
+          ],
+          "methods": {
+            "execute": "async execute(self, request: Request) -> AsyncResponse"
+          }
+        }
+      },
       "dexpace.sdk.core.client.async_http_client": {
         "AsyncHttpClient": {
           "bases": [
@@ -22,6 +43,156 @@
           }
         }
       },
+      "dexpace.sdk.core.codegen._api_version_policy": {
+        "ApiVersionPolicy": {
+          "bases": [
+            "Policy"
+          ],
+          "methods": {
+            "send": "send(self, request: Request, ctx: PipelineContext) -> Response"
+          }
+        }
+      },
+      "dexpace.sdk.core.codegen._async_api_version_policy": {
+        "AsyncApiVersionPolicy": {
+          "bases": [
+            "AsyncPolicy"
+          ],
+          "methods": {
+            "send": "async send(self, request: Request, ctx: PipelineContext) -> AsyncResponse"
+          }
+        }
+      },
+      "dexpace.sdk.core.codegen._pure.options": {
+        "plan_options": "plan_options(auth: object | None, call_options: Mapping[str, Any]) -> Mapping[str, Any]"
+      },
+      "dexpace.sdk.core.codegen._pure.requests": {
+        "plan_request": "plan_request(op: Operation, input: OperationInput, base_url: str | Url, serde: Serde | None) -> Request"
+      },
+      "dexpace.sdk.core.codegen._pure.results": {
+        "plan_result": "plan_result(handler: H | None, default_handler: H, response_type: _Witness | None, default_witness: _Witness) -> tuple[H, _Witness] | None"
+      },
+      "dexpace.sdk.core.codegen.assembly": {
+        "assemble": "assemble(op: Operation, input: OperationInput, base_url: str | Url, *, serde: Serde | None) -> Request"
+      },
+      "dexpace.sdk.core.codegen.async_merge_config": {
+        "merge_async_config": "merge_async_config(defaults: ServiceDefaults, user: ServiceDefaults | None, *, transport: AsyncHttpClient | None, pipeline: AsyncPipeline | None, redirect: AsyncRedirectPolicy | None, idempotency: AsyncIdempotencyPolicy | None, retry: AsyncRetryPolicy | None, set_date: AsyncSetDatePolicy | None, auth: AsyncPolicy | None, logging: AsyncLoggingPolicy | None, tracing: AsyncTracingPolicy | None) -> dict[str, Any]"
+      },
+      "dexpace.sdk.core.codegen.async_response_handler": {
+        "AsyncDecodeSuccess": {
+          "bases": [],
+          "methods": {}
+        },
+        "AsyncResponseHandler": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.codegen.async_service_core": {
+        "AsyncServiceCore": {
+          "bases": [],
+          "methods": {
+            "aclose": "async aclose(self) -> None",
+            "events": "events(self, op: Operation, input: OperationInput, mapper: SseMapper[T], *, auth: AuthDescriptor | AsyncPolicy | None, **call_options: Any) -> AsyncTypedSseConnection[T]",
+            "execute": "async execute(self, op: Operation, input: OperationInput, *, response_type: _Witness[Any] | None, handler: AsyncResponseHandler | None, auth: AuthDescriptor | AsyncPolicy | None, **call_options: Any) -> Any",
+            "execute_request": "async execute_request(self, request: Request, *, response_type: _Witness[Any] | None, handler: AsyncResponseHandler | None, auth: AuthDescriptor | AsyncPolicy | None, **call_options: Any) -> Any",
+            "paginate": "paginate(self, op: Operation, input: OperationInput, strategy: PaginationStrategy[T], *, max_pages: int | None, auth: AuthDescriptor | AsyncPolicy | None, **call_options: Any) -> AsyncPaginator[T]"
+          }
+        }
+      },
+      "dexpace.sdk.core.codegen.auth": {
+        "AuthDescriptor": {
+          "bases": [],
+          "methods": {
+            "of": "of(cls, *requirements: AuthRequirement) -> AuthDescriptor"
+          }
+        },
+        "AuthRegistry": {
+          "bases": [],
+          "methods": {
+            "scheme_for": "scheme_for(self, requirement: AuthRequirement) -> AuthScheme[P] | None"
+          }
+        },
+        "AuthRequirement": {
+          "bases": [],
+          "methods": {}
+        },
+        "AuthResolutionError": {
+          "bases": [
+            "SdkError"
+          ],
+          "methods": {}
+        },
+        "AuthScheme": {
+          "bases": [],
+          "methods": {
+            "satisfies": "satisfies(self, requirement: AuthRequirement) -> bool"
+          }
+        },
+        "AuthTier": {
+          "bases": [
+            "Enum"
+          ],
+          "methods": {}
+        },
+        "ResolvedAuth": {
+          "bases": [],
+          "methods": {}
+        },
+        "resolve_auth": "resolve_auth(*, per_call: AuthDescriptor | None, operation: AuthDescriptor | None, client: AuthDescriptor | None, registry: AuthRegistry[P]) -> ResolvedAuth[P] | None",
+        "select_tier": "select_tier(*, per_call: AuthDescriptor | None, operation: AuthDescriptor | None, client: AuthDescriptor | None) -> tuple[AuthTier, AuthDescriptor] | None"
+      },
+      "dexpace.sdk.core.codegen.merge_config": {
+        "merge_config": "merge_config(defaults: ServiceDefaults, user: ServiceDefaults | None, *, transport: HttpClient | None, pipeline: Pipeline | None, redirect: RedirectPolicy | None, idempotency: IdempotencyPolicy | None, retry: RetryPolicy | None, set_date: SetDatePolicy | None, auth: Policy | None, logging: LoggingPolicy | None, tracing: TracingPolicy | None) -> dict[str, Any]"
+      },
+      "dexpace.sdk.core.codegen.operation": {
+        "Operation": {
+          "bases": [],
+          "methods": {}
+        },
+        "OperationInput": {
+          "bases": [],
+          "methods": {}
+        }
+      },
+      "dexpace.sdk.core.codegen.service_core": {
+        "ServiceCore": {
+          "bases": [],
+          "methods": {
+            "close": "close(self) -> None",
+            "events": "events(self, op: Operation, input: OperationInput, mapper: SseMapper[T], *, auth: AuthDescriptor | Policy | None, **call_options: Any) -> TypedSseConnection[T]",
+            "execute": "execute(self, op: Operation, input: OperationInput, *, response_type: _Witness[Any] | None, handler: ResponseHandler | None, auth: AuthDescriptor | Policy | None, **call_options: Any) -> Any",
+            "execute_request": "execute_request(self, request: Request, *, response_type: _Witness[Any] | None, handler: ResponseHandler | None, auth: AuthDescriptor | Policy | None, **call_options: Any) -> Any",
+            "paginate": "paginate(self, op: Operation, input: OperationInput, strategy: PaginationStrategy[T], *, max_pages: int | None, auth: AuthDescriptor | Policy | None, **call_options: Any) -> Paginator[T]"
+          }
+        }
+      },
+      "dexpace.sdk.core.codegen.service_defaults": {
+        "ServiceDefaults": {
+          "bases": [],
+          "methods": {}
+        },
+        "merge_service_defaults": "merge_service_defaults(defaults: ServiceDefaults, user: ServiceDefaults | None) -> ServiceDefaults"
+      },
+      "dexpace.sdk.core.codegen.status_error_map": {
+        "StatusErrorMap": {
+          "bases": [],
+          "methods": {
+            "for_status": "for_status(self, status: int) -> type[HttpResponseError] | None",
+            "raise_for": "raise_for(self, response: Response) -> NoReturn"
+          }
+        }
+      },
+      "dexpace.sdk.core.config.build_descriptor": {
+        "BuildDescriptor": {
+          "bases": [],
+          "methods": {
+            "resolve": "resolve(cls, distribution: str) -> Self"
+          }
+        }
+      },
       "dexpace.sdk.core.config.configuration": {
         "Configuration": {
           "bases": [],
@@ -30,7 +201,10 @@
             "get": "get(self, name: str, default: str | None) -> str | None",
             "get_bool": "get_bool(self, name: str, default: bool) -> bool",
             "get_duration": "get_duration(self, name: str, default_seconds: float) -> float",
-            "get_int": "get_int(self, name: str, default: int) -> int"
+            "get_int": "get_int(self, name: str, default: int) -> int",
+            "get_raw": "get_raw(self, name: str, default: str | None) -> str | None",
+            "with_override": "with_override(self, name: str, value: str) -> Configuration",
+            "without_override": "without_override(self, name: str) -> Configuration"
           }
         },
         "ConfigurationBuilder": {
@@ -38,11 +212,28 @@
           "methods": {
             "build": "build(self) -> Configuration",
             "env": "env(self, source: EnvSource) -> Self",
+            "props": "props(self, source: PropertySource) -> Self",
             "put": "put(self, name: str, value: str) -> Self"
           }
-        }
+        },
+        "default_configuration": "default_configuration() -> Configuration",
+        "set_default_configuration": "set_default_configuration(config: Configuration) -> None"
       },
       "dexpace.sdk.core.errors.base": {
+        "NetworkError": {
+          "bases": [
+            "OSError",
+            "SdkError"
+          ],
+          "methods": {}
+        },
+        "RequestCancelledError": {
+          "bases": [
+            "OSError",
+            "SdkError"
+          ],
+          "methods": {}
+        },
         "SdkError": {
           "bases": [
             "Exception"
@@ -51,7 +242,7 @@
         },
         "ServiceRequestError": {
           "bases": [
-            "SdkError"
+            "NetworkError"
           ],
           "methods": {}
         },
@@ -96,7 +287,8 @@
             "SdkError"
           ],
           "methods": {
-            "body_snapshot": "body_snapshot(self, max_bytes: int | None) -> bytes"
+            "body_snapshot": "body_snapshot(self, max_bytes: int | None) -> bytes",
+            "read_body": "read_body(self, max_bytes: int) -> bytes"
           }
         },
         "ResourceExistsError": {
@@ -135,6 +327,12 @@
       "dexpace.sdk.core.errors.serialization": {
         "DeserializationError": {
           "bases": [
+            "SerdeError"
+          ],
+          "methods": {}
+        },
+        "SerdeError": {
+          "bases": [
             "SdkError",
             "ValueError"
           ],
@@ -142,8 +340,7 @@
         },
         "SerializationError": {
           "bases": [
-            "SdkError",
-            "ValueError"
+            "SerdeError"
           ],
           "methods": {}
         }
@@ -174,6 +371,16 @@
           "methods": {}
         }
       },
+      "dexpace.sdk.core.http.auth._refresh": {
+        "RefreshZone": {
+          "bases": [
+            "Enum"
+          ],
+          "methods": {}
+        },
+        "classify": "classify(token: AccessTokenInfo | None, *, now: float, margin: float) -> RefreshZone",
+        "validate_fetched": "validate_fetched(token: AccessTokenInfo | None, *, now: float) -> AccessTokenInfo"
+      },
       "dexpace.sdk.core.http.auth.access_token": {
         "AccessTokenInfo": {
           "bases": [],
@@ -194,7 +401,7 @@
           "bases": [],
           "methods": {}
         },
-        "parse_challenges": "parse_challenges(header_value: str) -> list[AuthenticateChallenge]"
+        "parse_challenges": "parse_challenges(header_value: str | Iterable[str]) -> list[AuthenticateChallenge]"
       },
       "dexpace.sdk.core.http.auth.challenge_handler": {
         "BasicChallengeHandler": {
@@ -327,6 +534,12 @@
           }
         }
       },
+      "dexpace.sdk.core.http.common._query_codec": {
+        "parse_query": "parse_query(raw: str) -> list[tuple[str, str]]",
+        "remove_query_param": "remove_query_param(raw_query: str, name: str) -> str",
+        "render_query": "render_query(pairs: Iterable[tuple[str, str]]) -> str",
+        "splice_query": "splice_query(raw_query: str, name: str, value: str) -> str"
+      },
       "dexpace.sdk.core.http.common.etag": {
         "ETag": {
           "bases": [],
@@ -345,6 +558,7 @@
             "get": "get(self, name: _Name, default: str | None) -> str | None",
             "items": "items(self) -> tuple[tuple[str, tuple[str, ...]], ...]",
             "names": "names(self) -> tuple[str, ...]",
+            "outbound": "outbound(cls, entries: _Entries | None) -> Self",
             "values": "values(self, name: _Name) -> tuple[str, ...]",
             "with_added": "with_added(self, name: _Name, value: str) -> Self",
             "with_merged": "with_merged(self, other: Headers) -> Self",
@@ -506,6 +720,16 @@
           }
         }
       },
+      "dexpace.sdk.core.http.request._multipart_framing": {
+        "closing_delimiter": "closing_delimiter(boundary: str) -> bytes",
+        "content_length": "content_length(fields: Sequence[MultipartField], boundary: str) -> int",
+        "escape_quoted": "escape_quoted(value: str) -> str",
+        "iter_frames": "iter_frames(fields: Sequence[MultipartField], boundary: str, chunk_size: int) -> Iterator[bytes]",
+        "iter_value_bytes": "iter_value_bytes(value: bytes | str | RequestBody, chunk_size: int) -> Iterator[bytes]",
+        "part_header_block": "part_header_block(part: MultipartField, boundary: str) -> bytes",
+        "render_frames": "render_frames(fields: Sequence[MultipartField], boundary: str, *, max_bytes: int | None, chunk_size: int) -> bytes",
+        "value_length": "value_length(value: bytes | str | RequestBody) -> int"
+      },
       "dexpace.sdk.core.http.request.async_request_body": {
         "AsyncRequestBody": {
           "bases": [
@@ -589,7 +813,8 @@
         "MultipartField": {
           "bases": [],
           "methods": {
-            "with_utf8_filename": "with_utf8_filename(cls, *, name: str, value: bytes | str, filename: str, media_type: MediaType | None, headers: Sequence[tuple[str, str]], ascii_fallback: str) -> Self"
+            "is_replayable": "is_replayable(self) -> bool",
+            "with_utf8_filename": "with_utf8_filename(cls, *, name: str, value: bytes | str | RequestBody, filename: str, media_type: MediaType | None, headers: Sequence[tuple[str, str]], ascii_fallback: str) -> Self"
           }
         },
         "MultipartRequestBody": {
@@ -599,6 +824,7 @@
           "methods": {
             "boundary": "boundary(self) -> str",
             "content_length": "content_length(self) -> int",
+            "fields": "fields(self) -> tuple[MultipartField, ...]",
             "is_replayable": "is_replayable(self) -> bool",
             "iter_bytes": "iter_bytes(self, chunk_size: int) -> Iterator[bytes]",
             "media_type": "media_type(self) -> MediaType | None",
@@ -639,6 +865,22 @@
             "media_type": "media_type(self) -> MediaType | None",
             "to_replayable": "to_replayable(self) -> RequestBody",
             "write_to": "write_to(self, stream: BinaryIO, chunk_size: int) -> int"
+          }
+        }
+      },
+      "dexpace.sdk.core.http.response.async_loggable_response_body": {
+        "AsyncLoggableResponseBody": {
+          "bases": [
+            "AsyncResponseBody"
+          ],
+          "methods": {
+            "aiter_bytes": "aiter_bytes(self, chunk_size: int) -> AsyncIterator[bytes]",
+            "captured_size": "captured_size(self) -> int",
+            "close": "async close(self) -> None",
+            "content_length": "content_length(self) -> int",
+            "error": "async error(self) -> BaseException | None",
+            "media_type": "media_type(self) -> MediaType | None",
+            "snapshot": "async snapshot(self, max_bytes: int | None) -> bytes"
           }
         }
       },
@@ -684,6 +926,7 @@
             "captured_size": "captured_size(self) -> int",
             "close": "close(self) -> None",
             "content_length": "content_length(self) -> int",
+            "error": "error(self) -> BaseException | None",
             "iter_bytes": "iter_bytes(self, chunk_size: int) -> Iterator[bytes]",
             "media_type": "media_type(self) -> MediaType | None",
             "snapshot": "snapshot(self, max_bytes: int | None) -> bytes"
@@ -699,6 +942,7 @@
             "is_redirect": "is_redirect(self) -> bool",
             "is_server_error": "is_server_error(self) -> bool",
             "is_success": "is_success(self) -> bool",
+            "parse": "parse(self, target: type[T], *, serde: Serde | None) -> T",
             "with_body": "with_body(self, body: ResponseBody | None) -> Self",
             "with_header": "with_header(self, name: _Name, value: str) -> Self",
             "with_headers": "with_headers(self, headers: Headers) -> Self",
@@ -776,6 +1020,26 @@
         "parse_async_events": "parse_async_events(chunks: AsyncIterable[bytes]) -> AsyncSseStream",
         "parse_events": "parse_events(chunks: Iterable[bytes]) -> Iterator[SseEvent]"
       },
+      "dexpace.sdk.core.http.sse.typed": {
+        "AsyncTypedSseConnection": {
+          "bases": [],
+          "methods": {
+            "aclose": "async aclose(self) -> None"
+          }
+        },
+        "SseSignal": {
+          "bases": [
+            "Enum"
+          ],
+          "methods": {}
+        },
+        "TypedSseConnection": {
+          "bases": [],
+          "methods": {
+            "close": "close(self) -> None"
+          }
+        }
+      },
       "dexpace.sdk.core.http.webhooks.verification": {
         "InvalidWebhookSignatureError": {
           "bases": [
@@ -795,8 +1059,14 @@
         "ClientLogger": {
           "bases": [],
           "methods": {
+            "at_error": "at_error(self) -> LogEvent",
+            "at_info": "at_info(self) -> LogEvent",
+            "at_level": "at_level(self, level: LogLevel) -> LogEvent",
+            "at_verbose": "at_verbose(self) -> LogEvent",
+            "at_warning": "at_warning(self) -> LogEvent",
             "error": "error(self, message: str, **fields: Any) -> None",
             "info": "info(self, message: str, **fields: Any) -> None",
+            "is_enabled": "is_enabled(self, level: LogLevel) -> bool",
             "log": "log(self, level: LogLevel, message: str, **fields: Any) -> None",
             "verbose": "verbose(self, message: str, **fields: Any) -> None",
             "warning": "warning(self, message: str, **fields: Any) -> None"
@@ -809,14 +1079,37 @@
           "methods": {
             "filter": "filter(self, record: logging.LogRecord) -> bool"
           }
+        },
+        "LogEvent": {
+          "bases": [
+            "ABC"
+          ],
+          "methods": {
+            "add": "add(self, key: str, value: Any) -> Self",
+            "event": "event(self, name: str) -> Self",
+            "log": "log(self, message: str) -> None"
+          }
         }
       },
       "dexpace.sdk.core.instrumentation.correlation": {
+        "activate_span": "activate_span(span: Span) -> TracingScope",
         "bind_correlation": "bind_correlation(*, trace_id: str | None, span_id: str | None) -> Iterator[None]",
+        "bind_to_context": "bind_to_context(func: Callable[P, T]) -> Callable[P, T]",
+        "capture_context": "capture_context() -> Context",
+        "correlation_scope": "correlation_scope(span: Span) -> Iterator[None]",
+        "get_current_span": "get_current_span() -> Span",
         "get_span_id": "get_span_id() -> str | None",
         "get_trace_id": "get_trace_id() -> str | None",
         "set_span_id": "set_span_id(value: str | None) -> Token[str | None]",
         "set_trace_id": "set_trace_id(value: str | None) -> Token[str | None]"
+      },
+      "dexpace.sdk.core.instrumentation.header_redactor": {
+        "HeaderRedactor": {
+          "bases": [],
+          "methods": {
+            "redact": "redact(self, headers: Headers) -> dict[str, str]"
+          }
+        }
       },
       "dexpace.sdk.core.instrumentation.http_tracer": {
         "HttpTracer": {
@@ -849,7 +1142,10 @@
       "dexpace.sdk.core.instrumentation.identifiers": {
         "SpanId": {
           "bases": [],
-          "methods": {}
+          "methods": {
+            "generate": "generate(cls) -> Self",
+            "is_valid": "is_valid(self) -> bool"
+          }
         },
         "TraceFlags": {
           "bases": [],
@@ -857,7 +1153,10 @@
         },
         "TraceId": {
           "bases": [],
-          "methods": {}
+          "methods": {
+            "generate": "generate(cls, id_type: TraceIdType | None) -> Self",
+            "is_valid": "is_valid(self) -> bool"
+          }
         },
         "TraceIdType": {
           "bases": [
@@ -961,7 +1260,8 @@
         "UrlRedactor": {
           "bases": [],
           "methods": {
-            "redact": "redact(self, url: str | Url) -> str"
+            "redact": "redact(self, url: str | Url) -> str",
+            "redact_header_value": "redact_header_value(self, value: str) -> str"
           }
         }
       },
@@ -983,13 +1283,13 @@
         "AsyncPaginator": {
           "bases": [],
           "methods": {
-            "by_page": "async by_page(self) -> AsyncIterator[Page[T]]"
+            "by_page": "by_page(self) -> _AsyncPageView[T]"
           }
         },
         "Paginator": {
           "bases": [],
           "methods": {
-            "by_page": "by_page(self) -> Iterator[Page[T]]"
+            "by_page": "by_page(self) -> _PageView[T]"
           }
         }
       },
@@ -1029,6 +1329,49 @@
           }
         }
       },
+      "dexpace.sdk.core.pipeline._async_recovery": {
+        "afrom_status": "async afrom_status(response: AsyncResponse, *, error_map: Mapping[int, type[HttpResponseError]] | None, max_body_bytes: int) -> Outcome[AsyncResponse]",
+        "amap_success": "async amap_success(outcome: Outcome[AsyncResponse], step: Callable[[AsyncResponse], Awaitable[AsyncResponse]]) -> Outcome[AsyncResponse]",
+        "aproduce": "async aproduce(source: Callable[[], Awaitable[AsyncResponse]]) -> Outcome[AsyncResponse]",
+        "arecover": "async arecover(outcome: Outcome[AsyncResponse], cleanup: Callable[[Outcome[AsyncResponse]], Awaitable[Outcome[AsyncResponse]]]) -> Outcome[AsyncResponse]"
+      },
+      "dexpace.sdk.core.pipeline._outcome": {
+        "Failure": {
+          "bases": [],
+          "methods": {}
+        },
+        "Success": {
+          "bases": [],
+          "methods": {}
+        },
+        "unwrap": "unwrap(outcome: Outcome[R]) -> R"
+      },
+      "dexpace.sdk.core.pipeline._pure.backoff": {
+        "apply_jitter": "apply_jitter(delay: float, rng: random.Random, *, full_jitter: bool, symmetric: float) -> float",
+        "compute_backoff": "compute_backoff(attempt: int, *, base: float, cap: float, multiplier: float, fixed: bool) -> float"
+      },
+      "dexpace.sdk.core.pipeline._pure.classifier": {
+        "Retryable": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {}
+        },
+        "default_status_is_retryable": "default_status_is_retryable(status: int | None) -> bool",
+        "is_retryable": "is_retryable(error: BaseException) -> bool",
+        "status_is_retryable": "status_is_retryable(status: int | None, retryable_statuses: Collection[int]) -> bool"
+      },
+      "dexpace.sdk.core.pipeline._pure.pacing": {
+        "parse_rate_limit_reset": "parse_rate_limit_reset(value: str | None, now: float, *, max_delay: float) -> float | None",
+        "parse_retry_after": "parse_retry_after(value: str | None, now: float, *, max_delay: float) -> float | None",
+        "parse_retry_after_ms": "parse_retry_after_ms(value: str | None, *, max_delay: float) -> float | None"
+      },
+      "dexpace.sdk.core.pipeline._recovery": {
+        "from_status": "from_status(response: Response, *, error_map: Mapping[int, type[HttpResponseError]] | None, max_body_bytes: int) -> Outcome[Response]",
+        "map_success": "map_success(outcome: Outcome[Response], step: Callable[[Response], Response]) -> Outcome[Response]",
+        "produce": "produce(source: Callable[[], Response]) -> Outcome[Response]",
+        "recover": "recover(outcome: Outcome[Response], cleanup: Callable[[Outcome[Response]], Outcome[Response]]) -> Outcome[Response]"
+      },
       "dexpace.sdk.core.pipeline.async_pipeline": {
         "AsyncPipeline": {
           "bases": [],
@@ -1052,11 +1395,14 @@
           "bases": [],
           "methods": {
             "append": "append(self, policy: AsyncPolicy, *, force: bool) -> Self",
+            "append_all": "append_all(self, policies: Iterable[AsyncPolicy], *, force: bool) -> Self",
+            "batch": "batch(self) -> Iterator[Self]",
             "build": "build(self) -> AsyncPipeline",
             "from_pipeline": "from_pipeline(cls, pipeline: AsyncPipeline) -> Self",
             "insert_after": "insert_after(self, target: type[AsyncPolicy], new: AsyncPolicy) -> Self",
             "insert_before": "insert_before(self, target: type[AsyncPolicy], new: AsyncPolicy) -> Self",
             "prepend": "prepend(self, policy: AsyncPolicy, *, force: bool) -> Self",
+            "prepend_all": "prepend_all(self, policies: Iterable[AsyncPolicy], *, force: bool) -> Self",
             "remove": "remove(self, target: type[AsyncPolicy]) -> Self",
             "replace": "replace(self, target: type[AsyncPolicy], new: AsyncPolicy) -> Self"
           }
@@ -1069,7 +1415,7 @@
         }
       },
       "dexpace.sdk.core.pipeline.defaults": {
-        "default_async_pipeline": "default_async_pipeline(client: AsyncHttpClient, *, redirect: AsyncRedirectPolicy | None, idempotency: AsyncIdempotencyPolicy | None, retry: AsyncRetryPolicy | None, set_date: AsyncSetDatePolicy | None, client_identity: AsyncClientIdentityPolicy | None, auth: AsyncPolicy | None) -> AsyncStagedPipelineBuilder",
+        "default_async_pipeline": "default_async_pipeline(client: AsyncHttpClient, *, redirect: AsyncRedirectPolicy | None, idempotency: AsyncIdempotencyPolicy | None, retry: AsyncRetryPolicy | None, set_date: AsyncSetDatePolicy | None, client_identity: AsyncClientIdentityPolicy | None, auth: AsyncPolicy | None, logging: AsyncLoggingPolicy | None, tracing: AsyncTracingPolicy | None) -> AsyncStagedPipelineBuilder",
         "default_pipeline": "default_pipeline(client: HttpClient, *, redirect: RedirectPolicy | None, idempotency: IdempotencyPolicy | None, retry: RetryPolicy | None, set_date: SetDatePolicy | None, client_identity: ClientIdentityPolicy | None, auth: Policy | None, logging: LoggingPolicy | None, tracing: TracingPolicy | None) -> StagedPipelineBuilder"
       },
       "dexpace.sdk.core.pipeline.dispatch": {
@@ -1124,6 +1470,16 @@
           }
         }
       },
+      "dexpace.sdk.core.pipeline.policies.async_logging_policy": {
+        "AsyncLoggingPolicy": {
+          "bases": [
+            "AsyncPolicy"
+          ],
+          "methods": {
+            "send": "async send(self, request: Request, ctx: PipelineContext) -> AsyncResponse"
+          }
+        }
+      },
       "dexpace.sdk.core.pipeline.policies.async_redirect": {
         "AsyncRedirectPolicy": {
           "bases": [
@@ -1163,6 +1519,14 @@
           "methods": {
             "send": "async send(self, request: Request, ctx: PipelineContext) -> AsyncResponse"
           }
+        },
+        "AsyncTracingPolicy": {
+          "bases": [
+            "AsyncPolicy"
+          ],
+          "methods": {
+            "send": "async send(self, request: Request, ctx: PipelineContext) -> AsyncResponse"
+          }
         }
       },
       "dexpace.sdk.core.pipeline.policies.client_identity": {
@@ -1187,6 +1551,15 @@
         }
       },
       "dexpace.sdk.core.pipeline.policies.logging_policy": {
+        "HttpLogDetailLevel": {
+          "bases": [
+            "Enum"
+          ],
+          "methods": {
+            "logs_body": "logs_body(self) -> bool",
+            "logs_events": "logs_events(self) -> bool"
+          }
+        },
         "LoggingPolicy": {
           "bases": [
             "Policy"
@@ -1197,12 +1570,25 @@
         }
       },
       "dexpace.sdk.core.pipeline.policies.redirect": {
+        "RedirectCondition": {
+          "bases": [],
+          "methods": {}
+        },
         "RedirectPolicy": {
           "bases": [
             "Policy"
           ],
           "methods": {
             "send": "send(self, request: Request, ctx: PipelineContext) -> Response"
+          }
+        },
+        "RedirectResponse": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "headers": "headers(self) -> Headers",
+            "status": "status(self) -> Status"
           }
         },
         "resolve_http_tracer": "resolve_http_tracer(ctx: PipelineContext) -> HttpTracer"
@@ -1277,11 +1663,14 @@
           "bases": [],
           "methods": {
             "append": "append(self, policy: Policy, *, force: bool) -> Self",
+            "append_all": "append_all(self, policies: Iterable[Policy], *, force: bool) -> Self",
+            "batch": "batch(self) -> Iterator[Self]",
             "build": "build(self) -> Pipeline",
             "from_pipeline": "from_pipeline(cls, pipeline: Pipeline) -> Self",
             "insert_after": "insert_after(self, target: type[Policy], new: Policy) -> Self",
             "insert_before": "insert_before(self, target: type[Policy], new: Policy) -> Self",
             "prepend": "prepend(self, policy: Policy, *, force: bool) -> Self",
+            "prepend_all": "prepend_all(self, policies: Iterable[Policy], *, force: bool) -> Self",
             "remove": "remove(self, target: type[Policy]) -> Self",
             "replace": "replace(self, target: type[Policy], new: Policy) -> Self"
           }
@@ -1305,7 +1694,7 @@
         "Codec": {
           "bases": [],
           "methods": {
-            "decode": "decode(self, data: object, target: type[T]) -> T",
+            "decode": "decode(self, data: object, target: type[T] | TypeRef[T]) -> T",
             "encode": "encode(self, value: object) -> object"
           }
         },
@@ -1332,6 +1721,7 @@
           "bases": [],
           "methods": {
             "deserializer": "deserializer(self) -> JsonDeserializer",
+            "media_type": "media_type(self) -> MediaType",
             "serializer": "serializer(self) -> JsonSerializer"
           }
         },
@@ -1339,10 +1729,34 @@
           "bases": [],
           "methods": {
             "serialize": "serialize(self, value: Any) -> str",
+            "serialize_into": "serialize_into(self, value: Any, buffer: bytearray | memoryview, offset: int) -> int",
             "serialize_to_bytes": "serialize_to_bytes(self, value: Any) -> bytes",
             "serialize_to_stream": "serialize_to_stream(self, value: Any, stream: BinaryIO) -> None"
           }
         }
+      },
+      "dexpace.sdk.core.serde.response_handler": {
+        "DecodeBody": {
+          "bases": [],
+          "methods": {}
+        },
+        "DecodeSuccess": {
+          "bases": [],
+          "methods": {}
+        },
+        "ResponseDisposition": {
+          "bases": [
+            "enum.Enum"
+          ],
+          "methods": {}
+        },
+        "ResponseHandler": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {}
+        },
+        "classify_status": "classify_status(status: Status) -> ResponseDisposition"
       },
       "dexpace.sdk.core.serde.serde": {
         "Deserializer": {
@@ -1361,6 +1775,7 @@
           ],
           "methods": {
             "deserializer": "deserializer(self) -> Deserializer",
+            "media_type": "media_type(self) -> MediaType",
             "serializer": "serializer(self) -> Serializer"
           }
         },
@@ -1387,6 +1802,15 @@
         "of_optional": "of_optional(value: T | None) -> _Null | Present[T]",
         "present": "present(value: T) -> Present[T]"
       },
+      "dexpace.sdk.core.serde.type_ref": {
+        "TypeRef": {
+          "bases": [],
+          "methods": {
+            "args": "args(self) -> tuple[object, ...]",
+            "origin": "origin(self) -> object | None"
+          }
+        }
+      },
       "dexpace.sdk.core.util.clock": {
         "AsyncClock": {
           "bases": [
@@ -1396,6 +1820,14 @@
             "monotonic": "monotonic(self) -> float",
             "now": "now(self) -> float",
             "sleep": "async sleep(self, duration: float) -> None"
+          }
+        },
+        "CancellationToken": {
+          "bases": [],
+          "methods": {
+            "cancel": "cancel(self) -> None",
+            "cancelled": "cancelled(self) -> bool",
+            "sleep": "sleep(self, duration: float) -> bool"
           }
         },
         "Clock": {
@@ -1409,12 +1841,17 @@
           }
         }
       },
+      "dexpace.sdk.core.util.http_date": {
+        "format_http_date": "format_http_date(value: datetime) -> str",
+        "parse_http_date": "parse_http_date(value: str) -> datetime | None"
+      },
       "dexpace.sdk.core.util.proxy": {
         "ProxyOptions": {
           "bases": [],
           "methods": {
             "bypasses_proxy": "bypasses_proxy(self, host: str) -> bool",
-            "from_configuration": "from_configuration(cls, config: Configuration) -> Self | None"
+            "from_configuration": "from_configuration(cls, config: Configuration) -> Self | None",
+            "from_environment": "from_environment(cls, env: EnvSource) -> Self | None"
           }
         },
         "ProxyType": {
@@ -1428,25 +1865,52 @@
     "exports": {
       "dexpace.sdk.core.client": [
         "AsyncHttpClient",
+        "AsyncToSyncHttpClient",
         "HttpClient",
+        "SyncToAsyncHttpClient",
         "asyncio_sleep"
       ],
+      "dexpace.sdk.core.codegen": [
+        "AsyncDecodeSuccess",
+        "AsyncResponseHandler",
+        "AsyncServiceCore",
+        "AuthDescriptor",
+        "AuthRegistry",
+        "AuthRequirement",
+        "AuthResolutionError",
+        "AuthScheme",
+        "Operation",
+        "OperationInput",
+        "ServiceCore",
+        "ServiceDefaults",
+        "StatusErrorMap",
+        "assemble",
+        "merge_async_config",
+        "merge_config"
+      ],
       "dexpace.sdk.core.config": [
+        "BuildDescriptor",
         "Configuration",
-        "ConfigurationBuilder"
+        "ConfigurationBuilder",
+        "default_configuration",
+        "set_default_configuration"
       ],
       "dexpace.sdk.core.errors": [
         "ClientAuthenticationError",
         "DecodeError",
         "DeserializationError",
+        "ERROR_BODY_MAX_BYTES",
         "HttpResponseError",
+        "NetworkError",
         "PipelineAbortedError",
+        "RequestCancelledError",
         "ResourceExistsError",
         "ResourceModifiedError",
         "ResourceNotFoundError",
         "ResourceNotModifiedError",
         "ResponseNotReadError",
         "SdkError",
+        "SerdeError",
         "SerializationError",
         "ServiceRequestError",
         "ServiceRequestTimeoutError",
@@ -1518,6 +1982,7 @@
         "RequestBody"
       ],
       "dexpace.sdk.core.http.response": [
+        "AsyncLoggableResponseBody",
         "AsyncResponse",
         "AsyncResponseBody",
         "LoggableResponseBody",
@@ -1528,9 +1993,13 @@
       "dexpace.sdk.core.http.sse": [
         "AsyncSseConnection",
         "AsyncSseStream",
+        "AsyncTypedSseConnection",
         "SseConnection",
         "SseEvent",
+        "SseMapper",
         "SseParser",
+        "SseSignal",
+        "TypedSseConnection",
         "parse_async_events",
         "parse_events"
       ],
@@ -1543,11 +2012,15 @@
         "ClientLogger",
         "CorrelationFilter",
         "Counter",
+        "DEFAULT_LOGGED_HEADER_ALLOWLIST",
         "DEFAULT_QUERY_ALLOWLIST",
+        "DEFAULT_URL_VALUED_HEADERS",
+        "HeaderRedactor",
         "Histogram",
         "HttpTracer",
         "HttpTracerFactory",
         "InstrumentationContext",
+        "LogEvent",
         "LogLevel",
         "MetricsContext",
         "NOOP_COUNTER",
@@ -1569,7 +2042,12 @@
         "TracingScope",
         "UpDownCounter",
         "UrlRedactor",
+        "activate_span",
         "bind_correlation",
+        "bind_to_context",
+        "capture_context",
+        "correlation_scope",
+        "get_current_span",
         "get_span_id",
         "get_trace_id",
         "set_span_id",
@@ -1611,11 +2089,15 @@
       "dexpace.sdk.core.pipeline.policies": [
         "AsyncClientIdentityPolicy",
         "AsyncIdempotencyPolicy",
+        "AsyncLoggingPolicy",
         "AsyncOperationTracingPolicy",
         "AsyncRedirectPolicy",
         "AsyncRetryPolicy",
         "AsyncSetDatePolicy",
+        "AsyncTracingPolicy",
         "ClientIdentityPolicy",
+        "DEFAULT_PREVIEW_BYTES",
+        "HttpLogDetailLevel",
         "IdempotencyPolicy",
         "LoggingPolicy",
         "OperationTracingPolicy",
@@ -1638,6 +2120,8 @@
         "Codec",
         "CodecError",
         "DISCRIMINATOR_KEY",
+        "DecodeBody",
+        "DecodeSuccess",
         "Deserializer",
         "JSON_SERDE",
         "JsonDeserializer",
@@ -1646,9 +2130,13 @@
         "NULL",
         "Present",
         "REGISTRY_KEY",
+        "ResponseDisposition",
+        "ResponseHandler",
         "Serde",
         "Serializer",
         "Tristate",
+        "TypeRef",
+        "classify_status",
         "discriminated",
         "field_alias",
         "fold",
@@ -1662,10 +2150,13 @@
       "dexpace.sdk.core.util": [
         "ASYNC_SYSTEM_CLOCK",
         "AsyncClock",
+        "CancellationToken",
         "Clock",
         "ProxyOptions",
         "ProxyType",
-        "SYSTEM_CLOCK"
+        "SYSTEM_CLOCK",
+        "format_http_date",
+        "parse_http_date"
       ]
     }
   },

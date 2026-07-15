@@ -19,6 +19,7 @@ def test_from_bytes_returns_bytes() -> None:
     assert body.bytes() == b"hello"
 
 
+@pytest.mark.req("BODY-16", "HTTP-42")
 def test_string_uses_media_type_charset() -> None:
     body = ResponseBody.from_bytes(
         "héllo".encode("latin-1"),
@@ -27,6 +28,7 @@ def test_string_uses_media_type_charset() -> None:
     assert body.string() == "héllo"
 
 
+@pytest.mark.req("HTTP-42")
 def test_string_defaults_to_utf8() -> None:
     body = ResponseBody.from_bytes("héllo".encode())
     assert body.string() == "héllo"
@@ -38,6 +40,7 @@ def test_context_manager_closes() -> None:
         assert b is body
 
 
+@pytest.mark.req("BODY-14", "BODY-16", "HTTP-41")
 def test_single_use_after_bytes() -> None:
     body = ResponseBody.from_bytes(b"once")
     assert body.bytes() == b"once"
@@ -61,6 +64,7 @@ class TestLoggableResponseBody:
         wrapped = LoggableResponseBody(ResponseBody.from_bytes(b"hello world"))
         assert wrapped.snapshot() == b"hello world"
 
+    @pytest.mark.req("BODY-14", "BODY-23")
     def test_iter_bytes_repeatable_after_snapshot(self) -> None:
         wrapped = LoggableResponseBody(ResponseBody.from_bytes(b"abc"))
         _ = wrapped.snapshot()

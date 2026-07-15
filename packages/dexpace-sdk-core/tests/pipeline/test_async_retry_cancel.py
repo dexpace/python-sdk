@@ -96,6 +96,7 @@ class TestCancelledNotRetried:
         # Exactly one attempt — no retry of a cancellation.
         assert client.attempts == 1
 
+    @pytest.mark.req("RETRY-23", "RETRY-32", "XCUT-1")
     async def test_cancelled_after_a_retryable_failure_still_not_retried(self) -> None:
         # First attempt is a retryable 503, second attempt is cancelled.
         client = _CancellingClient(cancel_on=2)
@@ -106,6 +107,7 @@ class TestCancelledNotRetried:
         # Two attempts total: the 503 was retried, the cancellation was not.
         assert client.attempts == 2
 
+    @pytest.mark.req("RECOV-27", "RETRY-32")
     async def test_task_cancellation_propagates_through_policy(self) -> None:
         started = asyncio.Event()
 

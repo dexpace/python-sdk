@@ -37,6 +37,28 @@ jobs:
       - name: Run pytest
         run: uv run pytest -q
 
+      # Blocking requirement-traceability audit. Collection-only run: the
+      # TraceabilityPlugin (registered in the root conftest) collects every
+      # @pytest.mark.req(...) marker, writes the matrix artifact, and — because
+      # DEXPACE_TRACEABILITY_GATE is set — fails the run if any MUST-level
+      # requirement in an enabled subsystem is neither covered by a marker nor
+      # listed N/A in docs/traceability-na-ids.txt (the deviations-ledger bridge).
+      - name: Run traceability audit (blocking)
+        env:
+          DEXPACE_TRACEABILITY_ENABLE: "seams,http,bodies,io,context,pipeline,recovery,redirect,retry,auth,xcut,serde,pagination,sse,observability,config,transport,async,nfr"
+          DEXPACE_TRACEABILITY_NA: docs/traceability-na-ids.txt
+          DEXPACE_TRACEABILITY_MATRIX: build/traceability-matrix.json
+          DEXPACE_TRACEABILITY_GATE: "1"
+        run: uv run pytest -q --co
+
+      - name: Upload traceability matrix
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: traceability-matrix-py${{ matrix.python-version }}
+          path: build/traceability-matrix.json
+          if-no-files-found: error
+
       - name: Run mypy
         run: uv run mypy --strict
 
@@ -45,3 +67,223 @@ jobs:
 
       - name: Run ruff format --check
         run: uv run ruff format --check
+
+      - name: Run import-linter
+        run: uv run lint-imports
+
+  packaging:
+    name: packaging invariants
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Check namespace layout
+        run: uv run --no-project python tools/check_namespace_packages.py
+
+      - name: Check MIT headers
+        run: uv run --no-project python tools/check_mit_headers.py
+
+      - name: Check runtime dependency budget
+        run: uv run --no-project python tools/check_dependency_audit.py
+
+      - name: Build core + stdlib wheels
+        run: |
+          uv build --package dexpace-sdk-core --wheel -o dist
+          uv build --package dexpace-sdk-http-stdlib --wheel -o dist
+
+      - name: Smoke-import wheels in a fresh venv
+        run: |
+          uv venv /tmp/wheel-smoke
+          uv pip install --python /tmp/wheel-smoke \
+            dist/dexpace_sdk_core-*.whl \
+            dist/dexpace_sdk_http_stdlib-*.whl
+          /tmp/wheel-smoke/bin/python tools/smoke_wheel_import.py
+
+  coverage:
+    name: coverage gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Sync workspace
+        run: uv sync
+
+      # Blocking aggregate line+branch coverage gate. The 80% floor lives in
+      # [tool.coverage.report].fail_under in pyproject.toml; pytest-cov exits
+      # non-zero when the total drops below it.
+      - name: Run coverage gate
+        run: uv run pytest -q --cov --cov-report=term-missing
+
+  typecheck-divergence:
+    name: typecheck divergence (pyright, non-blocking)
+    runs-on: ubuntu-latest
+    # Advisory early-warning lane: pyright cross-checks mypy's verdict so a
+    # divergence between the two checkers surfaces early. This is NOT a gate —
+    # `mypy --strict` in the `test` job remains the sole blocking type check.
+    # `continue-on-error` at both the job and step level keeps a red result
+    # (e.g. pyright's stricter completeness scoring) from ever failing CI.
+    # pyright is layered in per-run via `uv run --with`, so it stays out of the
+    # committed dependency set and uv.lock.
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+
+      - name: Sync workspace
+        run: uv sync
+
+      - name: pyright --verifytypes (advisory)
+        continue-on-error: true
+        run: uv run --with pyright pyright --verifytypes dexpace.sdk.core --ignoreexternal
+
+      - name: pyright typing-conformance corpus (advisory)
+        continue-on-error: true
+        run: uv run --with pyright pyright packages/dexpace-sdk-core/tests/typing_conformance.py
+
+  version-skew:
+    name: version skew (Python ${{ matrix.python-version }}, ${{ matrix.resolution }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+        resolution: ["highest", "lowest-direct"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+
+      # Resolve the workspace at either edge of its declared dependency window.
+      # `highest` exercises the newest adapters against head core (the standard
+      # release runtime). `lowest-direct` pins every *direct* dependency to its
+      # declared floor: core to the compatible-release lower bound each adapter
+      # and the TCK pin (dexpace-sdk-core>=0.1,<0.2) and each transport to its
+      # minimum (httpx>=0.27, aiohttp>=3.9, requests>=2.32, furl>=2.1.3). Running
+      # both edges across Python 3.12-3.14 turns the forward-compatibility
+      # promise -- newest adapters and the generated petstore canary run against
+      # the oldest supported core -- into a passing pipeline, not a prose claim.
+      - name: Sync workspace (${{ matrix.resolution }} resolution)
+        run: uv sync --resolution ${{ matrix.resolution }}
+
+      # Newest adapters (built from HEAD) plus the TCK conformance battery, run
+      # against the resolved core. `--no-sync` keeps the environment exactly as
+      # the resolution step left it rather than re-resolving to the default edge.
+      - name: Adapters + TCK conformance
+        run: >
+          uv run --no-sync pytest -q
+          packages/dexpace-sdk-http-stdlib/tests
+          packages/dexpace-sdk-http-httpx/tests
+          packages/dexpace-sdk-http-aiohttp/tests
+          packages/dexpace-sdk-http-requests/tests
+          packages/dexpace-sdk-tck/src/dexpace/sdk/tck
+
+      # The petstore canary is the "generated at vN.M runs on vN.x" proof: a
+      # generated SDK driven end to end over the certified core. Running it at
+      # both dependency edges proves the generated output keeps working against
+      # both head core and the oldest supported core.
+      - name: Petstore canary
+        run: uv run --no-sync pytest -q examples/petstore/tests
+
+  free-threaded:
+    name: free-threaded CPython (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13t", "3.14t"]
+    # Exercises the codebase's explicit-lock claims (no GIL assumption) on a real
+    # GIL-disabled interpreter, not just under code review. Only the
+    # lock-sensitive core suites run here, and each spins real threads: the
+    # single-use body once-guards, the single-flight token cache, the
+    # ContextStore cap-drain, the emit-once logger latch, and the SSE
+    # cross-thread close. Core is pure Python (only furl), so the environment
+    # holds core plus the test runner alone -- no C-extension transports, which
+    # do not yet ship free-threaded wheels.
+    env:
+      # Fail loudly if an imported extension would force the GIL back on rather
+      # than silently re-enabling it and voiding the exercise.
+      PYTHON_GIL: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Install free-threaded interpreter
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Create free-threaded environment
+        run: uv venv --python ${{ matrix.python-version }} .venv-ft
+
+      # `--only-binary hypothesis` uses its universal wheel instead of building
+      # its sdist, whose build pulls a Rust/PyO3 toolchain with no free-threaded
+      # support yet. hypothesis is imported by the core test conftest.
+      - name: Install core + test runner
+        run: >
+          uv pip install --python .venv-ft --only-binary hypothesis
+          ./packages/dexpace-sdk-core
+          pytest pytest-asyncio hypothesis
+
+      - name: Verify the interpreter is GIL-disabled
+        run: .venv-ft/bin/python -c "import sys; assert not sys._is_gil_enabled(), 'GIL is enabled'; print(sys.version)"
+
+      - name: Run lock-sensitive suites (GIL disabled)
+        run: >
+          .venv-ft/bin/python -m pytest -q
+          packages/dexpace-sdk-core/tests/http/test_single_use_bodies.py
+          packages/dexpace-sdk-core/tests/auth/test_token_cache.py
+          packages/dexpace-sdk-core/tests/context/test_context_store.py
+          packages/dexpace-sdk-core/tests/instrumentation/test_logger.py
+          packages/dexpace-sdk-core/tests/sse/test_connection_lifecycle.py
+
+  version-source:
+    name: single version train
+    runs-on: ubuntu-latest
+    # One version train for every published package (NFR-14): the version lives
+    # once in each pyproject and is mirrored in uv.lock, and a built wheel
+    # carries that real version -- never a placeholder such as 0.0.0 or
+    # "unknown" (NFR-15). A bump touches all published packages together or this
+    # gate fails.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Build a wheel to inspect its metadata version
+        run: uv build --package dexpace-sdk-core --wheel -o dist
+
+      - name: Verify one version train (pyproject + uv.lock + wheel)
+        run: uv run --no-project python tools/check_version_train.py --wheel-dir dist

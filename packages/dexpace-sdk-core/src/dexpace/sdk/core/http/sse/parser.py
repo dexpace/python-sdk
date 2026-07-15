@@ -11,8 +11,13 @@ Consumes an iterator of ``bytes`` chunks (typically from
 - Handles ``LF`` / ``CR`` / ``CRLF`` line terminators interchangeably per
   the spec.
 - Joins multi-line ``data:`` fields with a single ``\n``.
-- Skips comment lines (those beginning with ``:``).
-- Treats blank lines as event terminators; empty events are not emitted.
+- Captures comment lines (those beginning with ``:``): the parser records the
+  comment text and treats it as a "field seen", so a comment-only keep-alive
+  block still dispatches an event.
+- Dispatches permissively: an event is emitted whenever any tracked field
+  (``id`` / ``event`` / ``data`` / ``comment`` / ``retry``) was set in the
+  block, so ``id``-only, ``retry``-only, and comment-only blocks are visible.
+  A block in which no field was set (pure blank lines) emits nothing.
 - Decodes payloads as UTF-8 (the spec mandates UTF-8 for ``text/event-stream``);
   invalid bytes in a complete line are replaced with U+FFFD rather than raising,
   per the spec. A codepoint truncated by the stream ending surfaces as a
@@ -20,8 +25,15 @@ Consumes an iterator of ``bytes`` chunks (typically from
 
 Per-event fields:
 - ``data``: the (possibly multi-line) message payload.
-- ``event``: the event name (defaults to ``"message"``).
-- ``id``: the last-event-id (sticky across the parser's lifetime per spec).
+- ``event``: the raw event name, or ``None`` when the block sent no ``event:``
+  field. It is deliberately **not** defaulted to ``"message"``: the parser
+  surfaces the field as absent so a higher layer (an ``EventSource``-style
+  consumer) can apply the ``"message"`` default itself.
+- ``id``: the ``id:`` value present in this block, or ``None``. The parser is
+  single-pass and does **not** persist a last-event-id across events — each
+  event surfaces only the id in its own block. Carrying an id forward for
+  reconnection is the caller's / `SseConnection`'s responsibility.
+- ``comment``: the latest comment text seen in the block, or ``None``.
 - ``retry``: reconnect time in milliseconds, when the server sends one.
 """
 
@@ -83,6 +95,12 @@ _CR: Final[int] = 0x0D
 _COLON: Final[int] = 0x3A
 _UTF8_BOM: Final[bytes] = b"\xef\xbb\xbf"
 
+#: Upper bound for a ``retry:`` value, in milliseconds. The reconnection time
+#: is a signed 64-bit millisecond count in the reference implementations, so a
+#: digits-only value above ``2**63 - 1`` is rejected (ignored) rather than
+#: stored as an unbounded Python integer.
+_RETRY_MAX_MS: Final[int] = (1 << 63) - 1
+
 
 @dataclass(frozen=True, slots=True)
 class SseEvent:
@@ -91,23 +109,35 @@ class SseEvent:
     Attributes:
         data: The event payload (with newlines between concatenated
             ``data:`` lines).
-        event: The event name (``"message"`` if the stream omitted ``event:``).
-        id: The most recent ``id:`` value seen by the parser, sticky across
-            events per the spec.
+        event: The raw ``event:`` value for this block, or ``None`` when the
+            block sent no ``event:`` field. It is deliberately not defaulted to
+            ``"message"``: the parser surfaces an omitted event name as absent
+            (``None``), leaving the ``"message"`` default to an
+            ``EventSource``-style consumer.
+        id: The ``id:`` value present in this block, or ``None`` when the block
+            carried no valid id. It is **not** sticky: the parser does not
+            carry a last-event-id forward, so each event surfaces only the id
+            in its own block. An ``id:`` value containing a U+0000 NUL is
+            ignored entirely (it neither sets the id nor counts as a field).
+        comment: The latest comment text (a line beginning with ``:``) seen in
+            the block, or ``None``. Latest-wins within a block.
         retry: The most recent ``retry:`` value seen by the parser, sticky
-            like ``id`` once observed. Although carried on each ``SseEvent``,
-            this field is **not** per-event: the WHATWG spec defines
-            ``retry`` as a connection-level reconnection-time setting that
-            persists until the server sends a new value, so subsequent
+            like a connection-level setting once observed. Although carried on
+            each ``SseEvent``, this field is **not** per-event: the WHATWG spec
+            defines ``retry`` as a connection-level reconnection-time setting
+            that persists until the server sends a new value, so subsequent
             events repeat the last observed integer (milliseconds) until
-            superseded. ``None`` means no ``retry:`` line has been seen
-            yet on this stream.
+            superseded. Only a value of ASCII digits within the signed
+            64-bit millisecond range (``0`` .. ``2**63 - 1``) is honoured;
+            anything else is ignored. ``None`` means no valid ``retry:``
+            line has been seen yet on this stream.
     """
 
     data: str
-    event: str = "message"
+    event: str | None = None
     id: str | None = None
     retry: int | None = None
+    comment: str | None = None
 
 
 @dataclass(slots=True)
@@ -118,13 +148,19 @@ class SseParser:
     queue and are yielded by `drain`. Callers typically use the
     free functions `parse_events` / `parse_async_events` rather
     than holding a parser directly.
+
+    Not thread-safe: a single reader must drive `feed` / `drain` / `end` in
+    sequence. The mutable buffer and accumulators are unguarded, so concurrent
+    use from multiple threads is undefined.
     """
 
     _buffer: bytearray = field(default_factory=bytearray)
     _data_lines: list[str] = field(default_factory=list)
-    _event: str = "message"
-    _last_id: str | None = None
+    _event: str | None = None
+    _id: str | None = None
+    _comment: str | None = None
     _retry: int | None = None
+    _field_seen: bool = False
     _pending: deque[SseEvent] = field(default_factory=deque)
     _bom_stripped: bool = False
     max_line_bytes: int = 1 << 20  # 1 MiB
@@ -182,8 +218,7 @@ class SseParser:
             self._buffer.clear()
             if line is not None:
                 self._process_line(line)
-        if self._data_lines:
-            self._dispatch()
+        self._dispatch()
         yield from self.drain()
 
     def _strip_leading_bom(self, *, at_end: bool = False) -> bool:
@@ -219,42 +254,89 @@ class SseParser:
         if not line:
             self._dispatch()
             return
-        if line.startswith(":"):
-            return  # comment
         field_name, _, value = line.partition(":")
         if value.startswith(" "):
             value = value[1:]
+        if field_name == "":
+            # A leading ':' is a comment (empty field name). The text is
+            # captured latest-wins and counts as a field seen, so a comment-only
+            # keep-alive block still dispatches.
+            self._comment = value
+            self._field_seen = True
+            return
         match field_name:
             case "data":
                 self._data_lines.append(value)
+                self._field_seen = True
             case "event":
                 self._event = value
+                self._field_seen = True
             case "id":
-                if "\0" not in value:  # spec: ignore IDs containing NULL
-                    self._last_id = value
+                # Spec: an id containing a U+0000 NUL is ignored entirely — it
+                # does not set the id, does not count as a field seen, and does
+                # not overwrite a valid id already seen in this block.
+                if "\0" not in value:
+                    self._id = value
+                    self._field_seen = True
             case "retry":
-                if value.isdigit():
-                    self._retry = int(value)
+                self._set_retry(value)
+                self._field_seen = True
             case _:
-                # Unknown field — spec says ignore.
+                # Unknown field — spec says ignore (does not count as seen).
                 pass
 
+    def _set_retry(self, value: str) -> None:
+        """Set the sticky reconnect hint from a ``retry:`` field value.
+
+        Per the WHATWG spec only ASCII digits are honoured. The ``isascii``
+        guard is deliberate: ``str.isdigit`` also accepts non-ASCII digits —
+        superscripts such as ``²`` that ``int`` rejects with ``ValueError``,
+        and script digits such as ``٤`` that ``int`` would silently accept —
+        so restricting to ASCII keeps a raw ``ValueError`` from escaping `feed`
+        and keeps non-ASCII digits out. A value above the signed 64-bit
+        millisecond ceiling (``2**63 - 1``) is rejected cleanly (ignored)
+        rather than stored as an unbounded integer.
+
+        Args:
+            value: The raw ``retry:`` field value (one leading space already
+                stripped).
+        """
+        if value.isascii() and value.isdigit():
+            parsed = int(value)
+            if parsed <= _RETRY_MAX_MS:
+                self._retry = parsed
+
     def _dispatch(self) -> None:
-        if not self._data_lines:
-            # Spec: blank line with no data buffered ⇒ no event emitted, and the
-            # event name resets to the default. ``retry`` is connection-level and
-            # deliberately persists, so it is not reset here.
-            self._event = "message"
+        if not self._field_seen:
+            # A block in which no tracked field was set (pure blank lines, or
+            # only unknown / NUL-id lines) emits nothing. Reset the per-block
+            # accumulators; ``retry`` is connection-level and deliberately
+            # persists, so it is not reset here.
+            self._reset_block()
             return
         event = SseEvent(
             data="\n".join(self._data_lines),
             event=self._event,
-            id=self._last_id,
+            id=self._id,
             retry=self._retry,
+            comment=self._comment,
         )
         self._pending.append(event)
+        self._reset_block()
+
+    def _reset_block(self) -> None:
+        """Clear the per-block accumulators after a block ends.
+
+        The connection-level ``retry`` hint is intentionally preserved across
+        blocks; ``event``, ``id``, ``comment``, and the data lines are per-block
+        and reset to their absent state so the next event surfaces only what its
+        own block sent.
+        """
         self._data_lines = []
-        self._event = "message"
+        self._event = None
+        self._id = None
+        self._comment = None
+        self._field_seen = False
 
 
 def _read_line(buffer: bytearray, *, at_eos: bool) -> tuple[str | None, int]:

@@ -59,6 +59,7 @@ class TestHandBuiltHttpHeaderNameNormalised:
         name = HttpHeaderName(value="Content-Type", canonical_name="Content-Type")
         assert name.value == "content-type"
 
+    @pytest.mark.req("HTTP-21")
     def test_non_lowercase_name_matches_lookups(self) -> None:
         name = HttpHeaderName(value="Content-Type", canonical_name="Content-Type")
         h = Headers([("content-type", "application/json")])
@@ -66,6 +67,7 @@ class TestHandBuiltHttpHeaderNameNormalised:
         assert name in h
         assert h.values(name) == ("application/json",)
 
+    @pytest.mark.req("HTTP-21", "HTTP-22")
     def test_non_lowercase_name_equals_lowercase_twin(self) -> None:
         upper = HttpHeaderName(value="Content-Type", canonical_name="Content-Type")
         lower = HttpHeaderName(value="content-type", canonical_name="Content-Type")

@@ -17,7 +17,9 @@ stream by breaking the loop (for example on a ``data: [DONE]`` sentinel).
 
 from __future__ import annotations
 
+import logging
 import random
+import threading
 from typing import TYPE_CHECKING, cast
 
 from ...errors import HttpResponseError, ServiceRequestError, ServiceResponseError
@@ -41,6 +43,8 @@ if TYPE_CHECKING:
     from ..response.async_response import AsyncResponse
     from ..response.response import Response
     from .parser import SseEvent
+
+_LOGGER = logging.getLogger(__name__)
 
 _LAST_EVENT_ID: str = "Last-Event-ID"
 _DEFAULT_RETRY_SECONDS: float = 3.0
@@ -117,10 +121,13 @@ class SseConnection:
 
     __slots__ = (
         "_clock",
+        "_closed",
         "_dispatch_factory",
         "_initial",
+        "_iterated",
         "_jitter",
         "_last_event_id",
+        "_lock",
         "_max_backoff",
         "_max_reconnects",
         "_rand",
@@ -153,6 +160,12 @@ class SseConnection:
         self._rand = rand if rand is not None else random.Random()
         self._dispatch_factory = dispatch_factory or DispatchContext.noop
         self._response: Response | None = None
+        # The close-once flag is guarded by an explicit lock rather than relying
+        # on the GIL, so cross-thread ``close`` stays race-free on free-threaded
+        # CPython (PEP 703).
+        self._lock = threading.Lock()
+        self._closed = False
+        self._iterated = False
         self._send = self._normalise(source)
 
     def _normalise(self, source: SyncPipelineLike | SendSync) -> SendSync:
@@ -165,13 +178,68 @@ class SseConnection:
             return send
         return source
 
+    def _release(self) -> None:
+        """Release the currently-owned response exactly once.
+
+        The read-and-clear of the response slot happens under ``_lock``, so two
+        callers racing (for example ``close`` invoked from another thread while
+        iteration parks in the transport) can never both observe the same
+        response: only the caller that atomically takes the slot goes on to
+        close it. The close itself runs outside the lock so a slow transport
+        teardown never blocks a racing caller.
+        """
+        with self._lock:
+            response = self._response
+            self._response = None
+        if response is not None:
+            response.close()
+
+    def _release_suppressing(self, primary: BaseException) -> None:
+        """Release the response while ``primary`` is propagating.
+
+        A failure raised by the release is demoted onto ``primary.__context__``
+        instead of replacing ``primary``: the mid-stream failure the caller
+        needs to see must never be masked by a secondary teardown error.
+        """
+        try:
+            self._release()
+        except BaseException as close_error:
+            # Demoted, not swallowed: the primary exception re-raised by the
+            # caller carries this teardown error on its ``__context__``.
+            primary.__context__ = close_error
+
+    def _release_reporting(self) -> None:
+        """Release the finished response between reconnects, cleanly.
+
+        This runs on an automatic clean-terminal rollover (a natural
+        end-of-stream or an absorbed transient drop, with no error surfacing to
+        the caller). A release failure here must not be turned into a thrown
+        result that discards the events already delivered, so it is reported
+        out-of-band and swallowed. An explicit `close` still propagates its
+        release failure.
+        """
+        try:
+            self._release()
+        except Exception:
+            _LOGGER.warning(
+                "SSE response release failed on a clean reconnect rollover; "
+                "swallowed to preserve already-delivered events",
+                exc_info=True,
+            )
+
+    def _is_closed(self) -> bool:
+        with self._lock:
+            return self._closed
+
     def close(self) -> None:
-        """Close the current response, if any. Idempotent."""
-        response = self._response
-        if response is None:
-            return
-        self._response = None
-        response.close()
+        """Close the connection: release the response and stop reconnecting.
+
+        Idempotent and safe to call from any thread, including while another
+        thread iterates. A second call is a no-op rather than a double-release.
+        """
+        with self._lock:
+            self._closed = True
+        self._release()
 
     def __enter__(self) -> Self:
         return self
@@ -185,6 +253,22 @@ class SseConnection:
         self.close()
 
     def __iter__(self) -> Iterator[SseEvent]:
+        """Return the single-pass event iterator.
+
+        Raises:
+            RuntimeError: If the connection is already closed or was iterated
+                before. An SSE stream cannot be restarted by re-iterating the
+                facade; open a fresh connection instead.
+        """
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("SseConnection is closed")
+            if self._iterated:
+                raise RuntimeError("SseConnection supports a single iteration")
+            self._iterated = True
+        return self._run()
+
+    def _run(self) -> Iterator[SseEvent]:
         failures = 0
         last_error: BaseException | None = None
         try:
@@ -193,7 +277,9 @@ class SseConnection:
                 progressed, error = yield from self._stream(response)
                 if error is not None:
                     last_error = error
-                self.close()
+                self._release_reporting()
+                if self._is_closed():
+                    return
                 if progressed:
                     failures = 0
                 if self._max_reconnects is not None and failures >= self._max_reconnects:
@@ -204,14 +290,20 @@ class SseConnection:
                     )
                 )
                 failures += 1
-        finally:
-            self.close()
+        except BaseException as primary:
+            # The loop only ever exits by raising — a mid-stream failure, an
+            # exhausted reconnect budget, or ``GeneratorExit`` when the caller
+            # stops early — so releasing here covers every termination path and
+            # runs before the exception reaches the caller.
+            self._release_suppressing(primary)
+            raise
 
     def _connect(self, request: Request) -> Response:
         response = self._send(request)
-        self._response = response
+        with self._lock:
+            self._response = response
         if not response.status.is_success:
-            self.close()
+            self._release()
             raise HttpResponseError(response=response)
         return response
 
@@ -225,12 +317,18 @@ class SseConnection:
         cause if the reconnect budget is later exhausted; other exceptions
         propagate. A ``retry:`` hint that arrived without a data event is picked
         up from the parser's sticky state after iteration.
+
+        Raises:
+            ServiceResponseError: If the (successful) response carries no body.
+                An SSE stream opened over a body-less response is a protocol
+                violation and fails loudly rather than being treated as an
+                immediately-empty stream.
         """
         progressed = False
         error: BaseException | None = None
         body = response.body
         if body is None:
-            return progressed, error
+            raise ServiceResponseError("SSE response has no body")
         parser = SseParser()
         try:
             for chunk in body.iter_bytes():
@@ -279,10 +377,13 @@ class AsyncSseConnection:
 
     __slots__ = (
         "_clock",
+        "_closed",
         "_dispatch_factory",
         "_initial",
+        "_iterated",
         "_jitter",
         "_last_event_id",
+        "_lock",
         "_max_backoff",
         "_max_reconnects",
         "_rand",
@@ -315,6 +416,12 @@ class AsyncSseConnection:
         self._rand = rand if rand is not None else random.Random()
         self._dispatch_factory = dispatch_factory or DispatchContext.noop
         self._response: AsyncResponse | None = None
+        # The close-once flag is guarded by an explicit lock, not the GIL, so
+        # the slot read-and-clear stays race-free on free-threaded CPython even
+        # when ``aclose`` is driven from a different thread's loop.
+        self._lock = threading.Lock()
+        self._closed = False
+        self._iterated = False
         self._send = self._normalise(source)
 
     def _normalise(self, source: AsyncPipelineLike | SendAsync) -> SendAsync:
@@ -327,13 +434,63 @@ class AsyncSseConnection:
             return send
         return source
 
+    async def _arelease(self) -> None:
+        """Release the currently-owned response exactly once, cancel-safely.
+
+        The slot is taken under ``_lock`` so a racing releaser never closes the
+        same response twice; the ``await`` runs outside the lock. The close is
+        routed through ``_shielded_cleanup`` so a cancelled consumer still
+        releases the transport handle before the cancellation continues.
+        """
+        with self._lock:
+            response = self._response
+            self._response = None
+        if response is not None:
+            await _shielded_cleanup(response.close())
+
+    async def _arelease_suppressing(self, primary: BaseException) -> None:
+        """Release the response while ``primary`` is propagating.
+
+        A teardown failure is demoted onto ``primary.__context__`` rather than
+        masking the primary exception the caller must see.
+        """
+        try:
+            await self._arelease()
+        except BaseException as close_error:
+            # Demoted, not swallowed: the primary exception re-raised by the
+            # caller carries this teardown error on its ``__context__``.
+            primary.__context__ = close_error
+
+    async def _arelease_reporting(self) -> None:
+        """Release the finished response between reconnects, cleanly.
+
+        Async twin of `SseConnection._release_reporting`: on an automatic
+        clean-terminal rollover a release failure is reported out-of-band and
+        swallowed so it cannot discard already-delivered events. An explicit
+        `aclose` still propagates its release failure.
+        """
+        try:
+            await self._arelease()
+        except Exception:
+            _LOGGER.warning(
+                "SSE response release failed on a clean reconnect rollover; "
+                "swallowed to preserve already-delivered events",
+                exc_info=True,
+            )
+
+    def _is_closed(self) -> bool:
+        with self._lock:
+            return self._closed
+
     async def aclose(self) -> None:
-        """Close the current response, if any. Idempotent and cancel-safe."""
-        response = self._response
-        if response is None:
-            return
-        self._response = None
-        await _shielded_cleanup(response.close())
+        """Close the connection: release the response and stop reconnecting.
+
+        Idempotent and cancel-safe; a second call is a no-op rather than a
+        double-release.
+        """
+        with self._lock:
+            self._closed = True
+        await self._arelease()
 
     async def __aenter__(self) -> Self:
         return self
@@ -347,6 +504,19 @@ class AsyncSseConnection:
         await self.aclose()
 
     def __aiter__(self) -> AsyncIterator[SseEvent]:
+        """Return the single-pass async event iterator.
+
+        Raises:
+            RuntimeError: If the connection is already closed or was iterated
+                before. An SSE stream cannot be restarted by re-iterating the
+                facade; open a fresh connection instead.
+        """
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("AsyncSseConnection is closed")
+            if self._iterated:
+                raise RuntimeError("AsyncSseConnection supports a single iteration")
+            self._iterated = True
         return self._events()
 
     async def _events(self) -> AsyncIterator[SseEvent]:
@@ -357,19 +527,25 @@ class AsyncSseConnection:
                 response = await self._connect(_resume_request(self._initial, self._last_event_id))
                 progressed = False
                 body = response.body
-                if body is not None:
-                    stream = parse_async_events(body.aiter_bytes())
-                    try:
-                        async with stream:
-                            async for event in stream:
-                                self._last_event_id = _last_event_id_of(event, self._last_event_id)
-                                progressed = True
-                                yield event
-                    except _TRANSIENT as exc:
-                        last_error = exc
-                    if stream.retry is not None:
-                        self._retry_base = stream.retry / 1000.0
-                await self.aclose()
+                if body is None:
+                    # A body-less (but successful) SSE response is a protocol
+                    # violation: fail loudly rather than treat it as an empty
+                    # stream. The outer handler releases before propagating.
+                    raise ServiceResponseError("SSE response has no body")
+                stream = parse_async_events(body.aiter_bytes())
+                try:
+                    async with stream:
+                        async for event in stream:
+                            self._last_event_id = _last_event_id_of(event, self._last_event_id)
+                            progressed = True
+                            yield event
+                except _TRANSIENT as exc:
+                    last_error = exc
+                if stream.retry is not None:
+                    self._retry_base = stream.retry / 1000.0
+                await self._arelease_reporting()
+                if self._is_closed():
+                    return
                 if progressed:
                     failures = 0
                 if self._max_reconnects is not None and failures >= self._max_reconnects:
@@ -380,14 +556,19 @@ class AsyncSseConnection:
                     )
                 )
                 failures += 1
-        finally:
-            await self.aclose()
+        except BaseException as primary:
+            # Every loop exit is an exception (mid-stream failure, exhausted
+            # budget, or the cancellation/close thrown into the generator), so
+            # releasing here releases before propagating on all of them.
+            await self._arelease_suppressing(primary)
+            raise
 
     async def _connect(self, request: Request) -> AsyncResponse:
         response = await self._send(request)
-        self._response = response
+        with self._lock:
+            self._response = response
         if not response.status.is_success:
-            await self.aclose()
+            await self._arelease()
             raise HttpResponseError(response=response)
         return response
 

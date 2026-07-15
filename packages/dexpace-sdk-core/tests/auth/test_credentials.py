@@ -40,6 +40,7 @@ class TestAccessTokenInfo:
         token = AccessTokenInfo(token="t", expires_on=now + 3600, refresh_on=now - 1)
         assert token.needs_refresh()
 
+    @pytest.mark.req("XCUT-19")
     def test_repr_redacts_token(self) -> None:
         token = AccessTokenInfo(token="hunter2", expires_on=0)
         assert "hunter2" not in repr(token)
@@ -54,6 +55,7 @@ class TestAccessTokenInfo:
 
 
 class TestKeyCredential:
+    @pytest.mark.req("AUTH-9")
     def test_rejects_empty_key(self) -> None:
         with pytest.raises(TypeError):
             KeyCredential("")
@@ -79,6 +81,7 @@ class TestNamedKeyCredential:
         assert cred.name == "name"
         assert cred.key == "key"
 
+    @pytest.mark.req("AUTH-9")
     def test_rejects_empty(self) -> None:
         with pytest.raises(ValueError):
             NamedKeyCredential("", "k")
@@ -96,6 +99,12 @@ class TestBasicAuthCredential:
         cred = BasicAuthCredential("user", "pass")
         # base64("user:pass") = "dXNlcjpwYXNz"
         assert cred.encoded == "dXNlcjpwYXNz"
+
+    def test_rejects_empty(self) -> None:
+        with pytest.raises(ValueError):
+            BasicAuthCredential("user", "")
+        with pytest.raises(ValueError):
+            BasicAuthCredential("", "pass")
 
     def test_repr_redacts(self) -> None:
         cred = BasicAuthCredential("alice", "hunter2")
@@ -131,6 +140,7 @@ class TestInMemoryTokenCache:
         cache.clear()
         assert cache.get(["s"]) is None
 
+    @pytest.mark.req("XCUT-12")
     def test_concurrent_get_with_writes(self) -> None:
         """``get`` must be safe under concurrent ``set`` calls.
 

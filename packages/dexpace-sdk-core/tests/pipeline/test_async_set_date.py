@@ -23,6 +23,7 @@ from dexpace.sdk.core.instrumentation import (
 )
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import AsyncPipeline
+from dexpace.sdk.core.pipeline.policies.async_retry import AsyncRetryPolicy
 from dexpace.sdk.core.pipeline.policies.async_set_date import AsyncSetDatePolicy
 
 _RFC7231 = re.compile(r"^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$")
@@ -119,6 +120,42 @@ async def test_restamps_on_each_attempt() -> None:
         await p.run(_request(), DispatchContext(_instr("0" * 16 + "4")))
         clock.advance(3600)
         await p.run(_request(), DispatchContext(_instr("0" * 16 + "5")))
+    first = client.calls[0].headers.get("Date")
+    second = client.calls[1].headers.get("Date")
+    assert first is not None and second is not None
+    assert first != second
+    assert _RFC7231.match(first) is not None
+    assert _RFC7231.match(second) is not None
+
+
+class _AdvancingAsyncClient(AsyncHttpClient):
+    """Records requests and advances the injected clock after each send."""
+
+    def __init__(self, clock: _AsyncFakeClock, *fail_with: Status) -> None:
+        self.calls: list[Request] = []
+        self._clock = clock
+        self._fail = list(fail_with)
+
+    async def execute(self, request: Request) -> AsyncResponse:
+        self.calls.append(request)
+        status = self._fail.pop(0) if self._fail else Status.OK
+        self._clock.advance(3600)
+        return AsyncResponse(request=request, protocol=Protocol.HTTP_1_1, status=status)
+
+
+async def test_date_refreshed_on_each_retry_attempt() -> None:
+    """One retried async call re-stamps a fresh ``Date`` on each attempt.
+
+    The async policy sits inside the retry wrapper (`Stage.POST_RETRY`), so a
+    retried ``503`` re-enters it and reads the clock again — mirroring the
+    sync twin.
+    """
+    clock = _AsyncFakeClock(start=1_700_000_000.0)
+    client = _AdvancingAsyncClient(clock, Status.SERVICE_UNAVAILABLE)
+    policies = [AsyncRetryPolicy(backoff_factor=0), AsyncSetDatePolicy(clock=clock)]
+    async with AsyncPipeline(client, policies=policies) as p:
+        await p.run(_request(), DispatchContext(_instr("0" * 16 + "6")))
+    assert len(client.calls) == 2
     first = client.calls[0].headers.get("Date")
     second = client.calls[1].headers.get("Date")
     assert first is not None and second is not None

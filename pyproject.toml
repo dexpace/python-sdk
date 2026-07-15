@@ -9,6 +9,7 @@ dependencies = [
     "dexpace-sdk-http-aiohttp",
     "dexpace-sdk-http-httpx",
     "dexpace-sdk-http-requests",
+    "dexpace-sdk-tck",
 ]
 
 [tool.uv.workspace]
@@ -20,29 +21,72 @@ dexpace-sdk-http-stdlib = { workspace = true }
 dexpace-sdk-http-aiohttp = { workspace = true }
 dexpace-sdk-http-httpx = { workspace = true }
 dexpace-sdk-http-requests = { workspace = true }
+dexpace-sdk-tck = { workspace = true }
 
 [dependency-groups]
 dev = [
     "pytest>=9.1.0",
     "pytest-cov>=4.1",
     "pytest-asyncio>=1.4.0",
+    "hypothesis>=6.100",
     "ruff>=0.15.17",
     "mypy>=1.10",
+    "import-linter>=2.0",
 ]
 
 [tool.pytest.ini_options]
 testpaths = [
+    "packages/dexpace-sdk-tck/src/dexpace/sdk/tck",
     "packages/dexpace-sdk-core/tests",
     "packages/dexpace-sdk-http-stdlib/tests",
     "packages/dexpace-sdk-http-aiohttp/tests",
     "packages/dexpace-sdk-http-httpx/tests",
     "packages/dexpace-sdk-http-requests/tests",
+    "examples/petstore/tests",
 ]
+# The TCK battery + its self-tests ship inside the installed ``dexpace.sdk.tck``
+# namespace package (so ``pytest --pyargs dexpace.sdk.tck`` certifies an adapter
+# externally). ``consider_namespace_packages`` makes pytest import those modules
+# under their full ``dexpace.sdk.tck.*`` names — the same module objects the
+# adapter conftests import ``SYNC_HARNESS_FACTORIES`` / ``ASYNC_HARNESS_FACTORIES``
+# from — so registration and the battery share one registry, not two.
+consider_namespace_packages = true
+# The petstore canary lives outside the packaged workspace members, so its
+# generated SDK is importable in tests without an editable install.
+pythonpath = ["examples/petstore/src"]
 addopts = "-ra --strict-markers"
 asyncio_mode = "auto"
+markers = [
+    "req(requirement_id): mark a test as covering a spec requirement id (e.g. req(\"RETRY-19\")); consumed by tools/traceability_audit.py",
+]
 filterwarnings = [
+    # First-party suites run warnings-as-errors. The bare "error" entry already
+    # promotes every category (DeprecationWarning included); the explicit
+    # "error::DeprecationWarning" line pins that NFR contract literally, so the
+    # gate keeps catching deprecations even if "error" is ever narrowed.
     "error",
+    "error::DeprecationWarning",
+    # Scoped waiver: pytest-asyncio raises its own DeprecationWarnings from
+    # inside the plugin. Ignore only those (listed last so it wins over the
+    # error filters above) — first-party deprecations still fail the run.
     "ignore::DeprecationWarning:pytest_asyncio.*",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["dexpace.sdk"]
+
+[tool.coverage.report]
+# Aggregate line+branch coverage gate, enforced as blocking in CI (the
+# `coverage` job in .github/workflows/ci.yml). The tree currently measures
+# ~94%; 80% is the contractual floor that holds the line against regressions,
+# not a target to code down to.
+fail_under = 80
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
 ]
 
 [tool.ruff]
@@ -52,7 +96,9 @@ src = ["packages/dexpace-sdk-core/src", "packages/dexpace-sdk-core/tests",
        "packages/dexpace-sdk-http-stdlib/src", "packages/dexpace-sdk-http-stdlib/tests",
        "packages/dexpace-sdk-http-aiohttp/src", "packages/dexpace-sdk-http-aiohttp/tests",
        "packages/dexpace-sdk-http-httpx/src", "packages/dexpace-sdk-http-httpx/tests",
-       "packages/dexpace-sdk-http-requests/src", "packages/dexpace-sdk-http-requests/tests"]
+       "packages/dexpace-sdk-http-requests/src", "packages/dexpace-sdk-http-requests/tests",
+       "packages/dexpace-sdk-tck/src",
+       "examples/petstore/src", "examples/petstore/tests"]
 
 [tool.ruff.lint]
 select = [
@@ -88,12 +134,25 @@ disallow_untyped_defs = true
 disallow_any_generics = true
 namespace_packages = true
 explicit_package_bases = true
+# Each transport-adapter package ships a thin tests/conftest.py that registers
+# its harness into the shared transport-conformance battery. Those shims all
+# resolve to the bare module name "conftest" and collide in mypy's flat module
+# namespace (core/tests avoids this by being a package via tests/__init__.py;
+# the adapter test dirs deliberately are not, to keep pytest's rootdir-relative
+# collection). The substantive, typed harness code lives in each package's
+# uniquely-named *_harness.py / *_conformance_harness.py module, which mypy
+# still type-checks in full — only the registration shims are excluded here.
+exclude = [
+    "packages/dexpace-sdk-http-[^/]+/tests/conftest\\.py$",
+]
 mypy_path = [
     "packages/dexpace-sdk-core/src",
     "packages/dexpace-sdk-http-stdlib/src",
     "packages/dexpace-sdk-http-aiohttp/src",
     "packages/dexpace-sdk-http-httpx/src",
     "packages/dexpace-sdk-http-requests/src",
+    "packages/dexpace-sdk-tck/src",
+    "examples/petstore/src",
 ]
 files = [
     "packages/dexpace-sdk-core/src",
@@ -106,10 +165,32 @@ files = [
     "packages/dexpace-sdk-http-httpx/tests",
     "packages/dexpace-sdk-http-requests/src",
     "packages/dexpace-sdk-http-requests/tests",
+    "packages/dexpace-sdk-tck/src",
+    "examples/petstore/src",
+    "examples/petstore/tests",
 ]
 
 [[tool.mypy.overrides]]
 module = "tests.*"
+disallow_untyped_defs = false
+disallow_untyped_decorators = false
+disallow_untyped_calls = false
+warn_return_any = false
+
+# The TCK's own pytest bodies (the battery + its packaging/import self-tests)
+# and its conftest are test code, not library surface, so they get the same
+# relaxations as every other `tests.*` module. The TCK's *library* modules
+# (`harness`, `fake_transport`, `golden_corpus.*`) are deliberately excluded
+# from this list and stay under full `--strict`, since they are the public
+# certification seam adapters compile against.
+[[tool.mypy.overrides]]
+module = [
+    "dexpace.sdk.tck.conftest",
+    "dexpace.sdk.tck.test_async_contract",
+    "dexpace.sdk.tck.test_corpus_packaging",
+    "dexpace.sdk.tck.test_import_discipline",
+    "dexpace.sdk.tck.test_sync_contract",
+]
 disallow_untyped_defs = false
 disallow_untyped_decorators = false
 disallow_untyped_calls = false

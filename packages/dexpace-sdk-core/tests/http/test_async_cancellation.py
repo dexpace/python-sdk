@@ -70,6 +70,7 @@ async def test_aiter_bytes_releases_stream_and_propagates_when_cancelled_mid_rea
     assert stream.close_completed is True
 
 
+@pytest.mark.req("BODY-8")
 async def test_request_aiter_bytes_releases_stream_and_propagates_when_cancelled() -> None:
     # The request-side stream body must shield its close just like the
     # response side, so a cancel mid-read still releases the upstream stream.

@@ -21,6 +21,7 @@ def test_round_trip_basic_values() -> None:
     assert JSON_SERDE.deserializer.deserialize(text) == payload
 
 
+@pytest.mark.req("SERDE-24")
 def test_datetime_encoded_as_iso() -> None:
     when = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
     text = JSON_SERDE.serializer.serialize({"at": when})
@@ -40,6 +41,7 @@ def test_serialize_to_stream() -> None:
     assert stream.getvalue() == b'{"a":1}'
 
 
+@pytest.mark.req("SERDE-3")
 def test_deserialize_stream() -> None:
     stream = BytesIO(b'{"x": "y"}')
     assert JSON_SERDE.deserializer.deserialize_stream(stream) == {"x": "y"}
@@ -79,6 +81,7 @@ def test_sort_keys_emitted_sorted() -> None:
     assert text == '{"a":2,"b":1}'
 
 
+@pytest.mark.req("SEAM-19", "SERDE-1")
 def test_serde_uses_provided_components() -> None:
     custom_ser = JsonSerializer(sort_keys=True)
     custom_des = JsonDeserializer()

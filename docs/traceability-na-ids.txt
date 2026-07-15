@@ -1,0 +1,117 @@
+# Traceability N/A requirement ids — machine-readable projection of the
+# conformance ledger (docs/deviations.md and docs/conformance-ledger.md).
+#
+# The traceability audit (tools/traceability_audit.py) reads this file via the
+# DEXPACE_TRACEABILITY_NA environment variable and treats every id listed here
+# as accounted-for, so it never counts as an uncovered-MUST gap. Two dispositions
+# appear here, both MUST-level (SHOULD/MAY never gate):
+#   - na:        not applicable to the Python port (a Java/JVM idiom or a seam
+#                this port deliberately omits — e.g. the byte-stream/Io provider
+#                seam, the Builder pattern, JVM interruption/MDC/fork-join).
+#   - deviation: the behaviour is provided by a different, documented mechanism.
+# Every id carries a one-line justification; the full rationale lives in
+# docs/conformance-ledger.md. Format: one id per line; '#' comments ignored.
+#
+
+# --- Not applicable to the Python port (55 MUST) ---
+ASYNC-21  # na: Exposing SSE 'as a reactive stream' is a JVM reactive-streams/Reactor Publisher ecosystem adapter; this port has no reactive-streams seam and instead exposes SSE as a native async 
+ASYNC-3  # na: cancel-with-interrupt vs cancel-without-interrupt is JVM Thread.interrupt() worker-thread semantics; CPython threads are not interruptible from outside (deviations.md sync-cancella
+ASYNC-4  # na: Ordered interrupt-flag delivery to avoid poisoning a pooled thread is a JVM interrupt-flag hazard; CPython has no cross-thread interrupt flag, so the poisoning failure mode does no
+BODY-10  # na: The exact-length stream-to-sink copy primitive (with premature-EOF and zero-byte-read errors) belongs to the removed Io/byte-stream seam; the port's stream body iterates to natural
+BODY-37  # na: A tee sink exposing a writable buffer handle that bypasses the primary sink is an Okio Sink/BufferedSink API concept from the removed Io/byte-stream seam (CLAUDE.md forbids reintro
+CFG-21  # na: This is a corollary of the interruptible-task future (CFG-20): a cancelled-future-with-closeable-result discard path only exists inside the JVM ExecutorService/Future+thread-interr
+CFG-32  # na: A bespoke non-blocking type-4 UUID generator is a JVM workaround for java.util.UUID.randomUUID()'s blocking SecureRandom; CPython's stdlib uuid.uuid4() is already non-blocking and 
+CFG-33  # na: Deep value-equality helpers are the Java Objects.deepEquals/Arrays.deepEquals/deepHashCode idiom; Python's native structural == and hash on list/tuple/dict already compare by conte
+CFG-34  # na: The float-array deep-equality semantics (NaN==NaN, +0.0!=-0.0, object-array vs primitive-array kind distinction) are the Java Arrays.equals(double[])/Double.equals contract; Python
+HTTP-39  # na: The fixed-count 'copy exactly N bytes from a source, raising on early EOF' primitive is the removed Okio/Io byte-stream (Source) seam; the Python port models stream bodies over std
+IO-1  # na: Okio Source.read tail-append/return-code contract; the byte-stream Source/Sink/Buffer seam was removed and Python stdlib bytes/bytearray/memoryview/BytesIO/BinaryIO is the contract
+IO-10  # na: Okio Buffer.clear()/copyTo(window) non-consuming copy; the Buffer seam was removed.
+IO-11  # na: Okio BufferedSource exhausted()/readByte()/readByteArray(); the BufferedSource seam was removed (drain via iter_bytes/bytes() over stdlib bytes).
+IO-12  # na: Okio exact-count read (readByteArray(n)/readUtf8(n)) EOF-on-short contract; the BufferedSource seam was removed.
+IO-13  # na: Okio UTF-8/explicit-charset read/write surface (readUtf8/writeUtf8/writeString(charset)); the BufferedSource/BufferedSink seam was removed, encoding is done with stdlib str.encode/
+IO-14  # na: Okio BufferedSource.readUtf8Line() terminator semantics; the BufferedSource seam was removed (SSE/streaming line handling is a separate subsystem, not this Okio primitive).
+IO-15  # na: Okio BufferedSource.skip(byteCount) EOF contract; the BufferedSource seam was removed.
+IO-17  # na: Okio Sink.writeAll(source) pump-to-exhaustion/return-count contract; the Source/Sink seam was removed.
+IO-19  # na: Okio BufferedSource.peek() non-consuming view; the BufferedSource seam was removed (repeatable reads are achieved by LoggableResponseBody caching, not a peek view).
+IO-2  # na: Okio Source.read(0) EOF-vs-zero semantics; the Source seam does not exist in this port (stdlib bytes/BytesIO is the contract), so there is no read(byteCount) primitive to specify.
+IO-20  # na: Okio BufferedSource.slice(offset, byteCount) non-consuming length-bounded view; the slice/BufferedSource seam was removed.
+IO-21  # na: Okio slice lazy offset-overflow vs eager negative-arg rejection; the slice seam was removed.
+IO-22  # na: Okio slice/parent close-invalidation contract; the slice seam was removed.
+IO-23  # na: Okio multiple-slice/peek mutual independence and slice-of-slice offset composition; the slice/peek seam was removed.
+IO-24  # na: Okio read-after-explicit-slice-close state-error contract; the slice seam was removed.
+IO-28  # na: Okio TeeSink's guard against exposing its backing Buffer accessor; the Sink seam was removed and the LoggableRequestBody decorator exposes only iter_bytes/snapshot/captured_size (n
+IO-29  # na: Okio TeeSink's flush()/close()/emit() forwarding-to-primary-only lifecycle; flush/emit are Sink methods that do not exist on the RequestBody/ResponseBody surface (the Sink lifecycl
+IO-3  # na: Negative-byteCount argument validation on Okio Source.read/Sink.write/Buffer.copyTo; those size-taking seam primitives were removed with the byte-stream provider seam (docs/archite
+IO-30  # na: Okio provider factory operations (create Buffer, wrap streams/byte-array as BufferedSource/Sink); the provider seam was removed, bodies are constructed via RequestBody/ResponseBody
+IO-31  # na: Okio provider-registry resolution precedence via classpath auto-discovery; Protocols replace Java interfaces and there is no ServiceLoader auto-discovery idiom in this port, so no 
+IO-32  # na: Okio provider install idempotency/conflict-rejection; the provider registry seam was removed (no ServiceLoader-style installable provider).
+IO-33  # na: Okio explicit-install-wins-over-auto-discovery precedence; the provider registry and auto-discovery seam were removed.
+IO-37  # na: Single-threaded-contract declaration for Okio Source/Sink/BufferedSource/BufferedSink/Buffer/TeeSink; those streaming instance types were removed with the byte-stream seam.
+IO-38  # na: Cross-thread observability of a source/buffer close-state to derived slices; the slice/Buffer seam was removed, so there are no derived slices to invalidate.
+IO-4  # na: Okio Sink.write head-removal/short-write contract; the Sink seam was removed in favour of RequestBody.iter_bytes over stdlib bytes.
+IO-40  # na: Okio no-op Timeout on wrapped streams plus non-swallowing/non-duplicating cancellation forwarding by a mirroring Sink; the Okio Timeout and Source/Sink seam were removed (in-memory
+IO-41  # na: Idempotent close() / close-at-most-once for Okio Source/Sink/Buffer; those seam types were removed (close-idempotency of bodies, responses, SSE connections and pipelines is exercis
+IO-42  # na: Okio buffered-source/sink use-after-close rejection with in-memory-buffer exemption and slice invalidation; the BufferedSource/BufferedSink/slice seam was removed (LoggableResponse
+IO-5  # na: Okio Sink.flush() plus closeable Source/Sink; the Source/Sink seam was removed (bodies stream via iter_bytes/aiter_bytes, not a flushable Sink).
+IO-6  # na: Okio provider wrapping/ownership of a caller-supplied underlying stream; the provider seam was removed and stream ownership is handled by the transport adapters, not a buffered Sou
+IO-7  # na: Okio Buffer FIFO-that-is-both-source-and-sink; the Buffer seam was removed (an in-memory queue is just bytes/BytesIO here).
+IO-8  # na: Okio Buffer.snapshot() independent-copy contract; the Buffer seam was removed, so there is no Buffer.snapshot to specify (the log-tap snapshot on LoggableRequestBody is a distinct 
+NFR-8  # na: The requirement's own escape clause ("In ecosystems without such a build step this requirement does not apply") applies: CPython wheels have no whole-program dead-code elimination/
+PAGE-30  # na: Genuinely not applicable: AsyncPaginator accepts no caller-supplied driver executor (constructor: source, strategy, initial_request, max_pages, dispatch_factory), so the entire req
+RETRY-45  # na: Scheduler-lifecycle ownership (never shut down a caller-supplied scheduler; a process-wide daemon-thread scheduler VM-wide; the async stage stack requiring a caller-supplied schedu
+SEAM-29  # na: the immutable-value + Builder pattern was deliberately not ported: CLAUDE.md mandates frozen @dataclass(slots=True) models constructed via keyword/default arguments ('Builders are 
+SEAM-3  # na: the byte-stream provider / Io / IoProvider / Okio-style seam was deliberately removed (confirmed absent in core source) — CLAUDE.md states Python stdlib bytes/bytearray/memoryview/
+SEAM-4  # na: no byte-stream provider factory exists to be thread-safe — the whole provider seam was removed in favour of the stdlib bytes/BytesIO/BinaryIO contract (CLAUDE.md removed-Io-seam de
+SEAM-5  # na: provider resolution/precedence has no port: the byte-stream provider seam is removed, and there is no classpath ServiceLoader auto-discovery idiom on CPython — Protocols replace Ja
+SEAM-6  # na: explicit provider installation/idempotency has no port — the byte-stream provider seam it governs was removed (CLAUDE.md removed-Io-seam deviation); no install registry exists in c
+SEAM-7  # na: process-wide caching of a discovered provider has no port — there is no provider seam and no classpath discovery scan to cache (removed-Io-seam + no-ServiceLoader deviations).
+SEAM-9  # na: provider resolve/install/swap concurrency-safety has no port — the provider registry it protects was removed; the stdlib byte types carry no install state (removed-Io-seam deviatio
+TRANSPORT-8  # na: OkHttp's interceptor-driven internal cancel-all is a library-specific seam with no analog in httpx/aiohttp/requests/urllib (like java.net.http, which the requirement text itself ca
+TRANSPORT-9  # na: The adaptation race is an artifact of OkHttp's Call.enqueue + CompletableFuture callback dispatch where a native response can arrive after the future already completed/cancelled; a
+XCUT-23  # na: This requirement is the pluggable I/O-provider SPI with classpath/ServiceLoader auto-discovery and zero/multiple-candidate resolution; that byte-stream provider (Io/IoProvider/Okio
+
+# --- Documented deviations (43 MUST) ---
+ASYNC-18  # deviation: The non-blocking async delay is provided by stdlib asyncio.sleep via AsyncClock.sleep (_AsyncSystemClock.sleep / async_http_client.asyncio_sleep) — an event-loop timer that holds n
+AUTH-1  # deviation: The port's resolver (codegen/auth.py) recognizes open scheme-name strings matched against an AuthRegistry rather than a fixed {OAUTH2,API_KEY,BASIC,DIGEST,NO_AUTH} enum, and models
+AUTH-10  # deviation: Additive grace-margin expiry evaluation is implemented and tested (needs_refresh/classify/is_expired), but AccessTokenInfo makes expires_on a mandatory int so there is no null-mean
+AUTH-12  # deviation: The RFC 7235 parser handles multiple comma-separated challenges, quoted-string commas/=, backslash escapes, lower-cased parameter names and verbatim values (heavily tested), but sc
+AUTH-2  # deviation: AuthRequirement is a frozen (immutable, value-equal) dataclass binding exactly one scheme to its scopes (test_auth_scheme_satisfies_by_name_and_scope_subset), but it drops the sepa
+AUTH-3  # deviation: AuthDescriptor is a non-empty, ordered, immutable frozen dataclass that rejects an empty requirement list at construction (test_auth_descriptor_rejects_empty), but the allowsAnonym
+AUTH-6  # deviation: A present-but-unsatisfiable selected tier raises the distinct AuthResolutionError (test_unsatisfiable_per_call_does_not_fall_through_to_client), but when all three descriptors are 
+BODY-25  # deviation: In the iterator-based ResponseBody model (the removed read-into-buffer Io seam) end-of-stream is signalled only by iterator exhaustion, so an interior zero-length chunk is tolerate
+CFG-25  # deviation: An out-of-range/non-numeric port yields None with a warning (tested), and the anti-fabrication intent ('never invent a per-scheme default port') is honored; but a genuinely absent 
+CFG-31  # deviation: The blank/empty-input MUST-fail clause is satisfied and tested (parse returns None), but parsing delegates to stdlib email.utils.parsedate_to_datetime (documented as tolerant in ht
+CFG-7  # deviation: ISO-8601, shorthand ms/s/m/h/d, negative-rejection and unknown-unit rejection are all implemented and tested, but a bare number is deliberately interpreted as SECONDS (not the spec
+CTX-10  # deviation: A promoted dispatch stays unregistered (store_key=None) so its close is a no-op as required, but closing a promoted request tier deliberately clears the successor exchange because 
+CTX-5  # deviation: Per the CTX-17 promotion-time model, keys are minted at promotion (ContextStore.new_key), not at direct construction, so an off-chain context defaults to store_key=None (verified: 
+CTX-9  # deviation: CallContext.close() removes unconditionally by the call-unique shared key (context_store.py 'Two removers coexist' docstring) rather than identity-conditionally, because request an
+HTTP-2  # deviation: Java builders are replaced by frozen dataclasses whose __post_init__ validates on every construction path (raw constructor and dataclasses.replace included), so validation cannot b
+HTTP-3  # deviation: newBuilder()-style derivation is provided by the with_* helpers plus dataclasses.replace (derive a modified copy without restating fields), and collections are stored as immutable 
+HTTP-34  # deviation: RequestOptions is folded into Request keyword-arg fields (timeout, retries) with None 'use-the-default' sentinels — a default-constructed Request being the canonical 'override noth
+HTTP-38  # deviation: Replayability-by-source is honored and tested (bytes/string/file/form replayable; stream/iter single-use), but the form body deliberately uses strict RFC 3986 %20 encoding (never '
+NFR-10  # deviation: The lowest-supported-runtime floor is declared as requires-python>=3.12 in every published pyproject and enforced by the CI 3.12/3.13/3.14 matrix running the full suite on the floo
+NFR-17  # deviation: The quality gates are wired blocking (fail the run) in .github/workflows/ci.yml and release.yml — pytest, traceability audit (DEXPACE_TRACEABILITY_GATE), mypy --strict, ruff/ruff-f
+PAGE-23  # deviation: Replace-first-in-place, append-when-absent, remove-on-null, and follow-whole-URL-preserving-method/headers are all covered by the cited tests; BUT the MUST sub-clause 'dropping any
+PIPE-26  # deviation: The Python pipeline exposes run(request, dispatch, **options) and is consumed via the structural SyncPipelineLike/AsyncPipelineLike Protocols (pipeline/dispatch.py) rather than lit
+PIPE-27  # deviation: Rather than making pipeline close a strict no-op, Pipeline.__exit__ delegates to transport.close() (the CLAUDE.md context-manager convention) and transport adapters are ownership-a
+PIPE-33  # deviation: The sync->async bridge lives at the transport seam (client/_sync_to_async.py SyncToAsyncHttpClient) and mandates a caller-supplied executor with no default (tests test_missing_exec
+PIPE-34  # deviation: The async->sync bridge lives at the transport seam (client/_async_to_sync.py AsyncToSyncHttpClient): it blocks the calling thread for each call and on KeyboardInterrupt cancels the
+RECOV-14  # deviation: No chain container defensively copies step lists; instead each policy defensively frozenset-copies its own collections (RetryPolicy.method_allowlist/retry_on_status_codes are froze
+RECOV-20  # deviation: Retries are bounded by a max-attempts cap (initial send counts as attempt 1; asserted by test_sync_max_retries_two_sends_exactly_three_times) AND a per-call total-timeout deadline 
+RECOV-21  # deviation: The exponential curve base*multiplier^(n-1) capped at maxDelay is ported faithfully and tested, but the jitter is a different scheme — AWS full-jitter [0.5,1.0] by default and a sy
+RECOV-3  # deviation: The port has no dedicated RequestRecoveryChain container; ordered request-side transforms, empty-set identity, and short-circuit-and-propagate-on-throw are realized by the pipeline
+RECOV-6  # deviation: There is no chain container that iterates a response-step list then a recovery-step list; the response-then-recovery ordering emerges from composing map_success (Success-path) befo
+REDIR-11  # deviation: Verified: the port plants no out-of-band wire marker. Instead each credential policy records the seed origin via ctx.data.setdefault(_AUTH_ORIGIN_KEY, current) on first pass and re
+REDIR-26  # deviation: Verified: the port satisfies the defensive-copy requirement natively via type immutability rather than a copy — allowed_methods is typed and stored as a frozenset (redirect.py __in
+REDIR-5  # deviation: Verified: the 303 GET-rebuild mechanics match and are tested (test_303_follow_303_true_reissues_as_get_and_drops_body: GET, body dropped, Content-* removed; test_303_follow_303_fal
+REDIR-7  # deviation: Verified: the port strips Authorization ONLY on a cross-origin re-issue (test_authorization_stripped_on_cross_origin_redirect, test_authorization_stripped_on_cross_origin_303_get),
+RETRY-1  # deviation: The classifier IS single-sourced (DEFAULT_RETRYABLE_STATUS in pipeline/_pure/classifier.py, consumed by both HttpResponseError.retryable and RetryPolicy's default) and that single-
+RETRY-28  # deviation: This unified port models its single RetryPolicy on Azure corehttp, whose 'timeout' knob is an always-on total budget with a large default (604800s / 7 days, documented inline as 'mirroring Azure's default'). That default is effectively unbounded, so no practical budget is imposed out of the box — the failure mode RETRY-28 guards against (a unifying port making the stage stack's zero-budget always-on) does not occur; a caller opts into a tighter budget by setting 'timeout'. A None-defaulted opt-in parameter was considered but rejected to keep the corehttp-fidelity API (timeout: float) the port deliberately follows.
+RETRY-6  # deviation: CORRECTED from marker. The idempotent-method set IS single-sourced (_DEFAULT_METHOD_ALLOWLIST in retry.py:100) and POST/PATCH are correctly excluded (retried only on 500/503/504 vi
+RETRY-9  # deviation: compute_backoff implements base*multiplier**(attempt-1) clamped to cap (tested: test_exponential_growth, test_cap_saturates), BUT it special-cases attempt<=1 to return 0.0 (retry.p
+SERDE-21  # deviation: The codec is deliberately validation-free (codec.py module docstring: 'performs no schema checks or scalar coercion'); cross-shape scalars pass through unchanged ('5'->str '5', 1.5
+SERDE-27  # deviation: The response-decode lifecycle/error contract is fully implemented and tested (closes the response on every path, surfaces a missing body as a DeserializationError naming the target
+SSE-20  # deviation: Confirmed: SseEvent is a frozen(slots) dataclass (immutable) whose payload is an immutable joined string rather than a defensively-copied data list (consequence of SSE-8), so there
+SSE-38  # deviation: The core parser conforms — it surfaces the server retry hint and each event's raw per-block id, no longer persists a last-event-id across events (SSE-16), and sets no request header. Reconnection and Last-Event-ID continuity are provided only by the separable, opt-in SseConnection/AsyncSseConnection value-add layer that a caller must explicitly choose, not by the core parse path.
+SSE-8  # deviation: Confirmed: _data_lines accumulates consecutive data lines in wire order but they are joined with a single '\n' into an immutable SseEvent.data string at dispatch rather than expose
+TRANSPORT-4  # deviation: The cancel-flag clause is honored and tested (read timeout maps to ServiceResponseTimeoutError, never RequestCancelledError, classified as timeout), but the port deliberately devia

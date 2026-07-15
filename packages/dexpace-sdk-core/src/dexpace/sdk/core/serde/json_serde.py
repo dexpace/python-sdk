@@ -8,9 +8,13 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from datetime import date, datetime, time
-from typing import Any, BinaryIO, Final
+from typing import TYPE_CHECKING, Any, BinaryIO, Final
 
 from ..errors import DeserializationError, SerializationError
+from ..http.common import common_media_types
+
+if TYPE_CHECKING:
+    from ..http.common.media_type import MediaType
 
 
 class _JsonEncoder(json.JSONEncoder):
@@ -129,6 +133,41 @@ class JsonSerializer:
         """
         stream.write(self.serialize_to_bytes(value))
 
+    def serialize_into(self, value: Any, buffer: bytearray | memoryview, offset: int = 0) -> int:
+        """Serialise ``value`` into a caller-owned buffer at ``offset``.
+
+        Encodes to bytes first, so an unserialisable value surfaces as
+        ``SerializationError`` before any byte is written. Overflowing the
+        buffer is a caller/range error, not a serde-shape problem, so it raises
+        ``ValueError`` rather than a ``SerdeError``. The buffer is never grown.
+
+        Args:
+            value: The value to serialise.
+            buffer: A writable buffer (``bytearray`` or a writable
+                ``memoryview``) to receive the encoded bytes.
+            offset: Index at which to begin writing; must be non-negative.
+
+        Returns:
+            The number of bytes written.
+
+        Raises:
+            SerializationError: If ``value`` cannot be encoded.
+            ValueError: If ``offset`` is negative, or the encoded bytes do not
+                fit in ``buffer`` starting at ``offset``.
+        """
+        if offset < 0:
+            raise ValueError(f"offset must be non-negative, got {offset}")
+        data = self.serialize_to_bytes(value)
+        view = memoryview(buffer)
+        end = offset + len(data)
+        if end > len(view):
+            raise ValueError(
+                f"buffer too small: {len(data)} byte(s) at offset {offset} need "
+                f"{end} byte(s), buffer holds {len(view)}",
+            )
+        view[offset:end] = data
+        return len(data)
+
 
 class JsonDeserializer:
     """Deserialise JSON strings / bytes / streams into Python values."""
@@ -184,6 +223,7 @@ class JsonSerde:
     Attributes:
         serializer: The JSON encoder.
         deserializer: The JSON decoder.
+        media_type: The wire content type, ``application/json``.
     """
 
     __slots__ = ("_deserializer", "_serializer")
@@ -203,6 +243,16 @@ class JsonSerde:
     @property
     def deserializer(self) -> JsonDeserializer:
         return self._deserializer
+
+    @property
+    def media_type(self) -> MediaType:
+        """The media type this bundle reads and writes: ``application/json``.
+
+        Declared explicitly by the bundle rather than defaulted at the ``Serde``
+        SPI boundary, so a consumer wiring a request's ``Content-Type`` reads it
+        from the concrete serde instead of assuming JSON.
+        """
+        return common_media_types.APPLICATION_JSON
 
 
 #: Module-level default ``JsonSerde`` — use for vanilla encoder/decoder needs.

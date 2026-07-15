@@ -36,6 +36,7 @@ def _extract(page: _Page) -> tuple[str | None, Iterable[int]]:
 
 
 class TestPager:
+    @pytest.mark.req("PAGE-34")
     def test_iterates_pages_in_order(self) -> None:
         pages: dict[str | None, _Page] = {
             None: _Page(items=[1, 2], next_token="page2"),
@@ -84,6 +85,7 @@ class TestPager:
 
 
 class TestItemPaged:
+    @pytest.mark.req("PAGE-34")
     def test_flat_iteration(self) -> None:
         pages: dict[str | None, _Page] = {
             None: _Page(items=[1, 2], next_token="x"),

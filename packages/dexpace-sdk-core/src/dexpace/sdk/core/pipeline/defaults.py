@@ -10,10 +10,11 @@ from typing import TYPE_CHECKING
 from .async_staged_builder import AsyncStagedPipelineBuilder
 from .policies.async_client_identity import AsyncClientIdentityPolicy
 from .policies.async_idempotency import AsyncIdempotencyPolicy
+from .policies.async_logging_policy import AsyncLoggingPolicy
 from .policies.async_redirect import AsyncRedirectPolicy
 from .policies.async_retry import AsyncRetryPolicy
 from .policies.async_set_date import AsyncSetDatePolicy
-from .policies.async_tracing_policy import AsyncOperationTracingPolicy
+from .policies.async_tracing_policy import AsyncOperationTracingPolicy, AsyncTracingPolicy
 from .policies.client_identity import ClientIdentityPolicy
 from .policies.idempotency import IdempotencyPolicy
 from .policies.logging_policy import LoggingPolicy
@@ -104,6 +105,8 @@ def default_async_pipeline(
     set_date: AsyncSetDatePolicy | None = None,
     client_identity: AsyncClientIdentityPolicy | None = None,
     auth: AsyncPolicy | None = None,
+    logging: AsyncLoggingPolicy | None = None,
+    tracing: AsyncTracingPolicy | None = None,
 ) -> AsyncStagedPipelineBuilder:
     """Async twin of `default_pipeline`.
 
@@ -111,22 +114,68 @@ def default_async_pipeline(
     the whole operation from the outermost stage so the per-operation
     ``HttpTracer`` lifecycle (``operation_started`` / ``operation_succeeded`` /
     ``operation_failed``) fires once and reflects the final outcome — completing
-    the attempt-level events the async retry and redirect policies already emit
-    through the same per-operation tracer. The per-attempt OpenTelemetry span
-    policy (`TracingPolicy`) and `LoggingPolicy` ship sync-only, so the async
-    stack omits those two.
+    the attempt-level events the async retry policy already emits through the
+    same per-operation tracer. `AsyncLoggingPolicy` and `AsyncTracingPolicy`
+    then sit inside the retry wrapper (at ``LOGGING`` / ``POST_LOGGING``), so
+    the async stack emits the same per-attempt wire logs and per-attempt tracing
+    span as the sync default.
+
+    No redirect policy by default. Unlike the sync `default_pipeline`, this
+    stack does NOT wire `AsyncRedirectPolicy` unless the caller passes one
+    explicitly. Neither pillar's redirect handling is yet certified against the
+    full redirect security battery — `AsyncRedirectPolicy` delegates every
+    per-hop decision to the same `RedirectPolicy` core the sync default wires
+    unconditionally, so the gaps are shared, not async-specific: cross-origin
+    credential handling is judged against the previous hop rather than the seed
+    origin and strips only ``Authorization`` (not ``Cookie`` /
+    ``Proxy-Authorization``); an HTTPS→HTTP downgrade is followed rather than
+    default-denied. (`Location` resolution IS wire-exact — the pure RFC 3986
+    query codec fixed that dimension.) See `docs/deviations.md` for the full
+    battery and status. Gating the async twin off by default — rather than
+    also removing it from the sync default, which would be a bigger behavior
+    change — is the narrower fix while the shared core gets certified; until
+    then, an async caller who accepts the current limitations can opt in by
+    passing ``redirect=AsyncRedirectPolicy(...)``, which wires it into the
+    REDIRECT stage exactly as the sync default does.
+
+    Args:
+        client: Terminal async HTTP transport.
+        redirect: Opt-in `AsyncRedirectPolicy`. ``None`` (the default) wires no
+            redirect policy — see the note above. Pass an instance to follow
+            redirects on the async path.
+        idempotency: Override for `AsyncIdempotencyPolicy`. ``None`` uses
+            defaults.
+        retry: Override for `AsyncRetryPolicy`. ``None`` uses defaults.
+        set_date: Override for `AsyncSetDatePolicy`. ``None`` uses defaults.
+        client_identity: Override for `AsyncClientIdentityPolicy`. ``None``
+            uses defaults.
+        auth: Optional async authentication policy. No default — requests pass
+            without authentication when this is ``None``.
+        logging: Override for `AsyncLoggingPolicy`. ``None`` uses defaults.
+        tracing: Override for `AsyncTracingPolicy`. ``None`` uses defaults.
+
+    Returns:
+        An `AsyncStagedPipelineBuilder` ready for further customisation or
+        immediate ``.build()``.
     """
     builder = AsyncStagedPipelineBuilder(client)
     # Sorts to Stage.OPERATION (outermost), bracketing every hop / attempt so
     # the per-operation lifecycle fires once on the final outcome.
     builder.append(AsyncOperationTracingPolicy())
-    builder.append(redirect or AsyncRedirectPolicy())
+    # Gated: the async redirect twin is only wired when the caller opts in.
+    # See the note above — it is not certified against the full redirect battery.
+    if redirect is not None:
+        builder.append(redirect)
     builder.append(idempotency or AsyncIdempotencyPolicy())
     builder.append(retry or AsyncRetryPolicy())
     builder.append(set_date or AsyncSetDatePolicy())
     builder.append(client_identity or AsyncClientIdentityPolicy())
     if auth is not None:
         builder.append(auth)
+    # Sit inside the retry wrapper (LOGGING / POST_LOGGING) so wire logs and the
+    # tracing span are emitted per attempt, matching the sync default's slots.
+    builder.append(logging or AsyncLoggingPolicy())
+    builder.append(tracing or AsyncTracingPolicy())
     return builder
 
 

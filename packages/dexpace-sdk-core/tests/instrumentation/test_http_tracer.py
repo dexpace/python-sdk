@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from dexpace.sdk.core.instrumentation import (
     NOOP_HTTP_TRACER,
     NOOP_HTTP_TRACER_FACTORY,
@@ -14,6 +16,7 @@ from dexpace.sdk.core.instrumentation import (
 )
 
 
+@pytest.mark.req("CTX-20", "OBS-28")
 def test_noop_tracer_callbacks_are_silent_and_return_none() -> None:
     tracer = NOOP_HTTP_TRACER
 
@@ -36,6 +39,7 @@ def test_noop_tracer_is_an_http_tracer() -> None:
     assert isinstance(NOOP_HTTP_TRACER, HttpTracer)
 
 
+@pytest.mark.req("CTX-20", "OBS-25")
 def test_noop_factory_creates_the_shared_noop_tracer() -> None:
     created = NOOP_HTTP_TRACER_FACTORY.create()
     assert created is NOOP_HTTP_TRACER
@@ -45,10 +49,12 @@ def test_noop_factory_satisfies_the_factory_protocol() -> None:
     assert isinstance(NOOP_HTTP_TRACER_FACTORY, HttpTracerFactory)
 
 
+@pytest.mark.req("CTX-14", "CTX-20")
 def test_instrumentation_context_defaults_to_noop_factory() -> None:
     assert NOOP_INSTRUMENTATION_CONTEXT.http_tracer_factory is NOOP_HTTP_TRACER_FACTORY
 
 
+@pytest.mark.req("OBS-28")
 def test_subclass_overrides_only_chosen_events() -> None:
     events: list[tuple[str, object]] = []
 
@@ -88,3 +94,38 @@ def test_request_sent_accepts_known_and_unknown_lengths() -> None:
     tracer.request_sent(None)  # unknown length, e.g. an unsized streamed body
 
     assert received == [64, None]
+
+
+def test_retry_exhaustion_pairs_with_operation_failure() -> None:
+    # Lifecycle ordering: when the retry budget is exhausted the operation fails
+    # permanently. A tracer therefore observes ``attempt_retries_exhausted``
+    # before the terminal ``operation_failed`` carrying the escaping error.
+    events: list[str] = []
+    boom = TimeoutError("exhausted")
+
+    class _RecordingTracer(HttpTracer):
+        def attempt_retries_exhausted(self) -> None:
+            events.append("attempt_retries_exhausted")
+
+        def operation_failed(self, error: BaseException) -> None:
+            events.append(f"operation_failed:{type(error).__name__}")
+
+    tracer = _RecordingTracer()
+    tracer.attempt_retries_exhausted()
+    tracer.operation_failed(boom)
+
+    assert events == ["attempt_retries_exhausted", "operation_failed:TimeoutError"]
+
+
+@pytest.mark.req("OBS-20", "OBS-30")
+def test_tracer_callback_exception_is_not_wrapped() -> None:
+    # A raising callback propagates unchanged: the SDK never guards these.
+    sentinel = RuntimeError("callback boom")
+
+    class _BoomTracer(HttpTracer):
+        def operation_started(self) -> None:
+            raise sentinel
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _BoomTracer().operation_started()
+    assert excinfo.value is sentinel

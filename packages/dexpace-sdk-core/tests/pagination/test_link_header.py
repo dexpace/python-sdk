@@ -30,6 +30,7 @@ def test_parse_multiple_link_values_in_order() -> None:
     assert parsed[1][1]["rel"] == "last"
 
 
+@pytest.mark.req("PAGE-18")
 def test_comma_inside_quoted_param_does_not_split_link_values() -> None:
     header = '<https://api.example.com/a>; rel="next"; title="one, two"'
     parsed = parse_link_header(header)
@@ -61,6 +62,7 @@ def test_param_names_are_case_insensitive() -> None:
         "whitespace-header",
     ],
 )
+@pytest.mark.req("PAGE-18")
 def test_find_rel_returns_matching_target(header: str, rel: str, expected: str | None) -> None:
     assert find_rel(header, rel) == expected
 
@@ -70,6 +72,7 @@ def test_unquoted_param_value_is_accepted() -> None:
     assert find_rel(header, "next") == "https://x/1"
 
 
+@pytest.mark.req("PAGE-18")
 def test_escaped_quote_inside_quoted_value_is_unescaped() -> None:
     header = r'<https://x/1>; rel="next"; title="a \"quoted\" word"'
     parsed = parse_link_header(header)
@@ -83,6 +86,7 @@ def test_malformed_segment_without_brackets_is_ignored() -> None:
     assert parsed[0][0] == "https://x/1"
 
 
+@pytest.mark.req("PAGE-18")
 def test_comma_inside_uri_target_does_not_split_link_value() -> None:
     # A comma is a legal unencoded URI sub-delim; splitting inside <...> would
     # shred the target and drop the whole link-value.

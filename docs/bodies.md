@@ -16,8 +16,14 @@ classmethod factories for the common shapes.
 | `RequestBody.from_stream(BinaryIO)`      | ❌         | Single-use; call `to_replayable()` first if retries are needed. |
 | `RequestBody.from_iter(Iterable[bytes])` | ❌         | Same. The iterable is consumed on first `iter_bytes`. |
 
-Single-use bodies raise `RuntimeError` on the second `iter_bytes` call.
-The retry policy in `pipeline.policies.retry` **does** automatically
+Single-use bodies raise `RuntimeError` on the second `iter_bytes` call. That is
+a deliberate plain `RuntimeError` carrying an actionable message ("Call
+`to_replayable()` BEFORE the first `iter_bytes()` …"), not a bespoke catchable
+exception type: re-consuming an exhausted body is a programming error whose only
+correct fix is at the call site, so it stays out of the `errors` hierarchy
+rather than inviting an `except` handler that papers over the bug. See
+[`deviations.md`](deviations.md) for the rationale. The retry policy in
+`pipeline.policies.retry` **does** automatically
 buffer single-use bodies when the effective per-call retry total is
 positive: `RetryPolicy.send` merges any `retry_total` override in
 `ctx.options` with the policy's `total_retries` default, then calls
@@ -57,7 +63,11 @@ print(logged.snapshot()[:200])
 The cap is a soft truncate on the *tap*; the primary write path
 receives the full payload. `LoggableResponseBody` is the same shape on
 the response side — first access drains the underlying body into a
-`bytes` cache that subsequent calls replay.
+`bytes` cache. A body that fits the cap is captured whole and replayed by
+every later read; a body that exceeds the cap keeps only the prefix, then
+streams the live tail once (single-use past the cap). Either way,
+`snapshot()` returns the captured prefix without raising, and `error()`
+reports a mid-drain failure.
 
 ## Async equivalents
 

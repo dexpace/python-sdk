@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import threading
 from typing import TYPE_CHECKING, Any
 
 from ...errors import ClientAuthenticationError, ServiceRequestError
@@ -24,7 +22,12 @@ from .credentials import (
     KeyCredential,
     TokenCredential,
 )
-from .token_cache import InMemoryTokenCache, TokenCache
+from .token_cache import (
+    InMemoryTokenCache,
+    TokenCache,
+    _AsyncSingleFlight,
+    _SyncSingleFlight,
+)
 
 if TYPE_CHECKING:
     from ...pipeline.context import PipelineContext
@@ -44,7 +47,9 @@ class KeyCredentialPolicy(Policy):
     origin recorded on the first pass through the policy. When a downstream
     redirect reissues the request against a different origin (scheme, host,
     or effective port), the credential is withheld so it never reaches a
-    foreign host.
+    foreign host. On the same-origin stamping path the key is refused for a
+    non-HTTPS URL (opt out per call with ``enforce_https=False``) so it is
+    never read or written onto a plaintext request.
 
     Attributes:
         header_name: Header to write.
@@ -72,8 +77,15 @@ class KeyCredentialPolicy(Policy):
     def send(self, request: Request, ctx: PipelineContext) -> Response:
         if _crosses_recorded_origin(request, ctx):
             return self.next.send(request, ctx)
+        _enforce_https(request, ctx)
         value = f"{self.prefix}{self._credential.key}"
         return self.next.send(request.with_header(self.header_name, value), ctx)
+
+    def __repr__(self) -> str:
+        return (
+            f"KeyCredentialPolicy(credential={self._credential!r}, "
+            f"header_name={self.header_name!r}, prefix={self.prefix!r})"
+        )
 
 
 class BasicAuthPolicy(Policy):
@@ -83,7 +95,9 @@ class BasicAuthPolicy(Policy):
     recorded on the first pass through the policy. When a downstream redirect
     reissues the request against a different origin (scheme, host, or
     effective port), the credential is withheld so it never reaches a foreign
-    host.
+    host. On the same-origin stamping path the payload is refused for a
+    non-HTTPS URL (opt out per call with ``enforce_https=False``) so it is
+    never read or written onto a plaintext request.
     """
 
     STAGE = Stage.AUTH
@@ -97,16 +111,20 @@ class BasicAuthPolicy(Policy):
     def send(self, request: Request, ctx: PipelineContext) -> Response:
         if _crosses_recorded_origin(request, ctx):
             return self.next.send(request, ctx)
+        _enforce_https(request, ctx)
         value = f"Basic {self._credential.encoded}"
         return self.next.send(request.with_header("Authorization", value), ctx)
+
+    def __repr__(self) -> str:
+        return f"BasicAuthPolicy(credential={self._credential!r})"
 
 
 class BearerTokenPolicy(Policy):
     """Acquire and apply an OAuth bearer token.
 
     Caches a single token in memory by default; pass a shared ``TokenCache``
-    to share tokens across credentials. Refreshes when ``needs_refresh``
-    returns True, or after a 401 response with ``WWW-Authenticate``. Enforces
+    to share tokens across credentials. Refreshes proactively as the token
+    nears expiry, or after a 401 response with ``WWW-Authenticate``. Enforces
     HTTPS unless ``enforce_https=False`` is passed in ``ctx.options``.
 
     The token is acquired and stamped only while the request stays on the
@@ -116,9 +134,14 @@ class BearerTokenPolicy(Policy):
     stamp a token — so the bearer token never reaches a foreign host. The
     HTTPS-enforcement check applies only on that same-origin stamping path.
 
-    Concurrent refreshes are serialized via a ``threading.Lock`` using a
-    double-checked pattern so the credential's ``get_token_info`` is invoked
-    at most once per refresh window even under heavy concurrent send pressure.
+    Token serving is delegated to a `_SyncSingleFlight` coordinator: reads of
+    the published token are wait-free, and concurrent refreshes are collapsed
+    under a ``threading.Lock`` (double-checked) so the credential's
+    ``get_token_info`` runs at most once per refresh window even under heavy
+    concurrent send pressure. A token is refreshed once it comes within 30
+    seconds of expiry; a provider that returns ``None`` or an already-expired
+    token raises rather than caching a bad token, and a throwing provider
+    propagates without being cached so the next request retries it.
 
     The ``on_challenge`` hook is a no-op by default; subclasses override it
     to handle CAE/claims challenges. Alternatively, callers can pass a
@@ -133,10 +156,9 @@ class BearerTokenPolicy(Policy):
         "_audience",
         "_cache",
         "_challenge_handler",
-        "_clock",
         "_credential",
-        "_lock",
         "_scopes",
+        "_single_flight",
     )
 
     def __init__(
@@ -154,8 +176,8 @@ class BearerTokenPolicy(Policy):
         self._scopes = scopes
         self._cache: TokenCache = cache or InMemoryTokenCache()
         self._audience = audience
-        self._clock: Clock = clock if clock is not None else SYSTEM_CLOCK
-        self._lock = threading.Lock()
+        resolved_clock: Clock = clock if clock is not None else SYSTEM_CLOCK
+        self._single_flight = _SyncSingleFlight(self._cache, scopes, audience, resolved_clock)
         self._challenge_handler = challenge_handler
 
     def send(self, request: Request, ctx: PipelineContext) -> Response:
@@ -164,11 +186,13 @@ class BearerTokenPolicy(Policy):
         status = int(response.status)
         if status not in (401, 407):
             return response
-        # On 401 the bearer token was rejected: drop it from the cache so the
-        # ``on_challenge`` fallback path forces a refresh. A 407 means the
-        # proxy rejected us, not the origin — leave the cached token alone.
+        # On 401 the origin rejected the bearer token: drop it from the cache
+        # so a later refresh re-fetches. Evict only when the cached token still
+        # matches the one this request carried, so a stale 401 cannot discard a
+        # token a concurrent refresh already replaced. A 407 means the proxy
+        # rejected us, not the origin — leave the cached token alone.
         if status == 401:
-            self._cache.set(self._scopes, _expired_token(), self._audience)
+            self._evict_rejected_token(request)
         handler_header = self._apply_challenge_handler(request, response, status)
         if handler_header is not None:
             request = request.with_header(*handler_header)
@@ -183,14 +207,69 @@ class BearerTokenPolicy(Policy):
             # No handler match on a 407; surface the response unchanged so
             # callers can inspect proxy-auth failures themselves.
             return response
-        if "WWW-Authenticate" in response.headers and self.on_challenge(request, response):
-            request = self._authorize(request, ctx, force_refresh=True)
-            # Release the rejected 401 before retrying with the refreshed token.
+        return self._replay_on_challenge(request, response, ctx)
+
+    def _replay_on_challenge(
+        self,
+        request: Request,
+        response: Response,
+        ctx: PipelineContext,
+    ) -> Response:
+        """Consult ``on_challenge`` and replay the 401 at most once.
+
+        A 401 without a ``WWW-Authenticate`` header is surfaced unchanged and
+        the hook is never consulted. A single-use request body is likewise
+        surfaced un-replayed rather than corrupting a half-consumed stream by
+        resending it. When the hook authorizes a retry and the body is
+        replayable, the request is re-issued once with a refreshed token and
+        the resulting response is returned regardless of its status — there is
+        no challenge loop. If the hook raises, the rejected response is closed
+        before the exception propagates so its connection is not leaked.
+
+        Args:
+            request: The request that produced the 401.
+            response: The open 401 response.
+            ctx: The per-operation pipeline context.
+
+        Returns:
+            The surfaced 401, or the response from the single replay.
+        """
+        if "WWW-Authenticate" not in response.headers:
+            return response
+        if request.body is not None and not request.body.is_replayable():
+            return response
+        try:
+            proceed = self.on_challenge(request, response)
+        except BaseException:
             response.close()
-            response = self.next.send(request, ctx)
-            if int(response.status) != 401:
-                return response
-        raise ClientAuthenticationError(response=response)
+            raise
+        if not proceed:
+            return response
+        request = self._authorize(request, ctx, force_refresh=True)
+        # Release the rejected 401 before retrying with the refreshed token.
+        response.close()
+        return self.next.send(request, ctx)
+
+    def _evict_rejected_token(self, request: Request) -> None:
+        """Evict the cached token when it still matches this request's stamp.
+
+        A 401 invalidates only the exact token that was sent. Matching the
+        stamped ``Authorization`` header against the cached token guards a
+        token a concurrent refresh already installed: a stale 401 for the
+        superseded token must not discard the newer one still valid for other
+        requests. The compare-and-set runs under the refresh lock so it is
+        atomic with respect to ``_authorize``.
+
+        Args:
+            request: The request whose stamped token was rejected.
+        """
+        stamped = request.headers.get("Authorization")
+        if stamped is None:
+            return
+        self._single_flight.evict_if_matches(
+            lambda cached: stamped == f"{cached.token_type} {cached.token}",
+            _expired_token(),
+        )
 
     def _apply_challenge_handler(
         self,
@@ -232,17 +311,21 @@ class BearerTokenPolicy(Policy):
             ``False`` (the default) to surface the error to the caller.
 
         Note:
-            By the time this hook runs, ``send`` has already replaced the
-            cached token for ``(scopes, audience)`` with an expired sentinel
-            (``token=""``, ``expires_on=0``). Subclasses that inspect the
-            ``TokenCache`` here will see that sentinel, not the original
-            token that was attached to ``request``. The sentinel is what
-            forces the subsequent ``_authorize`` call (when this hook
-            returns ``True``) to invoke the credential and acquire a fresh
-            token rather than reusing the rejected one.
+            By the time this hook runs, ``send`` has invalidated the cached
+            token for ``(scopes, audience)`` — replacing it with an expired
+            sentinel (``token=""``, ``expires_on=0``) — but only when the
+            cached token still matched the one stamped on ``request``. A
+            subclass inspecting the ``TokenCache`` here therefore sees the
+            sentinel whenever the rejection was for the currently cached
+            token, and the newer token otherwise. When this hook returns
+            ``True`` the subsequent ``_authorize`` call forces a fresh
+            acquisition regardless.
         """
         del request, response
         return False
+
+    def __repr__(self) -> str:
+        return _bearer_repr(self)
 
     def _authorize(
         self,
@@ -256,30 +339,29 @@ class BearerTokenPolicy(Policy):
         # and skip the HTTPS enforcement that only governs the stamping path.
         if _crosses_recorded_origin(request, ctx):
             return request
-        if ctx.options.get("enforce_https", True) and not _is_https(request.url):
-            raise ServiceRequestError(
-                "Bearer token authentication is not permitted for non-HTTPS URLs."
-            )
-        token = self._cache.get(self._scopes, self._audience)
-        if force_refresh or token is None or token.needs_refresh(clock=self._clock):
-            with self._lock:
-                # Double-checked: another thread may have refreshed while we waited.
-                token = self._cache.get(self._scopes, self._audience)
-                if force_refresh or token is None or token.needs_refresh(clock=self._clock):
-                    options = _token_options(ctx.options)
-                    token = self._credential.get_token_info(*self._scopes, options=options)
-                    self._cache.set(self._scopes, token, self._audience)
-        assert token is not None  # Narrowed by the refresh branch above.
+        _enforce_https(request, ctx)
+        options = _token_options(ctx.options)
+
+        def _provider() -> AccessTokenInfo:
+            return self._credential.get_token_info(*self._scopes, options=options)
+
+        token = self._single_flight.get_token(_provider, force=force_refresh)
         return request.with_header("Authorization", f"{token.token_type} {token.token}")
 
 
 class AsyncBearerTokenPolicy(AsyncPolicy):
     """Async twin of ``BearerTokenPolicy``.
 
-    Concurrent refreshes are serialized via an ``asyncio.Lock`` using a
-    double-checked pattern; the underlying ``AsyncTokenCredential`` is
-    invoked at most once per refresh window even when many tasks call
-    ``send`` concurrently.
+    Token serving is delegated to an `_AsyncSingleFlight` coordinator that
+    implements a three-zone refresh strategy: a fresh token is served
+    immediately; a token inside the 30-second refresh margin is served while a
+    non-fatal background refresh is kicked off; and an expired (or absent)
+    token blocks the caller on a single shared fetch. That fetch is guarded by
+    an ``asyncio.Lock`` and awaited through ``asyncio.shield`` so the
+    ``AsyncTokenCredential`` runs at most once per refresh window and one
+    waiter's cancellation cannot abort the fetch the others depend on. A
+    provider that returns ``None`` or an already-expired token raises, and a
+    throwing provider propagates without being cached.
 
     Like the sync policy, an optional ``challenge_handler`` plugs in a
     scheme-aware handler (e.g. ``DigestChallengeHandler``); it is consulted
@@ -301,10 +383,9 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         "_audience",
         "_cache",
         "_challenge_handler",
-        "_clock",
         "_credential",
-        "_lock",
         "_scopes",
+        "_single_flight",
     )
 
     def __init__(
@@ -322,11 +403,11 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         self._scopes = scopes
         self._cache: TokenCache = cache or InMemoryTokenCache()
         self._audience = audience
-        # ``AsyncClock`` is forwarded to the sync ``needs_refresh`` helper:
-        # only ``now()`` is consulted there (which is sync on both Clock
-        # variants), so the protocol mismatch on ``sleep`` is irrelevant.
-        self._clock: AsyncClock = clock if clock is not None else ASYNC_SYSTEM_CLOCK
-        self._lock = asyncio.Lock()
+        # Only ``clock.now()`` is consulted by the coordinator (a sync read on
+        # both Clock variants), so an ``AsyncClock`` slots in without its
+        # awaitable ``sleep`` ever being needed.
+        resolved_clock: AsyncClock = clock if clock is not None else ASYNC_SYSTEM_CLOCK
+        self._single_flight = _AsyncSingleFlight(self._cache, scopes, audience, resolved_clock)
         self._challenge_handler = challenge_handler
 
     async def send(self, request: Request, ctx: PipelineContext) -> AsyncResponse:
@@ -335,11 +416,13 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         status = int(response.status)
         if status not in (401, 407):
             return response
-        # On 401 the bearer token was rejected: drop it from the cache so the
-        # ``on_challenge`` fallback path forces a refresh. A 407 means the
-        # proxy rejected us, not the origin — leave the cached token alone.
+        # On 401 the origin rejected the bearer token: drop it from the cache
+        # so a later refresh re-fetches. Evict only when the cached token still
+        # matches the one this request carried, so a stale 401 cannot discard a
+        # token a concurrent refresh already replaced. A 407 means the proxy
+        # rejected us, not the origin — leave the cached token alone.
         if status == 401:
-            self._cache.set(self._scopes, _expired_token(), self._audience)
+            self._evict_rejected_token(request)
         handler_header = self._apply_challenge_handler(request, response, status)
         if handler_header is not None:
             request = request.with_header(*handler_header)
@@ -354,14 +437,66 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
             # No handler match on a 407; surface the response unchanged so
             # callers can inspect proxy-auth failures themselves.
             return response
-        if "WWW-Authenticate" in response.headers and await self.on_challenge(request, response):
-            request = await self._authorize(request, ctx, force_refresh=True)
-            # Release the rejected 401 before retrying with the refreshed token.
+        return await self._replay_on_challenge(request, response, ctx)
+
+    async def _replay_on_challenge(
+        self,
+        request: Request,
+        response: AsyncResponse,
+        ctx: PipelineContext,
+    ) -> AsyncResponse:
+        """Async twin of ``BearerTokenPolicy._replay_on_challenge``.
+
+        Enforces the same gate as the sync policy: a 401 without a
+        ``WWW-Authenticate`` header is surfaced without consulting the hook, a
+        single-use body is surfaced un-replayed, and at most one replay is made
+        when the hook authorizes it, whose response is returned regardless of
+        status. Wrapping the ``await`` of ``on_challenge`` catches every hook
+        failure shape — a raised coroutine and a synchronous throw from
+        producing the coroutine alike — so the rejected response is closed
+        before the exception propagates.
+
+        Args:
+            request: The request that produced the 401.
+            response: The open 401 response.
+            ctx: The per-operation pipeline context.
+
+        Returns:
+            The surfaced 401, or the response from the single replay.
+        """
+        if "WWW-Authenticate" not in response.headers:
+            return response
+        if request.body is not None and not request.body.is_replayable():
+            return response
+        try:
+            proceed = await self.on_challenge(request, response)
+        except BaseException:
             await response.close()
-            response = await self.next.send(request, ctx)
-            if int(response.status) != 401:
-                return response
-        raise ClientAuthenticationError(response=response)
+            raise
+        if not proceed:
+            return response
+        request = await self._authorize(request, ctx, force_refresh=True)
+        # Release the rejected 401 before retrying with the refreshed token.
+        await response.close()
+        return await self.next.send(request, ctx)
+
+    def _evict_rejected_token(self, request: Request) -> None:
+        """Evict the cached token when it still matches this request's stamp.
+
+        Mirrors ``BearerTokenPolicy._evict_rejected_token``. The compare-and-set
+        needs no lock here: it runs without an ``await`` between the read and
+        the write, so no other task can interleave under asyncio's cooperative
+        scheduling.
+
+        Args:
+            request: The request whose stamped token was rejected.
+        """
+        stamped = request.headers.get("Authorization")
+        if stamped is None:
+            return
+        cached = self._cache.get(self._scopes, self._audience)
+        if cached is not None and stamped == f"{cached.token_type} {cached.token}":
+            self._cache.set(self._scopes, _expired_token(), self._audience)
 
     def _apply_challenge_handler(
         self,
@@ -399,17 +534,21 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         """Async version of ``BearerTokenPolicy.on_challenge``.
 
         Note:
-            By the time this hook runs, ``send`` has already replaced the
-            cached token for ``(scopes, audience)`` with an expired sentinel
-            (``token=""``, ``expires_on=0``). Subclasses that inspect the
-            ``TokenCache`` here will see that sentinel, not the original
-            token that was attached to ``request``. The sentinel is what
-            forces the subsequent ``_authorize`` call (when this hook
-            returns ``True``) to invoke the credential and acquire a fresh
-            token rather than reusing the rejected one.
+            By the time this hook runs, ``send`` has invalidated the cached
+            token for ``(scopes, audience)`` — replacing it with an expired
+            sentinel (``token=""``, ``expires_on=0``) — but only when the
+            cached token still matched the one stamped on ``request``. A
+            subclass inspecting the ``TokenCache`` here therefore sees the
+            sentinel whenever the rejection was for the currently cached
+            token, and the newer token otherwise. When this hook returns
+            ``True`` the subsequent ``_authorize`` call forces a fresh
+            acquisition regardless.
         """
         del request, response
         return False
+
+    def __repr__(self) -> str:
+        return _bearer_repr(self)
 
     async def _authorize(
         self,
@@ -423,20 +562,13 @@ class AsyncBearerTokenPolicy(AsyncPolicy):
         # and skip the HTTPS enforcement that only governs the stamping path.
         if _crosses_recorded_origin(request, ctx):
             return request
-        if ctx.options.get("enforce_https", True) and not _is_https(request.url):
-            raise ServiceRequestError(
-                "Bearer token authentication is not permitted for non-HTTPS URLs."
-            )
-        token = self._cache.get(self._scopes, self._audience)
-        if force_refresh or token is None or token.needs_refresh(clock=self._clock):
-            async with self._lock:
-                # Double-checked: another task may have refreshed while we waited.
-                token = self._cache.get(self._scopes, self._audience)
-                if force_refresh or token is None or token.needs_refresh(clock=self._clock):
-                    options = _token_options(ctx.options)
-                    token = await self._credential.get_token_info(*self._scopes, options=options)
-                    self._cache.set(self._scopes, token, self._audience)
-        assert token is not None  # Narrowed by the refresh branch above.
+        _enforce_https(request, ctx)
+        options = _token_options(ctx.options)
+
+        async def _provider() -> AccessTokenInfo:
+            return await self._credential.get_token_info(*self._scopes, options=options)
+
+        token = await self._single_flight.get_token(_provider, force=force_refresh)
         return request.with_header("Authorization", f"{token.token_type} {token.token}")
 
 
@@ -468,6 +600,37 @@ def _crosses_recorded_origin(request: Request, ctx: PipelineContext) -> bool:
 def _is_https(url: Url) -> bool:
     """Return True if ``url``'s scheme is ``https`` (case-insensitive)."""
     return url.scheme.lower() == "https"
+
+
+def _enforce_https(request: Request, ctx: PipelineContext) -> None:
+    """Refuse to credential a non-HTTPS request unless enforcement is disabled.
+
+    Every credentialed policy calls this on its same-origin stamping path,
+    before the secret is fetched or read, so a credential is never prepared
+    for a plaintext-HTTP request. Enforcement is on by default; pass
+    ``enforce_https=False`` in the per-call options to opt out.
+
+    Args:
+        request: The request an auth policy is about to credential.
+        ctx: The per-operation pipeline context.
+
+    Raises:
+        ServiceRequestError: When the URL is not HTTPS and enforcement is on.
+    """
+    if ctx.options.get("enforce_https", True) and not _is_https(request.url):
+        raise ServiceRequestError("Credential authentication is not permitted for non-HTTPS URLs.")
+
+
+def _bearer_repr(policy: BearerTokenPolicy | AsyncBearerTokenPolicy) -> str:
+    """Render a bearer policy without exposing the lazily fetched token.
+
+    The token is never held at construction; only the non-secret scopes,
+    audience, and credential type name are shown.
+    """
+    return (
+        f"{type(policy).__name__}(credential={type(policy._credential).__name__}, "
+        f"scopes={policy._scopes!r}, audience={policy._audience!r})"
+    )
 
 
 def _token_options(call_options: dict[str, Any]) -> TokenRequestOptions | None:

@@ -51,6 +51,19 @@ class _AsyncLoggingPillar(AsyncPolicy):
         return await self.next.send(request, ctx)
 
 
+class _AsyncSecondMarkerPolicy(AsyncPolicy):
+    """Non-pillar policy at POST_AUTH for batch/stacking tests."""
+
+    STAGE = Stage.POST_AUTH
+    __slots__ = ("tag",)
+
+    def __init__(self, tag: str) -> None:
+        self.tag = tag
+
+    async def send(self, request: Request, ctx: PipelineContext) -> AsyncResponse:
+        return await self.next.send(request, ctx)
+
+
 @pytest.fixture
 def async_transport() -> _AsyncStubTransport:
     return _AsyncStubTransport()
@@ -63,6 +76,7 @@ def test_build_orders_by_stage(async_transport: _AsyncStubTransport) -> None:
     assert isinstance(pipeline, AsyncPipeline)
 
 
+@pytest.mark.req("PIPE-28")
 def test_pillar_double_append_raises(async_transport: _AsyncStubTransport) -> None:
     b = AsyncStagedPipelineBuilder(async_transport)
     b.append(AsyncRetryPolicy())
@@ -77,6 +91,36 @@ def test_pillar_force_overwrites(async_transport: _AsyncStubTransport) -> None:
     b.append(first)
     b.append(second, force=True)
     assert b._pillars[Stage.RETRY] is second
+
+
+@pytest.mark.req("PIPE-6")
+def test_reinstall_same_pillar_instance_is_idempotent(
+    async_transport: _AsyncStubTransport,
+) -> None:
+    b = AsyncStagedPipelineBuilder(async_transport)
+    retry = AsyncRetryPolicy()
+    b.append(retry)
+    # Re-adding the same instance is a no-op; a distinct one still raises.
+    b.append(retry)
+    b.prepend(retry)
+    assert b._pillars[Stage.RETRY] is retry
+    assert sum(1 for p in b._flatten() if isinstance(p, AsyncRetryPolicy)) == 1
+    with pytest.raises(ValueError, match="already filled"):
+        b.append(AsyncRetryPolicy())
+
+
+@pytest.mark.req("PIPE-38")
+def test_append_all_preserves_prepend_all_reverses(
+    async_transport: _AsyncStubTransport,
+) -> None:
+    appended = AsyncStagedPipelineBuilder(async_transport)
+    appended.append_all([_AsyncMarkerPolicy(t) for t in ("a", "b", "c")])
+    prepended = AsyncStagedPipelineBuilder(async_transport)
+    prepended.prepend_all([_AsyncMarkerPolicy(t) for t in ("a", "b", "c")])
+    app = [p.tag for p in appended._flatten() if isinstance(p, _AsyncMarkerPolicy)]
+    pre = [p.tag for p in prepended._flatten() if isinstance(p, _AsyncMarkerPolicy)]
+    assert app == ["a", "b", "c"]
+    assert pre == ["c", "b", "a"]
 
 
 def test_replace_pillar(async_transport: _AsyncStubTransport) -> None:
@@ -122,3 +166,63 @@ def test_from_pipeline_sansio_step_raises_value_error(
     original = AsyncPipeline(async_transport, policies=[stamp])
     with pytest.raises(ValueError, match="SansIO"):
         AsyncStagedPipelineBuilder.from_pipeline(original)
+
+
+def test_insert_second_pillar_via_splice_raises(
+    async_transport: _AsyncStubTransport,
+) -> None:
+    b = AsyncStagedPipelineBuilder(async_transport)
+    original = AsyncRetryPolicy()
+    b.append(original).append(_AsyncMarkerPolicy("m"))
+    # ``insert_after`` re-buckets through ``_reload``; a second retry pillar
+    # must not silently clobber the incumbent.
+    with pytest.raises(ValueError, match="RETRY"):
+        b.insert_after(_AsyncMarkerPolicy, AsyncRetryPolicy())
+    assert b._pillars[Stage.RETRY] is original
+    assert [p.tag for p in b._flatten() if isinstance(p, _AsyncMarkerPolicy)] == ["m"]
+
+
+@pytest.mark.req("PIPE-28")
+def test_replace_pillar_with_different_stage_rejected(
+    async_transport: _AsyncStubTransport,
+) -> None:
+    b = AsyncStagedPipelineBuilder(async_transport)
+    retry = AsyncRetryPolicy()
+    b.append(retry)
+    with pytest.raises(ValueError, match="relocate"):
+        b.replace(AsyncRetryPolicy, _AsyncMarkerPolicy("x"))
+    assert b._pillars[Stage.RETRY] is retry
+    assert not any(isinstance(p, _AsyncMarkerPolicy) for p in b._flatten())
+
+
+def test_replace_cross_stage_conflict_is_atomic(
+    async_transport: _AsyncStubTransport,
+) -> None:
+    b = AsyncStagedPipelineBuilder(async_transport)
+    b.append(AsyncRetryPolicy()).append(_AsyncMarkerPolicy("m"))
+    with pytest.raises(ValueError, match="RETRY"):
+        b.replace(_AsyncMarkerPolicy, AsyncRetryPolicy())
+    assert [p.tag for p in b._flatten() if isinstance(p, _AsyncMarkerPolicy)] == ["m"]
+
+
+def test_batch_rolls_back_on_failure(async_transport: _AsyncStubTransport) -> None:
+    b = AsyncStagedPipelineBuilder(async_transport)
+    original = AsyncRetryPolicy()
+    b.append(original)
+    with pytest.raises(ValueError, match="RETRY"), b.batch() as bb:
+        bb.append(_AsyncMarkerPolicy("m1"))
+        bb.append(_AsyncSecondMarkerPolicy("m2"))
+        bb.append(AsyncRetryPolicy())  # duplicate pillar → raises
+    flat = b._flatten()
+    assert b._pillars[Stage.RETRY] is original
+    assert not any(isinstance(p, _AsyncMarkerPolicy) for p in flat)
+    assert not any(isinstance(p, _AsyncSecondMarkerPolicy) for p in flat)
+
+
+def test_batch_commits_on_success(async_transport: _AsyncStubTransport) -> None:
+    b = AsyncStagedPipelineBuilder(async_transport)
+    with b.batch() as bb:
+        bb.append(_AsyncMarkerPolicy("m1")).append(_AsyncSecondMarkerPolicy("m2"))
+    flat = b._flatten()
+    assert any(isinstance(p, _AsyncMarkerPolicy) for p in flat)
+    assert any(isinstance(p, _AsyncSecondMarkerPolicy) for p in flat)

@@ -5,11 +5,41 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 
 import pytest
+from hypothesis import HealthCheck, settings
 
 from dexpace.sdk.core.http.context import ContextStore
+
+# Hypothesis profiles for the property-based suites (``test_*_properties.py``).
+#
+# The default "ci" profile is capped and deterministic so a normal CI run stays
+# fast and never fails on timing noise: ``deadline=None`` disables the
+# per-example wall-clock deadline (the usual source of flaky CI failures under
+# load) and ``derandomize=True`` pins a fixed seed so runs are reproducible.
+# ``too_slow`` health checks are suppressed for the same reason.
+#
+# TODO: a "nightly" profile (registered below with a much larger
+# ``max_examples``) could run in a separate scheduled CI lane for deeper
+# coverage. It is intentionally *not* wired up as the default here to keep the
+# standard run quick; select it with ``HYPOTHESIS_PROFILE=nightly``.
+settings.register_profile(
+    "ci",
+    max_examples=100,
+    deadline=None,
+    derandomize=True,
+    suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
+    print_blob=True,
+)
+settings.register_profile(
+    "nightly",
+    max_examples=2000,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
+)
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "ci"))
 
 
 @pytest.fixture(autouse=True)

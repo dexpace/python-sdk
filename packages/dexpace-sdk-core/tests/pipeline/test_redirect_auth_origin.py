@@ -7,14 +7,17 @@ These exercise the interaction the unit suites for ``RedirectPolicy`` and the
 auth policies cannot reach in isolation: when the redirect policy (outermost)
 reissues a request to a different origin and the auth policy (inner) sees that
 reissued request, the credential must not follow the request to the foreign
-host. They also pin that a caller-set ``Authorization`` header survives a
-same-origin hop but is dropped on a cross-origin one.
+host. On a same-origin hop the auth policy re-stamps the credential the redirect
+layer stripped, so an ordinary authed redirect still carries it; a caller-set
+``Authorization`` with no auth policy is stripped on every reissue.
 """
 
 from __future__ import annotations
 
 import time
 from collections.abc import Sequence
+
+import pytest
 
 from dexpace.sdk.core.client.http_client import HttpClient
 from dexpace.sdk.core.http.auth import (
@@ -113,6 +116,7 @@ def _run(client: _ScriptedClient, policies: Sequence[object], trace: str) -> Res
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.req("REDIR-24")
 def test_bearer_token_not_reissued_to_cross_origin_redirect_target() -> None:
     # The redirect policy (outermost) 302s to a foreign host; the bearer policy
     # (inner) sees the reissued request but must NOT re-stamp the token onto it.
@@ -230,9 +234,14 @@ def test_basic_auth_reissued_same_origin() -> None:
     assert client.requests[1].headers.get("authorization") == "Basic dXNlcjpwYXNz"
 
 
-def test_caller_authorization_kept_same_origin_dropped_cross_origin() -> None:
-    # No auth policy at all: a caller-set Authorization header. The redirect
-    # policy keeps it on a same-origin 301 and drops it on a cross-origin 302.
+@pytest.mark.req("REDIR-7", "XCUT-17")
+def test_caller_authorization_stripped_on_every_reissue_without_auth_policy() -> None:
+    # No auth policy at all: a caller-set Authorization header is stripped
+    # before EVERY reissue — same-origin included — because re-stamping a
+    # credential for a known origin is the auth layer's job, not the redirect
+    # layer's. With no auth policy in the chain, nothing re-applies it, so the
+    # reissued request carries no Authorization on either a same-origin or a
+    # cross-origin hop.
     same_origin = _ScriptedClient(
         [
             _Hop(Status.MOVED_PERMANENTLY, "https://api.example.com/start/"),
@@ -242,7 +251,7 @@ def test_caller_authorization_kept_same_origin_dropped_cross_origin() -> None:
     req = _request().with_header("Authorization", "Bearer caller-set")
     with Pipeline(same_origin, policies=[RedirectPolicy()]) as p:
         p.run(req, DispatchContext(_instr("0" * 15 + "8")))
-    assert same_origin.requests[1].headers.get("authorization") == "Bearer caller-set"
+    assert "authorization" not in same_origin.requests[1].headers
 
     cross_origin = _ScriptedClient(
         [

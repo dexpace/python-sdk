@@ -5,7 +5,10 @@
 
 from __future__ import annotations
 
-from typing import Any, BinaryIO, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from ..http.common.media_type import MediaType
 
 
 @runtime_checkable
@@ -48,6 +51,10 @@ class Serde(Protocol):
     pull a `Serde` rather than separate serializer and deserializer
     references, which keeps the dependency surface flat and makes it easy to
     swap formats at the edge of the SDK.
+
+    Each concrete bundle declares its own `media_type`; the SPI supplies no
+    default, so a consumer wiring a request's ``Content-Type`` reads the wire
+    format from the serde rather than assuming one.
     """
 
     @property
@@ -55,6 +62,9 @@ class Serde(Protocol):
 
     @property
     def deserializer(self) -> Deserializer: ...
+
+    @property
+    def media_type(self) -> MediaType: ...
 
 
 __all__ = ["Deserializer", "Serde", "Serializer"]

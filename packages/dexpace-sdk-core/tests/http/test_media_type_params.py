@@ -18,6 +18,7 @@ from dexpace.sdk.core.http.common import MediaType
 
 
 class TestSplitOnFirstEquals:
+    @pytest.mark.req("HTTP-25")
     def test_boundary_with_multiple_equals_keeps_remainder(self) -> None:
         mt = MediaType.parse("multipart/form-data; boundary=abc=def")
         assert dict(mt.parameters)["boundary"] == "abc=def"
@@ -36,6 +37,7 @@ class TestQuotedStringHandling:
         mt = MediaType.parse('text/plain; charset="utf-8"')
         assert mt.charset == "utf-8"
 
+    @pytest.mark.req("HTTP-25")
     def test_unescapes_escaped_quote(self) -> None:
         # \" -> "
         mt = MediaType.parse('text/plain; foo="a\\"b"')
@@ -99,17 +101,20 @@ class TestCaseFolding:
         mt = MediaType.parse("text/plain; CHARSET=utf-8")
         assert "charset" in dict(mt.parameters)
 
+    @pytest.mark.req("HTTP-23")
     def test_parameter_value_case_preserved(self) -> None:
         # Boundaries and base64 tags are case-sensitive — only the key folds.
         mt = MediaType.parse("multipart/form-data; Boundary=AbCdEf")
         assert dict(mt.parameters)["boundary"] == "AbCdEf"
 
+    @pytest.mark.req("HTTP-24")
     def test_charset_value_case_preserved(self) -> None:
         mt = MediaType.parse("text/plain; charset=UTF-8")
         assert mt.charset == "UTF-8"
 
 
 class TestUnknownCharsetDegradesToNone:
+    @pytest.mark.req("HTTP-24")
     def test_unknown_charset_returns_none(self) -> None:
         mt = MediaType.parse("text/plain; charset=not-a-real-encoding")
         # The parameter is retained verbatim ...

@@ -25,6 +25,7 @@ from dexpace.sdk.core.instrumentation import (
 )
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import AsyncPipeline, Pipeline
+from dexpace.sdk.core.pipeline.policies import client_identity as _ci
 from dexpace.sdk.core.pipeline.policies.async_client_identity import AsyncClientIdentityPolicy
 from dexpace.sdk.core.pipeline.policies.client_identity import (
     ClientIdentityPolicy,
@@ -71,10 +72,12 @@ class _RecordingAsyncClient(AsyncHttpClient):
         return AsyncResponse(request=request, protocol=Protocol.HTTP_1_1, status=Status.OK)
 
 
+@pytest.mark.req("NFR-15")
 def test_default_user_agent_shape() -> None:
     assert _DEFAULT_UA.match(default_user_agent()) is not None
 
 
+@pytest.mark.req("NFR-15")
 def test_default_user_agent_never_blank() -> None:
     ua = default_user_agent()
     assert ua.strip()
@@ -90,6 +93,7 @@ def test_stamps_default_user_agent() -> None:
     assert _DEFAULT_UA.match(ua) is not None
 
 
+@pytest.mark.req("RECOV-33")
 def test_append_preserves_caller_value() -> None:
     client = _RecordingClient()
     policy = ClientIdentityPolicy(user_agent="my-token")
@@ -98,6 +102,7 @@ def test_append_preserves_caller_value() -> None:
     assert client.calls[0].headers.get(_UA) == "caller/1.0 my-token"
 
 
+@pytest.mark.req("RECOV-33")
 def test_replace_overwrites_caller_value() -> None:
     client = _RecordingClient()
     policy = ClientIdentityPolicy(user_agent="my-token", replace=True)
@@ -114,6 +119,7 @@ def test_append_with_no_caller_value_uses_token_alone() -> None:
     assert client.calls[0].headers.get(_UA) == "my-token"
 
 
+@pytest.mark.req("RECOV-33")
 def test_blank_caller_value_replaced_not_appended() -> None:
     client = _RecordingClient()
     policy = ClientIdentityPolicy(user_agent="my-token")
@@ -126,6 +132,47 @@ def test_blank_caller_value_replaced_not_appended() -> None:
 def test_blank_token_rejected(bad: str) -> None:
     with pytest.raises(ValueError, match="non-empty"):
         ClientIdentityPolicy(user_agent=bad)
+
+
+@pytest.mark.req("NFR-15")
+def test_sdk_version_falls_back_when_metadata_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing package distribution never yields a blank platform token.
+
+    Running from a source tree without an editable install raises
+    ``PackageNotFoundError`` from ``importlib.metadata.version``; the policy
+    must swap in a non-blank fallback rather than emit ``dexpace-sdk/`` with an
+    empty version.
+    """
+    from importlib.metadata import PackageNotFoundError
+
+    def _raise(_name: str) -> str:
+        raise PackageNotFoundError
+
+    monkeypatch.setattr(_ci, "version", _raise)
+    ua = default_user_agent()
+    assert ua.strip()
+    assert _DEFAULT_UA.match(ua) is not None
+    assert "dexpace-sdk/0.0.0" in ua
+
+
+def test_token_order_is_service_then_platform_then_runtime() -> None:
+    """Append mode yields the ordered token list: service, platform, runtime.
+
+    The caller's ``User-Agent`` is the service token and stays first; the
+    policy's own default (``dexpace-sdk/<ver>`` platform token followed by
+    ``python/<ver>`` runtime token) follows, space-separated.
+    """
+    client = _RecordingClient()
+    with Pipeline(client, policies=[ClientIdentityPolicy()]) as p:
+        p.run(_request(user_agent="acme-service/2.3"), DispatchContext(_instr("0" * 15 + "10")))
+    ua = client.calls[0].headers.get(_UA)
+    assert ua is not None
+    service, platform, runtime = ua.split(" ")
+    assert service == "acme-service/2.3"
+    assert platform.startswith("dexpace-sdk/")
+    assert runtime.startswith("python/")
 
 
 async def test_async_stamps_default_user_agent() -> None:

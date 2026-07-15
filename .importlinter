@@ -1,0 +1,79 @@
+# Copyright (c) 2026 dexpace and Omar Aljarrah.
+# Licensed under the MIT License. See LICENSE.md in the repository root for details.
+#
+# import-linter contracts for the dexpace Python SDK workspace.
+#
+# Run with `uv run lint-imports` from the workspace root (the tool auto-discovers
+# this file). The contracts encode the dependency-direction invariants the
+# architecture relies on:
+#
+#   * adapters -> core, never the reverse (core is transport-agnostic);
+#   * the `furl` runtime dependency (and its transitive `orderedmultidict`)
+#     is confined to the single Url implementation module, so the rest of the
+#     toolkit stays stdlib-only;
+#   * the pure algorithm layer sits below the sync/async pipeline runners, and
+#     the sync and async runner trees never import one another.
+#
+# Some of the pure algorithm modules referenced by the layering contract do not
+# exist yet (they land in later milestones). They are declared as *optional*
+# layers (parenthesised) so the contract is a no-op until the module appears and
+# then binds automatically — enforcing the shape going forward with no churn.
+
+[importlinter]
+root_packages =
+    dexpace.sdk.core
+    dexpace.sdk.http.stdlib
+    dexpace.sdk.http.httpx
+    dexpace.sdk.http.aiohttp
+    dexpace.sdk.http.requests
+    dexpace.sdk.tck
+# Needed so `forbidden` contracts can name external distributions (furl,
+# orderedmultidict) as forbidden import targets.
+include_external_packages = True
+
+[importlinter:contract:adapters-above-core]
+name = Adapters depend on core, never the reverse
+type = layers
+layers =
+    dexpace.sdk.http.stdlib | dexpace.sdk.http.httpx | dexpace.sdk.http.aiohttp | dexpace.sdk.http.requests
+    dexpace.sdk.core
+
+[importlinter:contract:furl-confinement]
+name = furl is confined to the Url module
+type = forbidden
+source_modules =
+    dexpace.sdk.core
+    dexpace.sdk.http.stdlib
+    dexpace.sdk.http.httpx
+    dexpace.sdk.http.aiohttp
+    dexpace.sdk.http.requests
+    dexpace.sdk.tck
+forbidden_modules =
+    furl
+    orderedmultidict
+ignore_imports =
+    dexpace.sdk.core.http.common.url -> furl
+# Only *direct* imports of furl are forbidden. Everything that uses `Url`
+# transitively depends on furl through it — that indirection is the whole point
+# of the boundary, so indirect imports are allowed.
+allow_indirect_imports = True
+
+[importlinter:contract:pure-below-runners]
+name = Pipeline runners sit above the pure algorithm layer
+type = layers
+containers =
+    dexpace.sdk.core.pipeline
+layers =
+    _sansio_runner | _transport_runner | _async_sansio_runner | _async_transport_runner
+    (_pure)
+exhaustive = False
+
+[importlinter:contract:codegen-executors-above-pure]
+name = Codegen executor shells sit above the pure planner layer and never import each other
+type = layers
+containers =
+    dexpace.sdk.core.codegen
+layers =
+    service_core | async_service_core
+    (_pure)
+exhaustive = False

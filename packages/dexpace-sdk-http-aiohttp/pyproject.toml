@@ -27,7 +27,13 @@ classifiers = [
 ]
 dependencies = [
     "dexpace-sdk-core>=0.1,<0.2",
-    "aiohttp>=3.9,<4.0",
+    # The adapter maps aiohttp's connect-vs-read timeout split
+    # (ConnectionTimeoutError / SocketTimeoutError), added in aiohttp 3.10, so
+    # 3.10 is the real floor. On Python 3.14 the floor rises to 3.13, the first
+    # release with a 3.14 wheel (3.14 rejects break/continue/return inside a
+    # finally block, a pattern aiohttp used until 3.13).
+    "aiohttp>=3.10,<4.0; python_version < '3.14'",
+    "aiohttp>=3.13,<4.0; python_version >= '3.14'",
 ]
 
 [project.urls]

@@ -12,6 +12,7 @@ from dexpace.sdk.core.http.common.http_header_name import AUTHORIZATION, CONTENT
 
 
 class TestCaseInsensitiveLookup:
+    @pytest.mark.req("HTTP-13")
     def test_get_matches_regardless_of_case(self) -> None:
         h = Headers([("Content-Type", "application/json")])
         assert h.get("content-type") == "application/json"
@@ -41,6 +42,7 @@ class TestCaseInsensitiveLookup:
 
 
 class TestMultiValue:
+    @pytest.mark.req("HTTP-14")
     def test_with_added_appends_to_existing_list(self) -> None:
         h = Headers([("Set-Cookie", "a=1")])
         result = h.with_added("set-cookie", "b=2")
@@ -51,6 +53,7 @@ class TestMultiValue:
         result = h.with_added("X-New", "value")
         assert result.values("x-new") == ("value",)
 
+    @pytest.mark.req("HTTP-14")
     def test_with_set_replaces_existing_values(self) -> None:
         h = Headers([("Set-Cookie", "a=1"), ("Set-Cookie", "b=2")])
         result = h.with_set("set-cookie", "only=one")
@@ -67,6 +70,7 @@ class TestMultiValue:
 
 
 class TestImmutability:
+    @pytest.mark.req("HTTP-5")
     def test_with_added_returns_new_instance(self) -> None:
         original = Headers([("A", "1")])
         new = original.with_added("B", "2")
@@ -84,6 +88,7 @@ class TestImmutability:
         result = original.without("missing")
         assert result is original
 
+    @pytest.mark.req("HTTP-1")
     def test_setattr_raises(self) -> None:
         h = Headers()
         with pytest.raises(AttributeError):
@@ -175,11 +180,13 @@ class TestHttpHeaderName:
 
 
 class TestValidation:
+    @pytest.mark.req("HTTP-17")
     @pytest.mark.parametrize("name", ["X-Bad\r\n", " X-Bad ", "X Bad", ""])
     def test_invalid_header_name_rejected(self, name: str) -> None:
         with pytest.raises(ValueError, match="invalid header name"):
             Headers([(name, "v")])
 
+    @pytest.mark.req("HTTP-18")
     @pytest.mark.parametrize("value", ["v\r\nLoc: bad", "v\nbad", "v\0bad"])
     def test_invalid_header_value_rejected(self, value: str) -> None:
         with pytest.raises(ValueError, match="invalid header value"):
@@ -187,6 +194,7 @@ class TestValidation:
 
 
 class TestRepr:
+    @pytest.mark.req("XCUT-19")
     @pytest.mark.parametrize(
         "name", ["authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key"]
     )

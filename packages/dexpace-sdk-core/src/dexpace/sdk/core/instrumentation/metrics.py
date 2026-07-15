@@ -17,11 +17,32 @@ from typing import Final
 
 
 class Counter(ABC):
-    """Monotonically-increasing aggregate value."""
+    """Monotonically-increasing aggregate value.
+
+    The non-negative invariant is enforced here, once, for every backend:
+    `add` validates the increment and then hands it to `_record`. A negative
+    increment is a programming error (a monotonic counter cannot decrease) and
+    is rejected even by the no-op counter, so misuse surfaces whether or not
+    metrics are enabled. Use `UpDownCounter` for values that may decrease.
+    """
+
+    def add(self, value: float = 1.0, attributes: Mapping[str, str] | None = None) -> None:
+        """Increase the counter by ``value``.
+
+        Args:
+            value: Non-negative increment; defaults to ``1.0``.
+            attributes: Optional dimensions to attach to the measurement.
+
+        Raises:
+            ValueError: If ``value`` is negative.
+        """
+        if value < 0:
+            raise ValueError(f"Counter increment must be non-negative, got {value!r}")
+        self._record(value, attributes)
 
     @abstractmethod
-    def add(self, value: float = 1.0, attributes: Mapping[str, str] | None = None) -> None:
-        """Increase the counter by ``value`` (must be non-negative)."""
+    def _record(self, value: float, attributes: Mapping[str, str] | None) -> None:
+        """Record a validated, non-negative ``value``; implemented per backend."""
 
 
 class UpDownCounter(ABC):
@@ -78,7 +99,7 @@ class MetricsContext(ABC):
 
 
 class _NoopCounter(Counter):
-    def add(self, value: float = 1.0, attributes: Mapping[str, str] | None = None) -> None:
+    def _record(self, value: float, attributes: Mapping[str, str] | None) -> None:
         del value, attributes
 
 

@@ -31,6 +31,7 @@ from typing import Annotated, Final, Union, cast, get_args, get_origin, get_type
 
 from ..errors import DeserializationError, SerializationError
 from .tristate import ABSENT, NULL, Present, Tristate
+from .type_ref import TypeRef
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -248,15 +249,18 @@ class Codec:
         """
         self._tolerate_unknown = tolerate_unknown
 
-    def decode[T](self, data: object, target: type[T]) -> T:
+    def decode[T](self, data: object, target: type[T] | TypeRef[T]) -> T:
         """Decode a plain document into an instance of ``target``.
 
         Args:
             data: A plain document (``dict`` / ``list`` / scalar) as produced by
                 ``Serde.deserializer``.
-            target: The type to reconstruct — a dataclass, a discriminated base,
-                ``list[X]`` / ``dict[str, X]``, a datetime/UUID/enum, or a
-                scalar.
+            target: The type to reconstruct, given as a runtime type witness — a
+                dataclass, a discriminated base, ``list[X]`` / ``dict[str, X]``,
+                a datetime/UUID/enum, or a scalar. A subscripted generic such as
+                ``list[X]`` may be passed directly; wrap it in a ``TypeRef`` to
+                have the witness validated (and any PEP 695 alias resolved)
+                eagerly before decoding.
 
         Returns:
             A fully constructed instance of ``target``.
@@ -265,7 +269,8 @@ class Codec:
             CodecError: On any structural mismatch or conversion failure, with a
                 wire-name path pointing at the offending location.
         """
-        return cast("T", _decode_value(data, target, (), self._tolerate_unknown, 0))
+        witness: object = target.witness if isinstance(target, TypeRef) else target
+        return cast("T", _decode_value(data, witness, (), self._tolerate_unknown, 0))
 
     def encode(self, value: object) -> object:
         """Encode a typed value into a plain document.
@@ -368,6 +373,46 @@ def _decode_atomic(
             return _decode_temporal(data, target, path)
         if issubclass(target, uuid.UUID):
             return _decode_uuid(data, target, path)
+        return _decode_scalar(data, target, path)
+    return data
+
+
+def _decode_scalar(data: object, target: type, path: tuple[str, ...]) -> object:
+    """Bind a wire scalar to a plain scalar target under the no-coercion rule.
+
+    The codec performs no implicit coercion, so a wire scalar whose Python type
+    does not match ``target`` passes through unchanged — a wire ``'5'`` bound to
+    ``int`` stays the string ``'5'``, and a wire ``1.5`` bound to ``int`` stays
+    the float ``1.5``. Two cases are singled out:
+
+    - A wire ``null`` bound to a non-``Optional`` target is a genuine shape
+      error, not a value to pass through, so it is rejected with the target type
+      named. An optional target routes through the union branch and never
+      reaches here for a ``null`` payload.
+    - A wire ``int`` bound to a ``float`` target is widened losslessly to
+      ``float`` (``bool`` is excluded, being only nominally an ``int``). This is
+      the one numeric widening JSON's number model makes safe.
+
+    Args:
+        data: The wire scalar to bind.
+        target: The plain scalar type to bind against.
+        path: Wire-name breadcrumb to this location.
+
+    Returns:
+        ``data`` unchanged, or its ``float`` widening for an ``int`` under a
+        ``float`` target.
+
+    Raises:
+        CodecError: If ``data`` is ``None`` and ``target`` is non-optional.
+    """
+    if data is None:
+        raise CodecError(
+            f"expected {target.__name__}, got null",
+            path=path,
+            target_name=target.__name__,
+        )
+    if target is float and type(data) is int:
+        return float(data)
     return data
 
 

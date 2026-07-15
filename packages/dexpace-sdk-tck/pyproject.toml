@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dexpace-sdk-tck"
+version = "0.1.0"
+description = "Executable conformance kit (TCK) for dexpace-sdk-core transport adapters: the shared, transport-agnostic conformance battery plus the golden byte corpus."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE.md"]
+authors = [{ name = "Omar Aljarrah", email = "o.mazari.om63@gmail.com" }]
+keywords = ["sdk", "http", "client", "conformance", "tck", "test-kit"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+# Runtime dependency is core only. pytest/hypothesis are how the kit is *run*,
+# not what its library surface (the harness ABCs + corpus loader) depends on;
+# they are declared as an optional extra so a consumer that only imports the
+# harness ABCs or the corpus loader need not pull them in, while
+# `pip install dexpace-sdk-tck[test]` provisions everything to execute the
+# battery via `pytest --pyargs dexpace.sdk.tck`.
+dependencies = [
+    "dexpace-sdk-core>=0.1,<0.2",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=9.1.0",
+    "pytest-asyncio>=1.4.0",
+    "hypothesis>=6.100",
+]
+
+[project.urls]
+Homepage = "https://github.com/dexpace/python-sdk"
+Documentation = "https://github.com/dexpace/python-sdk/tree/main/docs"
+Repository = "https://github.com/dexpace/python-sdk"
+Issues = "https://github.com/dexpace/python-sdk/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dexpace/sdk/tck"]
+sources = ["src"]
+# The golden byte corpus ships as package data so `importlib.resources` can
+# read it from an installed wheel (zip-safe), never as a repo-relative path.
+# Hatch already vendors every file under the package directory into the wheel;
+# this explicit include keeps the non-.py fixture bytes (.query/.sse/.base/
+# .jsonl/... and the corpus .gitattributes) in the artifact even if a future
+# default narrows to source files only.
+artifacts = [
+    "src/dexpace/sdk/tck/golden_corpus/data/**",
+]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "README.md"]

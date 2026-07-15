@@ -63,12 +63,18 @@ def test_without_header_drops_it() -> None:
     assert AUTHORIZATION not in r.headers
 
 
+def _post_request() -> Request:
+    return Request(method=Method.POST, url=Url.parse("https://example.com/"))
+
+
+@pytest.mark.req("HTTP-6")
 def test_with_body() -> None:
     body = RequestBody.from_string("payload")
-    r = _request().with_body(body)
+    r = _post_request().with_body(body)
     assert r.body is body
 
 
+@pytest.mark.req("HTTP-1", "XCUT-15")
 def test_frozen() -> None:
     from dataclasses import FrozenInstanceError
 
@@ -77,7 +83,137 @@ def test_frozen() -> None:
         r.url = Url.parse("https://x/")  # type: ignore[misc]
 
 
+@pytest.mark.req("HTTP-6")
 def test_default_headers_are_empty() -> None:
     r = _request()
     assert isinstance(r.headers, Headers)
     assert len(r.headers) == 0
+
+
+# --- Validation grammar -----------------------------------------------------
+
+
+@pytest.mark.req("HTTP-4")
+def test_missing_url_raises_field_named_error() -> None:
+    with pytest.raises(ValueError, match=r"^url is required$"):
+        Request(method=Method.GET, url=None)  # type: ignore[arg-type]
+
+
+@pytest.mark.req("HTTP-4")
+def test_missing_method_raises_field_named_error() -> None:
+    with pytest.raises(ValueError, match=r"^method is required$"):
+        Request(method=None, url=Url.parse("https://example.com/"))  # type: ignore[arg-type]
+
+
+@pytest.mark.req("HTTP-7")
+def test_body_on_get_is_rejected() -> None:
+    body = RequestBody.from_string("payload")
+    with pytest.raises(ValueError, match="body is not permitted on a GET request"):
+        Request(method=Method.GET, url=Url.parse("https://example.com/"), body=body)
+
+
+@pytest.mark.req("HTTP-7")
+def test_body_on_head_is_rejected() -> None:
+    body = RequestBody.from_string("payload")
+    with pytest.raises(ValueError, match="body is not permitted on a HEAD request"):
+        Request(method=Method.HEAD, url=Url.parse("https://example.com/"), body=body)
+
+
+@pytest.mark.req("HTTP-7")
+@pytest.mark.parametrize("method", [Method.GET, Method.HEAD, Method.TRACE, Method.CONNECT])
+def test_body_on_bodyless_method_is_rejected_at_construction(method: Method) -> None:
+    # Every method whose classification forbids a body — including TRACE and
+    # CONNECT — rejects a non-null body at construction, never deferring the
+    # error to the transport.
+    body = RequestBody.from_string("payload")
+    with pytest.raises(ValueError, match=f"body is not permitted on a {method} request"):
+        Request(method=method, url=Url.parse("https://example.com/"), body=body)
+
+
+@pytest.mark.req("HTTP-7")
+@pytest.mark.parametrize("method", [Method.TRACE, Method.CONNECT])
+def test_with_method_to_bodyless_drops_body(method: Method) -> None:
+    # Downgrading a body-carrying request to TRACE/CONNECT clears the body so the
+    # resulting request stays valid (mirrors the GET/HEAD downgrade path).
+    post = _post_request().with_body(RequestBody.from_string("payload"))
+    switched = post.with_method(method)
+    assert switched.method is method
+    assert switched.body is None
+    assert post.body is not None  # value semantics: original untouched
+
+
+def test_with_body_on_get_is_rejected() -> None:
+    body = RequestBody.from_string("payload")
+    with pytest.raises(ValueError, match="body is not permitted on a GET request"):
+        _request().with_body(body)
+
+
+def test_replace_revalidates_body_on_get() -> None:
+    from dataclasses import replace
+
+    post = _post_request().with_body(RequestBody.from_string("payload"))
+    with pytest.raises(ValueError, match="body is not permitted on a GET request"):
+        replace(post, method=Method.GET)
+
+
+def test_with_method_to_get_drops_body() -> None:
+    post = _post_request().with_body(RequestBody.from_string("payload"))
+    switched = post.with_method(Method.GET)
+    assert switched.method is Method.GET
+    assert switched.body is None
+    # The original is untouched (value semantics).
+    assert post.body is not None
+
+
+def test_with_method_between_body_methods_keeps_body() -> None:
+    body = RequestBody.from_string("payload")
+    post = _post_request().with_body(body)
+    switched = post.with_method(Method.PUT)
+    assert switched.method is Method.PUT
+    assert switched.body is body
+
+
+# --- Per-call boundary ------------------------------------------------------
+
+
+@pytest.mark.req("HTTP-35")
+def test_timeout_zero_is_rejected() -> None:
+    with pytest.raises(ValueError, match="timeout must be positive"):
+        Request(method=Method.GET, url=Url.parse("https://example.com/"), timeout=0)
+
+
+def test_timeout_negative_is_rejected() -> None:
+    with pytest.raises(ValueError, match="timeout must be positive"):
+        Request(method=Method.GET, url=Url.parse("https://example.com/"), timeout=-1.0)
+
+
+def test_positive_timeout_is_accepted() -> None:
+    r = Request(method=Method.GET, url=Url.parse("https://example.com/"), timeout=2.5)
+    assert r.timeout == 2.5
+
+
+@pytest.mark.req("HTTP-35")
+def test_negative_retries_is_rejected() -> None:
+    with pytest.raises(ValueError, match="retries must not be negative"):
+        Request(method=Method.GET, url=Url.parse("https://example.com/"), retries=-1)
+
+
+@pytest.mark.req("HTTP-35")
+def test_zero_retries_means_no_retries() -> None:
+    r = Request(method=Method.GET, url=Url.parse("https://example.com/"), retries=0)
+    assert r.retries == 0
+
+
+# --- Repr redaction ---------------------------------------------------------
+
+
+def test_repr_redacts_url_and_header_credentials() -> None:
+    r = Request(
+        method=Method.GET,
+        url=Url.parse("https://user:secret@example.com/path?token=abc&page=2"),
+    ).with_header(AUTHORIZATION, "Bearer super-secret")
+    rendered = repr(r)
+    assert "secret" not in rendered  # covers both userinfo and the bearer token
+    assert "abc" not in rendered
+    assert "REDACTED" in rendered
+    assert "page=2" in rendered  # an allow-listed query key survives

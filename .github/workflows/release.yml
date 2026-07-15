@@ -1,0 +1,105 @@
+name: Release
+
+# Publishes the whole version train to PyPI via trusted publishing (OIDC), with
+# PEP 740 attestations and reproducible, byte-stable wheels. A tag push builds
+# and publishes; a manual run defaults to a dry run that builds and verifies the
+# artifacts without uploading anything.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and verify only; skip the PyPI upload."
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build + verify artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # Full history so the commit timestamp is available for a reproducible
+        # SOURCE_DATE_EPOCH.
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      # Reproducible builds (NFR-12): pin every archive timestamp to the tagged
+      # commit's authored date and fix the hash seed so the build carries no
+      # run-to-run entropy. hatchling honours SOURCE_DATE_EPOCH and writes wheel
+      # entries in a stable order, so identical inputs yield byte-identical
+      # wheels.
+      - name: Pin reproducible-build environment
+        run: |
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+          echo "PYTHONHASHSEED=0" >> "$GITHUB_ENV"
+
+      # Build each published distribution explicitly so the unpublished
+      # workspace root never lands in dist/. Sdists ship alongside wheels.
+      - name: Build wheels + sdists
+        run: |
+          for pkg in \
+            dexpace-sdk-core \
+            dexpace-sdk-http-stdlib \
+            dexpace-sdk-http-httpx \
+            dexpace-sdk-http-aiohttp \
+            dexpace-sdk-http-requests \
+            dexpace-sdk-tck; do
+            uv build --package "$pkg" --out-dir dist
+          done
+
+      # NFR-14/15: every artifact carries the single, real train version -- never
+      # a placeholder. Blocks the upload if any wheel disagrees.
+      - name: Verify one version train (pyproject + uv.lock + wheels)
+        run: uv run --no-project python tools/check_version_train.py --wheel-dir dist
+
+      - name: List artifacts
+        run: ls -1 dist | sort
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: publish to PyPI (trusted publishing)
+    needs: build
+    runs-on: ubuntu-latest
+    # A tag push publishes; a manual run publishes only when dry_run is turned
+    # off. The default manual run is a build-and-verify dry run.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false')
+    environment:
+      name: pypi
+      url: https://pypi.org/project/dexpace-sdk-core/
+    permissions:
+      # OIDC token for PyPI trusted publishing; no long-lived API token needed.
+      id-token: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # PEP 740 provenance attestations, signed with the OIDC identity
+          # (NFR-16).
+          attestations: true
+          print-hash: true

@@ -9,12 +9,42 @@ import pytest
 
 from dexpace.sdk.core.http.common import Protocol
 from dexpace.sdk.core.http.request import Method
+from dexpace.sdk.core.http.request.method import _IDEMPOTENT_METHODS
 from dexpace.sdk.core.http.response import Status
 
 
+@pytest.mark.req("HTTP-9")
 def test_method_str_round_trip() -> None:
     assert Method("GET") is Method.GET
     assert str(Method.POST) == "POST"
+
+
+@pytest.mark.req("HTTP-9")
+@pytest.mark.parametrize("method", list(Method))
+def test_method_wire_token_equals_uppercase_name(method: Method) -> None:
+    # The canonical wire token is the member's value, which equals its uppercase
+    # name — so a method drops straight into a request line without translation.
+    assert method.value == method.name
+    assert str(method) == method.name
+    assert method.value.isupper()
+
+
+@pytest.mark.req("HTTP-9")
+def test_idempotent_method_set_is_the_canonical_five() -> None:
+    expected = {Method.GET, Method.HEAD, Method.OPTIONS, Method.PUT, Method.DELETE}
+    assert set(_IDEMPOTENT_METHODS) == expected
+
+
+@pytest.mark.req("HTTP-9")
+def test_retry_allowlist_derives_from_the_single_idempotency_source() -> None:
+    # The default retry method allow-list is not an independent list: it is
+    # derived from `_IDEMPOTENT_METHODS`, so the two can never diverge (and, in
+    # particular, TRACE is not silently retried).
+    from dexpace.sdk.core.pipeline.policies.retry import _DEFAULT_METHOD_ALLOWLIST
+
+    expected = {m.value for m in _IDEMPOTENT_METHODS}
+    assert set(_DEFAULT_METHOD_ALLOWLIST) == expected
+    assert "TRACE" not in _DEFAULT_METHOD_ALLOWLIST
 
 
 def test_method_is_str_compatible() -> None:
@@ -59,6 +89,32 @@ def test_protocol_h2_aliases() -> None:
     assert Protocol.parse("http/2.0") is Protocol.HTTP_2
 
 
+@pytest.mark.req("HTTP-33")
 def test_protocol_unknown_raises() -> None:
     with pytest.raises(ValueError):
         Protocol.parse("ftp/1.0")
+
+
+# --- Protocol parse battery (HTTP-33) ---------------------------------------
+
+
+@pytest.mark.req("HTTP-33")
+@pytest.mark.parametrize("proto", list(Protocol))
+def test_protocol_str_round_trips_for_every_member(proto: Protocol) -> None:
+    assert Protocol.parse(str(proto)) is proto
+
+
+@pytest.mark.req("HTTP-33")
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("http/1.0", Protocol.HTTP_1_0),
+        ("HTTP/1.1", Protocol.HTTP_1_1),
+        ("h2", Protocol.HTTP_2),
+        ("HTTP/2.0", Protocol.HTTP_2),
+        ("H2_PRIOR_KNOWLEDGE", Protocol.H2_PRIOR_KNOWLEDGE),
+        ("QUIC", Protocol.QUIC),
+    ],
+)
+def test_protocol_parse_is_case_insensitive(text: str, expected: Protocol) -> None:
+    assert Protocol.parse(text) is expected

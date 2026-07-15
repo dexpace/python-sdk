@@ -72,6 +72,7 @@ class TestSansIOSteps:
         assert response.is_success
         assert client.calls[0].headers.get("x-probe") == "1"
 
+    @pytest.mark.req("PIPE-12")
     def test_response_step_modifies_incoming_response(self) -> None:
         def stamp_response(response: Response, _ctx: CallContext) -> Response:
             return response.with_header("X-Trace", "abc")
@@ -83,6 +84,7 @@ class TestSansIOSteps:
             response = p.run(_request(), DispatchContext(_instr("0" * 16 + "b")))
         assert response.headers.get("x-trace") == "abc"
 
+    @pytest.mark.req("PIPE-12")
     def test_step_returning_none_aborts(self) -> None:
         def abort(_request: Request, _ctx: CallContext) -> Request | None:
             return None
@@ -108,6 +110,7 @@ class _CountingPolicy(Policy):
 
 
 class TestPolicyChaining:
+    @pytest.mark.req("PIPE-12", "PIPE-13")
     def test_policies_run_in_declared_order(self) -> None:
         log: list[str] = []
         client = _StubClient()
@@ -115,6 +118,7 @@ class TestPolicyChaining:
             p.run(_request(), DispatchContext(_instr("0" * 16 + "d")))
         assert log == ["a-pre", "b-pre", "b-post", "a-post"]
 
+    @pytest.mark.req("PIPE-13", "PIPE-39", "PIPE-9")
     def test_empty_policy_list_passes_through_to_transport(self) -> None:
         client = _StubClient()
         with Pipeline(client) as p:
@@ -124,6 +128,7 @@ class TestPolicyChaining:
 
 
 class TestPipelineContext:
+    @pytest.mark.req("PIPE-9")
     def test_options_forwarded_via_kwargs(self) -> None:
         seen: dict[str, object] = {}
 

@@ -10,11 +10,37 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Self
 
+from .headers import _NON_FIELD_CONTENT
+
 # RFC 7230 §3.2.6 — characters that are NOT valid in a ``token``. Any
 # parameter value containing one of these (or a non-printable byte) must be
 # rendered as a quoted-string. Space and HTAB are included because they
 # terminate a token even though they are valid inside quoted-strings.
 _TOKEN_SEPARATORS = frozenset('()<>@,;:\\"/[]?={} \t')
+
+
+def _reject_forbidden_chars(label: str, value: str) -> None:
+    """Reject a media-type component that could not survive as a header value.
+
+    Applies the exact predicate outbound header-value validation uses
+    (`Headers.outbound`): any C0 control character except HTAB, ``DEL``, or a
+    non-ASCII byte is refused. Enforcing it at `MediaType` construction means a
+    media type can always be emitted as a ``Content-Type`` header without a late
+    rejection — and forecloses CR / LF injection at the point the type is built.
+
+    Args:
+        label: Human-readable name of the offending component, for the message.
+        value: The component text (type, subtype, parameter key, or value).
+
+    Raises:
+        ValueError: If ``value`` carries a forbidden byte. The value itself is
+            never echoed, so a control character cannot smuggle itself into the
+            message.
+    """
+    if _NON_FIELD_CONTENT.search(value):
+        raise ValueError(
+            f"invalid media type {label}: contains a control character or non-ASCII byte"
+        )
 
 
 def _split_params(value: str) -> list[str]:
@@ -99,16 +125,50 @@ def _quote_if_needed(s: str) -> str:
 class MediaType:
     """An HTTP media type (RFC 7231 §3.1.1.1).
 
-    Immutable and hashable. ``parameters`` is stored as a tuple of sorted
-    ``(key, value)`` pairs so two equivalent media types compare equal and hash
-    equally regardless of construction order. Construct via `of` or
-    `parse` rather than the dataclass constructor directly so the type,
-    subtype, and parameter keys are normalised to lower case.
+    Immutable and hashable. `__post_init__` normalises `type`/`subtype` to
+    lower-case and `parameters` to sorted, lower-cased-key pairs on *every*
+    construction path — including the raw dataclass constructor, not just the
+    `of`/`parse` factories — so two equivalent media types always compare
+    equal and hash equally regardless of the order or case they were built
+    with, and an un-normalised instance can never be observed.
+
+    Note: the normalised parts are plain frozen fields rather than private
+    fields behind read-only properties. CPython's `@dataclass(frozen=True,
+    slots=True)` generates a broken `__setattr__`/`__delattr__` pair when the
+    class defines any descriptor beyond its declared slotted fields (a
+    reproducible stdlib issue, not specific to this field's name) — raising a
+    confusing `TypeError` from `super()` instead of `FrozenInstanceError` on
+    assignment. Plain frozen fields sidestep it while keeping the same
+    unbypassable-invariant guarantee; assigning to any field still raises
+    `FrozenInstanceError` (a `AttributeError` subclass) via the standard
+    generated path.
     """
 
     type: str
     subtype: str
     parameters: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        # Normalise regardless of construction path (raw constructor included),
+        # so the equality/hash invariant holds for every instance rather than
+        # only those built through ``of``/``parse``. The dataclass is frozen,
+        # so mutate the fields via ``object.__setattr__``. Parameter *keys*
+        # are case-insensitive per RFC 7231 and are lower-cased, but *values*
+        # are preserved verbatim — multipart boundaries and similar tokens
+        # must round-trip exactly.
+        object.__setattr__(self, "type", self.type.lower())
+        object.__setattr__(self, "subtype", self.subtype.lower())
+        normalized = tuple(sorted((key.lower(), value) for key, value in self.parameters))
+        object.__setattr__(self, "parameters", normalized)
+        # Reject any byte that outbound header-value validation would reject, so
+        # this media type can always be serialised into a ``Content-Type`` header
+        # without a late failure or a CR/LF injection. Runs on every construction
+        # path (raw constructor included) — the same guarantee as normalisation.
+        _reject_forbidden_chars("type", self.type)
+        _reject_forbidden_chars("subtype", self.subtype)
+        for key, value in self.parameters:
+            _reject_forbidden_chars("parameter name", key)
+            _reject_forbidden_chars("parameter value", value)
 
     @property
     def full_type(self) -> str:
@@ -143,6 +203,12 @@ class MediaType:
         subtype_matches = self.subtype == "*" or self.subtype == other.subtype
         return type_matches and subtype_matches
 
+    def __repr__(self) -> str:
+        return (
+            f"MediaType(type={self.type!r}, subtype={self.subtype!r}, "
+            f"parameters={self.parameters!r})"
+        )
+
     def __str__(self) -> str:
         if not self.parameters:
             return f"{self.type}/{self.subtype}"
@@ -168,15 +234,12 @@ class MediaType:
             raise ValueError("type must not be blank")
         if not subtype or not subtype.strip():
             raise ValueError("subtype must not be blank")
-        normalized_type = type.lower()
-        normalized_subtype = subtype.lower()
-        if normalized_type == "*" and normalized_subtype != "*":
-            raise ValueError(f"Invalid media type: type=*, subtype={normalized_subtype}")
-        # Parameter *keys* are case-insensitive per RFC 7231, but *values*
-        # are not — multipart boundaries, for example, must round-trip
-        # exactly. Only the key is lower-cased here.
-        params = tuple(sorted((k.lower(), v) for k, v in parameters.items())) if parameters else ()
-        return cls(normalized_type, normalized_subtype, params)
+        # ``__post_init__`` lower-cases and sorts; validate the wildcard rule
+        # against the same normalised form it will produce.
+        if type.lower() == "*" and subtype.lower() != "*":
+            raise ValueError(f"Invalid media type: type=*, subtype={subtype.lower()}")
+        params = tuple(parameters.items()) if parameters else ()
+        return cls(type, subtype, params)
 
     @classmethod
     def parse(cls, value: str) -> Self:

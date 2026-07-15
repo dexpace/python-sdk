@@ -6,7 +6,11 @@
 The parser implements a tolerant subset of RFC 7235 §2.1 sufficient for real
 server responses: it splits a header into one or more challenges and recovers
 the scheme + parameter map for each. Quoted-string values are unquoted and
-``quoted-pair`` escapes (``\\X`` → ``X``) decoded per RFC 7230 §3.2.6.
+``quoted-pair`` escapes (``\\X`` → ``X``) decoded per RFC 7230 §3.2.6. A comma
+inside a quoted-string is preserved, never mistaken for a challenge separator.
+``parse_challenges`` also accepts an iterable of header lines, so challenges a
+server splits across several ``WWW-Authenticate`` / ``Proxy-Authenticate``
+lines are each parsed and concatenated rather than dropped.
 
 Auth-params within a challenge must be comma-separated; this parser does not
 recover whitespace-separated parameters. ``token68`` credentials (as used by
@@ -19,7 +23,7 @@ whatever valid challenges were extracted.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -41,22 +45,42 @@ class AuthenticateChallenge:
     parameters: Mapping[str, str]
 
 
-def parse_challenges(header_value: str) -> list[AuthenticateChallenge]:
+def parse_challenges(
+    header_value: str | Iterable[str],
+) -> list[AuthenticateChallenge]:
     """Parse a ``WWW-Authenticate`` or ``Proxy-Authenticate`` header.
+
+    Accepts either a single header value or several — a server may split its
+    challenges across multiple ``WWW-Authenticate`` / ``Proxy-Authenticate``
+    header lines (RFC 7230 §3.2.2 treats repeated field lines as one comma-
+    joined field). When an iterable is supplied, each line is parsed
+    independently and the results are concatenated, so a Digest challenge on
+    its own line is never lost behind a Basic challenge on an earlier line.
 
     Auth-params within a challenge are recognised only when comma-separated;
     whitespace-separated params are not recovered. ``token68`` credentials
     (e.g. ``Negotiate``/``NTLM``) are unsupported and yield no parameters.
 
     Args:
-        header_value: The full header value (a single line concatenated
-            across folded continuations is fine — RFC 7230 deprecates
-            folding but tolerant parsers accept it).
+        header_value: A single header value string, or an iterable of the
+            individual header lines. A single line concatenated across folded
+            continuations is fine — RFC 7230 deprecates folding but tolerant
+            parsers accept it.
 
     Returns:
-        Zero or more parsed challenges. Malformed segments are skipped
-        silently; any valid challenge found is returned.
+        Zero or more parsed challenges, in the order encountered. Malformed
+        segments are skipped silently; any valid challenge found is returned.
     """
+    if isinstance(header_value, str):
+        return _parse_one_line(header_value)
+    challenges: list[AuthenticateChallenge] = []
+    for line in header_value:
+        challenges.extend(_parse_one_line(line))
+    return challenges
+
+
+def _parse_one_line(header_value: str) -> list[AuthenticateChallenge]:
+    """Parse the challenges carried by a single header line."""
     tokens = _split_top_level(header_value)
     challenges: list[AuthenticateChallenge] = []
     current_scheme: str | None = None

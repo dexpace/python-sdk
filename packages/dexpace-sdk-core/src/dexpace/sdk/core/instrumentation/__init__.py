@@ -14,13 +14,23 @@ sibling packages.
 
 from __future__ import annotations
 
-from .client_logger import ClientLogger, CorrelationFilter
+from .client_logger import ClientLogger, CorrelationFilter, LogEvent
 from .correlation import (
+    activate_span,
     bind_correlation,
+    bind_to_context,
+    capture_context,
+    correlation_scope,
+    get_current_span,
     get_span_id,
     get_trace_id,
     set_span_id,
     set_trace_id,
+)
+from .header_redactor import (
+    DEFAULT_LOGGED_HEADER_ALLOWLIST,
+    DEFAULT_URL_VALUED_HEADERS,
+    HeaderRedactor,
 )
 from .http_tracer import HttpTracer, HttpTracerFactory
 from .identifiers import SpanId, TraceFlags, TraceId, TraceIdType, TraceState
@@ -49,7 +59,9 @@ from .tracing_scope import TracingScope
 from .url_redactor import DEFAULT_QUERY_ALLOWLIST, UrlRedactor
 
 __all__ = [
+    "DEFAULT_LOGGED_HEADER_ALLOWLIST",
     "DEFAULT_QUERY_ALLOWLIST",
+    "DEFAULT_URL_VALUED_HEADERS",
     "NOOP_COUNTER",
     "NOOP_HISTOGRAM",
     "NOOP_HTTP_TRACER",
@@ -62,10 +74,12 @@ __all__ = [
     "ClientLogger",
     "CorrelationFilter",
     "Counter",
+    "HeaderRedactor",
     "Histogram",
     "HttpTracer",
     "HttpTracerFactory",
     "InstrumentationContext",
+    "LogEvent",
     "LogLevel",
     "MetricsContext",
     "Span",
@@ -78,7 +92,12 @@ __all__ = [
     "TracingScope",
     "UpDownCounter",
     "UrlRedactor",
+    "activate_span",
     "bind_correlation",
+    "bind_to_context",
+    "capture_context",
+    "correlation_scope",
+    "get_current_span",
     "get_span_id",
     "get_trace_id",
     "set_span_id",

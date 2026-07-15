@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Final, Generic, TypeVar
 
 from ..http.response.loggable_response_body import LoggableResponseBody
+from ..http.response.response_body import ResponseBody
 from .base import SdkError
 
 if TYPE_CHECKING:
@@ -27,11 +28,11 @@ if TYPE_CHECKING:
 else:
     ModelT = TypeVar("ModelT")
 
-# Status codes for which a retry is worthwhile by default: request timeout,
-# rate limiting, and the transient 5xx family. Mirrors the retry policy's
-# ``_DEFAULT_STATUS_RETRIES`` so ``retryable`` and the policy agree out of
-# the box; callers can override per error via the ``retryable`` kwarg.
-_DEFAULT_RETRYABLE_STATUS: Final[frozenset[int]] = frozenset({408, 429, 500, 502, 503, 504})
+#: Default ceiling, in bytes, on the replayable copy of an error response body
+#: captured by ``HttpResponseError.read_body``. One MiB is generous for the
+#: JSON / text error payloads services return while bounding the memory a single
+#: failed request can pin for post-mortem inspection.
+ERROR_BODY_MAX_BYTES: Final[int] = 1 << 20  # 1 MiB
 
 
 # UP046 wants PEP 695 ``class Foo[T = Any](...)`` form, but that syntax
@@ -57,10 +58,11 @@ class HttpResponseError(SdkError, Generic[ModelT]):  # noqa: UP046
             libraries when they parse the error body). Typed as
             ``ModelT | None``.
         retryable: Whether retrying the request might succeed. Derived from
-            the response status by default (request timeout, rate limiting,
-            and transient 5xx are retryable) so the retry policy can read the
-            flag directly instead of re-deriving it; callers may override it
-            explicitly via the ``retryable`` constructor keyword.
+            the response status by default via the single shared classifier
+            (408, 429, and every 5xx EXCEPT 501 and 505 are retryable) so the
+            baked flag is computed once at construction and always agrees with
+            that classifier; callers may override it explicitly via the
+            ``retryable`` constructor keyword.
     """
 
     status: Status | None
@@ -68,6 +70,7 @@ class HttpResponseError(SdkError, Generic[ModelT]):  # noqa: UP046
     response: _AnyResponse | None
     model: ModelT | None
     retryable: bool
+    _captured_body: bytes | None
 
     def __init__(
         self,
@@ -91,6 +94,7 @@ class HttpResponseError(SdkError, Generic[ModelT]):  # noqa: UP046
         self.status = response.status if response is not None else None
         self.reason = response.reason if response is not None else None
         self.model = kwargs.pop("model", None)
+        self._captured_body = None
         retryable_override = kwargs.pop("retryable", None)
         self.retryable = (
             self._status_is_retryable() if retryable_override is None else bool(retryable_override)
@@ -103,11 +107,22 @@ class HttpResponseError(SdkError, Generic[ModelT]):  # noqa: UP046
     def _status_is_retryable(self) -> bool:
         """Return whether this error's status is retryable by default.
 
+        Consults the single shared canonical classifier
+        (``default_status_is_retryable``: 408, 429, and every 5xx except 501
+        and 505), so the flag is baked once from one definition instead of a
+        hand-mirrored literal and always agrees with that classifier. The
+        classifier is imported lazily inside the method because it lives under
+        ``pipeline`` (whose package import pulls in policies that import this
+        error module) — a module-level import would form an errors -> pipeline
+        -> errors cycle.
+
         Returns:
-            ``True`` when the captured status is one of the default
-            retryable codes, ``False`` when no status was captured.
+            ``True`` when the captured status is 408, 429, or a 5xx other than
+            501 / 505; ``False`` when no status was captured.
         """
-        return self.status is not None and int(self.status) in _DEFAULT_RETRYABLE_STATUS
+        from ..pipeline._pure.classifier import default_status_is_retryable
+
+        return default_status_is_retryable(self.status)
 
     def body_snapshot(self, max_bytes: int | None = None) -> bytes:
         """Preview the error response body without consuming it.
@@ -136,6 +151,60 @@ class HttpResponseError(SdkError, Generic[ModelT]):  # noqa: UP046
         if isinstance(body, LoggableResponseBody):
             return body.snapshot(max_bytes)
         return b""
+
+    def read_body(self, max_bytes: int = ERROR_BODY_MAX_BYTES) -> bytes:
+        """Read a bounded, replayable copy of the error response body.
+
+        Unlike ``body_snapshot`` — a non-consuming preview limited to bodies
+        already wrapped for repeatable reads — this drains the response body
+        once, up to ``max_bytes``, and caches the result on the error. Every
+        later call replays the cached copy without re-draining, so the bounded
+        body is readable repeatedly for logging and post-mortem inspection.
+
+        The first read fixes the captured bytes; a single-use response body is
+        consumed by that read (call ``body_snapshot`` first if a non-consuming
+        preview is needed). An already-repeatable ``LoggableResponseBody`` is
+        left readable. Async response bodies and the no-response case return
+        empty bytes rather than draining anything.
+
+        Args:
+            max_bytes: Ceiling on the captured copy. Defaults to the documented
+                ``ERROR_BODY_MAX_BYTES`` (1 MiB); larger bodies are truncated
+                to this prefix.
+
+        Returns:
+            The captured body bytes, truncated to ``max_bytes``; empty when no
+            synchronously-readable body is present.
+
+        Raises:
+            ValueError: If ``max_bytes`` is negative.
+        """
+        if max_bytes < 0:
+            raise ValueError(f"max_bytes must be non-negative, got {max_bytes}")
+        if self._captured_body is None:
+            self._captured_body = self._capture_body(max_bytes)
+        return bytes(memoryview(self._captured_body)[:max_bytes])
+
+    def _capture_body(self, max_bytes: int) -> bytes:
+        """Drain a bounded prefix of the response body for one-time capture.
+
+        Args:
+            max_bytes: Ceiling on the bytes to capture.
+
+        Returns:
+            The captured prefix, or empty bytes when there is no
+            synchronously-readable body.
+        """
+        body = self.response.body if self.response is not None else None
+        if max_bytes == 0 or not isinstance(body, ResponseBody):
+            return b""
+        if isinstance(body, LoggableResponseBody):
+            return body.snapshot(max_bytes)
+        capture = LoggableResponseBody(body, max_capture_bytes=max_bytes)
+        try:
+            return capture.snapshot(max_bytes)
+        finally:
+            capture.close()
 
 
 class DecodeError(HttpResponseError[ModelT]):
@@ -170,6 +239,7 @@ class ClientAuthenticationError(HttpResponseError[ModelT]):
 
 
 __all__ = [
+    "ERROR_BODY_MAX_BYTES",
     "ClientAuthenticationError",
     "DecodeError",
     "HttpResponseError",

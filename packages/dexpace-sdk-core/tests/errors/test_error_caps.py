@@ -12,7 +12,11 @@ from __future__ import annotations
 
 import pytest
 
-from dexpace.sdk.core.errors import HttpResponseError, ResourceNotFoundError
+from dexpace.sdk.core.errors import (
+    ERROR_BODY_MAX_BYTES,
+    HttpResponseError,
+    ResourceNotFoundError,
+)
 from dexpace.sdk.core.http.common import MediaType, Protocol, Url
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.response import (
@@ -21,6 +25,7 @@ from dexpace.sdk.core.http.response import (
     ResponseBody,
     Status,
 )
+from dexpace.sdk.core.pipeline._pure import classifier
 
 
 def _response(status: Status, *, body: ResponseBody | None = None) -> Response:
@@ -36,6 +41,7 @@ def _response(status: Status, *, body: ResponseBody | None = None) -> Response:
 # ----- retryable flag -----------------------------------------------------
 
 
+@pytest.mark.req("RETRY-3")
 @pytest.mark.parametrize(
     "status",
     [
@@ -83,9 +89,153 @@ def test_retryable_inherited_by_subclasses() -> None:
     assert err.retryable is False
 
 
+@pytest.mark.req("RETRY-3", "XCUT-5")
+def test_retryable_is_baked_once_and_stable_against_classifier_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The flag is derived from the single shared classifier at construction
+    # time and then baked as a plain attribute, so repointing the classifier
+    # afterwards must not retroactively change an already-built error.
+    err = HttpResponseError(response=_response(Status.SERVICE_UNAVAILABLE))
+    assert err.retryable is True
+    baked = err.retryable
+
+    # Repoint the canonical classifier to never-retryable *after* construction.
+    monkeypatch.setattr(classifier, "default_status_is_retryable", lambda status: False)
+
+    # The already-constructed error keeps its baked value (no recompute).
+    assert err.retryable is baked is True
+    # Proof the patch is live: a freshly built error now reflects the repointed
+    # classifier, confirming the first error's flag was frozen at its own
+    # construction from the same single source.
+    fresh = HttpResponseError(response=_response(Status.SERVICE_UNAVAILABLE))
+    assert fresh.retryable is False
+
+
+@pytest.mark.req("XCUT-5")
+@pytest.mark.parametrize(
+    "status",
+    [
+        Status.VARIANT_ALSO_NEGOTIATES,
+        Status.INSUFFICIENT_STORAGE,
+        Status.LOOP_DETECTED,
+        Status.NOT_EXTENDED,
+        Status.NETWORK_AUTHENTICATION_REQUIRED,
+    ],
+    ids=["506", "507", "508", "510", "511"],
+)
+def test_exotic_5xx_bakes_retryable_true(status: Status) -> None:
+    # XCUT-5: the baked flag treats ALL 5xx as retryable except 501 and 505 —
+    # not just the curated {500,502,503,504}. The exotic 5xx codes therefore
+    # bake ``retryable=True`` even though they are absent from the retry
+    # policy's narrower default eligibility set.
+    err = HttpResponseError(response=_response(status))
+    assert err.retryable is True
+
+
+@pytest.mark.req("XCUT-5")
+@pytest.mark.parametrize(
+    "status",
+    [Status.NOT_IMPLEMENTED, Status.HTTP_VERSION_NOT_SUPPORTED],
+    ids=["501", "505"],
+)
+def test_permanent_5xx_bakes_retryable_false(status: Status) -> None:
+    # The only two 5xx codes the canonical classifier excludes: retrying a
+    # 501/505 can never change the outcome, so the baked flag is False.
+    err = HttpResponseError(response=_response(status))
+    assert err.retryable is False
+
+
+def test_retry_policy_custom_set_does_not_rewrite_baked_error_flag() -> None:
+    # The retry policy's ``retry_on_status_codes`` is the direct injection point
+    # for a custom set, but it is a *policy-local* override: the error bakes its
+    # own flag from the shared classifier default at construction and never
+    # consults a policy instance. Building a policy with an inverted set must
+    # therefore leave already-built errors' flags untouched — the flag reflects
+    # the set authoritative at construction time, not a policy's configuration.
+    from dexpace.sdk.core.pipeline.policies import RetryPolicy
+
+    retryable_by_default = HttpResponseError(response=_response(Status.SERVICE_UNAVAILABLE))
+    terminal_by_default = HttpResponseError(response=_response(Status.NOT_IMPLEMENTED))
+    assert retryable_by_default.retryable is True  # 503 in the default set
+    assert terminal_by_default.retryable is False  # 501 excluded by default
+
+    # A policy whose set inverts both classifications relative to the default.
+    RetryPolicy(retry_on_status_codes={501})
+
+    # The errors keep the flags baked at their own construction, independent of
+    # any policy's set.
+    assert retryable_by_default.retryable is True
+    assert terminal_by_default.retryable is False
+
+
+# ----- bounded, replayable error body -------------------------------------
+
+
+@pytest.mark.req("HTTP-52")
+def test_error_body_cap_is_one_mib() -> None:
+    assert ERROR_BODY_MAX_BYTES == 1 << 20  # documented 1 MiB cap
+
+
+@pytest.mark.req("BODY-30", "HTTP-52")
+def test_read_body_captures_bounded_replayable_copy() -> None:
+    # A body larger than the cap is truncated to the documented ceiling and the
+    # captured copy replays identically on every subsequent read.
+    payload = b"x" * (ERROR_BODY_MAX_BYTES + 4096)
+    body = ResponseBody.from_bytes(payload)
+    err = HttpResponseError(response=_response(Status.BAD_REQUEST, body=body))
+
+    first = err.read_body()
+    assert len(first) == ERROR_BODY_MAX_BYTES
+    # Replayable: the error carries the bounded copy, so a second read matches.
+    assert err.read_body() == first
+
+
+@pytest.mark.req("HTTP-52")
+def test_read_body_returns_full_body_under_cap() -> None:
+    body = ResponseBody.from_bytes(b'{"error":"boom"}')
+    err = HttpResponseError(response=_response(Status.BAD_REQUEST, body=body))
+    assert err.read_body() == b'{"error":"boom"}'
+    assert err.read_body() == b'{"error":"boom"}'  # replayable
+
+
+def test_read_body_reads_from_loggable_body_repeatably() -> None:
+    loggable = LoggableResponseBody(
+        ResponseBody.from_bytes(b'{"error":"boom"}', MediaType.parse("application/json")),
+    )
+    err = HttpResponseError(response=_response(Status.BAD_REQUEST, body=loggable))
+    assert err.read_body() == b'{"error":"boom"}'
+    # The caller-owned loggable body is still readable afterwards.
+    assert loggable.bytes() == b'{"error":"boom"}'
+
+
+def test_read_body_honours_explicit_smaller_cap() -> None:
+    body = ResponseBody.from_bytes(b"0123456789")
+    err = HttpResponseError(response=_response(Status.BAD_REQUEST, body=body))
+    assert err.read_body(4) == b"0123"
+
+
+def test_read_body_returns_empty_when_no_body() -> None:
+    err = HttpResponseError(response=_response(Status.BAD_REQUEST))
+    assert err.read_body() == b""
+
+
+def test_read_body_returns_empty_when_no_response() -> None:
+    err = HttpResponseError("no response captured")
+    assert err.read_body() == b""
+
+
+def test_read_body_rejects_negative_max_bytes() -> None:
+    body = ResponseBody.from_bytes(b"data")
+    err = HttpResponseError(response=_response(Status.BAD_REQUEST, body=body))
+    with pytest.raises(ValueError, match="max_bytes must be non-negative"):
+        err.read_body(-1)
+
+
 # ----- body_snapshot ------------------------------------------------------
 
 
+@pytest.mark.req("BODY-33")
 def test_body_snapshot_previews_loggable_body_without_consuming() -> None:
     loggable = LoggableResponseBody(
         ResponseBody.from_bytes(b'{"error":"boom"}', MediaType.parse("application/json")),
@@ -99,6 +249,7 @@ def test_body_snapshot_previews_loggable_body_without_consuming() -> None:
     assert loggable.bytes() == b'{"error":"boom"}'
 
 
+@pytest.mark.req("XCUT-24")
 def test_body_snapshot_truncates_to_max_bytes() -> None:
     loggable = LoggableResponseBody(ResponseBody.from_bytes(b"0123456789"))
     err = HttpResponseError(response=_response(Status.BAD_REQUEST, body=loggable))
@@ -106,6 +257,7 @@ def test_body_snapshot_truncates_to_max_bytes() -> None:
     assert err.body_snapshot(4) == b"0123"
 
 
+@pytest.mark.req("BODY-33", "XCUT-24")
 def test_body_snapshot_returns_empty_for_single_use_body() -> None:
     # A plain bytes-backed body is single-use; previewing it must not drain it.
     body = ResponseBody.from_bytes(b"unsafe-to-peek")
@@ -116,6 +268,7 @@ def test_body_snapshot_returns_empty_for_single_use_body() -> None:
     assert body.bytes() == b"unsafe-to-peek"
 
 
+@pytest.mark.req("BODY-33")
 def test_body_snapshot_returns_empty_when_no_body() -> None:
     err = HttpResponseError(response=_response(Status.BAD_REQUEST))
     assert err.body_snapshot() == b""

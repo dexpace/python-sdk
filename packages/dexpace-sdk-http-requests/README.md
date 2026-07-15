@@ -19,6 +19,17 @@ A session you pass in is borrowed: the client never closes it, so a pooled
 session shared with other components stays usable. Only a session the client
 created itself is closed on `close()`.
 
+`requests` / `urllib3` ship two defaults that fight this SDK's own pipeline:
+following redirects and retrying connect-phase failures. Every send passes
+`allow_redirects=False` explicitly (the redirect policy owns following a 3xx,
+not the transport), and a session this client creates for itself is mounted
+with a zero-retry `HTTPAdapter` on both `http://` and `https://` (the retry
+policy owns re-sending, not `urllib3`) and gets `trust_env=False`, so it never
+implicitly picks up `HTTP_PROXY` / `HTTPS_PROXY` / `.netrc` from the
+environment. A session you pass in keeps its own retry configuration and
+`trust_env` exactly as you set them — the client only ever hardens a session
+it created itself.
+
 ## Installation
 
 ```bash
@@ -49,12 +60,18 @@ with Pipeline(RequestsHttpClient(), policies=[]) as pipeline:
 
 ## Exception mapping
 
-| `requests` exception   | SDK exception                  |
-|------------------------|--------------------------------|
-| `ConnectTimeout`       | `ServiceRequestTimeoutError`   |
-| `ReadTimeout`          | `ServiceResponseTimeoutError`  |
-| `ConnectionError`      | `ServiceRequestError`          |
-| `RequestException`     | `ServiceRequestError`          |
+| Native exception    | SDK exception                 |
+|---------------------|--------------------------------|
+| `ConnectTimeout`    | `ServiceRequestTimeoutError`   |
+| `ReadTimeout`       | `ServiceResponseTimeoutError`  |
+| `ConnectionError`   | `ServiceRequestError`          |
+| `InterruptedError`  | `RequestCancelledError`        |
+| `RequestException`  | `ServiceRequestError`          |
+
+`InterruptedError` is a plain Python built-in, not a `requests` type: it
+surfaces when a blocking call is aborted by an external signal, and is mapped
+to the SDK's terminal, non-retryable cancellation type rather than a
+retryable network error.
 
 ## Thread safety
 

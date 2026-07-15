@@ -25,6 +25,24 @@ Limitations of the underlying ``urllib.request`` transport:
   that legitimately repeat — notably ``Set-Cookie`` (not applicable on
   outbound) and, in proxy/forwarder scenarios, ``WWW-Authenticate``. Use a
   production transport if you need to emit repeated outbound headers.
+- **A body with no caller- or body-derived Content-Type still gets one.**
+  When neither the caller nor ``RequestBody.media_type()`` supplies a
+  Content-Type, ``urllib.request`` itself inserts its own legacy default
+  (``application/x-www-form-urlencoded``, mirroring HTML form-submission
+  semantics) once the request reaches ``do_request_``. This adapter does not
+  suppress that fallback — doing so would mean bypassing
+  ``urllib.request.Request`` entirely. Supply a body with an explicit media
+  type (or set ``Content-Type`` on the request) to avoid it.
+- **A malformed inbound header name can take later headers with it.**
+  ``http.client`` parses response headers via ``email.message.Message``,
+  whose own header parser treats a line that is not a valid ``name: value``
+  token (e.g. a name containing a space) as the end of the header block —
+  every header line that follows is silently discarded along with it, before
+  this adapter's own (per-entry, defensive) header conversion ever sees them.
+  This adapter still drops the one malformed entry it *is* handed rather than
+  aborting the whole conversion, but it cannot recover headers ``http.client``
+  itself already lost. Not reproducible by bypassing ``http.client`` without
+  abandoning ``urllib.request`` entirely, so it is documented here instead.
 
 Redirects are **not** followed by this transport. A custom opener disables
 ``urllib``'s built-in ``HTTPRedirectHandler`` so 3xx responses surface to
@@ -40,8 +58,8 @@ urllib's exception types into the SDK error hierarchy.
 
 from __future__ import annotations
 
-import contextlib
 import http.client
+import logging
 from collections.abc import Mapping
 from http.client import HTTPResponse
 from types import TracebackType
@@ -62,6 +80,8 @@ from dexpace.sdk.core.http.request.request import Request
 from dexpace.sdk.core.http.response.response import Response
 from dexpace.sdk.core.http.response.response_body import ResponseBody
 from dexpace.sdk.core.http.response.status import Status
+
+_LOGGER: Final = logging.getLogger("dexpace.sdk.http.stdlib.urllib")
 
 _DEFAULT_TIMEOUT: Final[float] = 30.0
 
@@ -140,19 +160,39 @@ class UrllibHttpClient:
         transport layer); the pipeline's redirect policy decides whether to
         reissue.
 
+        Exception-mapping matrix (native cause -> SDK type):
+
+        - Connection refused / DNS failure (``URLError`` wrapping a
+          non-timeout ``OSError``) -> `ServiceRequestError`.
+        - Connect-phase timeout (``URLError(reason=TimeoutError)``) ->
+          `ServiceRequestTimeoutError`. Discriminated from a bare
+          ``TimeoutError`` by *type* (``isinstance(err.reason,
+          TimeoutError)``), never by message text — this is deliberate and
+          explicit, not an incidental reliance on Python 3.10+ aliasing
+          ``socket.timeout`` to ``TimeoutError``.
+        - Read-phase timeout (a *bare* ``TimeoutError``, not wrapped in
+          ``URLError``) -> `ServiceResponseTimeoutError`.
+        - A garbled/unparseable response (``http.client.HTTPException``,
+          e.g. ``BadStatusLine`` — never wrapped in ``URLError`` by urllib) ->
+          `ServiceRequestError`.
+        - A read-phase failure on the response body itself (stall, ``os``
+          truncation) is mapped by `_ReadMappingStream`, not here.
+
         Raises:
-            ServiceRequestError: When the connection cannot be established.
+            ServiceRequestError: When the connection cannot be established,
+                or the response is too garbled to interpret at all.
             ServiceRequestTimeoutError: When the connection times out before
                 the request is transmitted (connect phase).
-            ServiceResponseError: When reading the response fails.
+            ServiceResponseError: When reading the response body fails.
             ServiceResponseTimeoutError: When the request was transmitted but
                 the response read times out (read phase).
         """
         if self._closed:
             raise ServiceRequestError("UrllibHttpClient is closed")
+        timeout = request.timeout if request.timeout is not None else self.timeout
         raw = _build_urllib_request(request)
         try:
-            opened = _OPENER.open(raw, timeout=self.timeout)
+            opened = _OPENER.open(raw, timeout=timeout)
         except HTTPError as err:
             # urllib raises HTTPError for 3xx (redirects are not followed) and
             # 4xx/5xx; surface them via the normal Response path so policies
@@ -171,6 +211,15 @@ class UrllibHttpClient:
             # stalled. Classify as a *response* timeout so non-idempotent
             # reads are not auto-retried as if they never reached the service.
             raise ServiceResponseTimeoutError(str(err), error=err) from err
+        except http.client.HTTPException as err:
+            # A garbled/unparseable response (bad status line, connection
+            # dropped before any status line arrived) is not wrapped in
+            # ``URLError`` by urllib — ``http.client`` raises its own
+            # exception hierarchy for these directly out of ``getresponse()``.
+            # The exchange never yielded an interpretable response, so this
+            # maps to the same retryable bucket as a connection failure
+            # rather than escaping as a raw stdlib exception.
+            raise ServiceRequestError(str(err), error=err) from err
         return _build_response(request, opened)
 
     def close(self) -> None:
@@ -190,34 +239,65 @@ class UrllibHttpClient:
 
 
 def _build_urllib_request(request: Request) -> _UrllibRequest:
-    body_bytes: bytes | None = None
-    if request.body is not None:
-        body_bytes = b"".join(request.body.iter_bytes())
+    headers, body_bytes = _prepare(request)
     # ``urllib.request.Request`` accepts a ``Mapping[str, str]`` only, so
     # multi-value headers are joined into a single comma-separated string
     # rather than dropped. Safe for most list-typed headers (``Accept``,
     # ``Cache-Control``); wire-incorrect for headers that legitimately
     # repeat (``Set-Cookie`` — not applicable on outbound; ``WWW-Authenticate``
     # in proxy/forwarder scenarios). See module docstring.
-    headers = {name: ", ".join(values) for name, values in request.headers.items()}
+    flattened = {name: ", ".join(values) for name, values in headers.items()}
     return _UrllibRequest(
         url=request.url.wire_form(),
         data=body_bytes,
-        headers=headers,
+        headers=flattened,
         method=str(request.method),
     )
 
 
+def _prepare(request: Request) -> tuple[Headers, bytes | None]:
+    """Resolve Content-Type and drop any stale framing headers.
+
+    A caller-set ``Content-Type`` is authoritative; otherwise the body's own
+    ``media_type()`` is used when present. Any pre-existing ``Content-Length``
+    / ``Transfer-Encoding`` is dropped rather than trusted — ``http.client``
+    recomputes ``Content-Length`` itself from the exact bytes handed to it
+    (see ``HTTPConnection._get_content_length``), including the RFC 9110
+    §8.6 zero-length default for body-bearing methods sent with no payload.
+    Trusting a caller-supplied value that disagrees with the real payload
+    would break HTTP framing: the peer reads short or hangs waiting for
+    bytes that never arrive.
+
+    Args:
+        request: The request being adapted.
+
+    Returns:
+        The resolved headers and the fully-drained body bytes (``None`` when
+        the request carries no body).
+    """
+    headers = _resolve_content_type(request).without("Content-Length").without("Transfer-Encoding")
+    if request.body is None:
+        return headers, None
+    return headers, b"".join(request.body.iter_bytes())
+
+
+def _resolve_content_type(request: Request) -> Headers:
+    """Keep a caller-set Content-Type; else derive one from the body."""
+    headers = request.headers
+    if headers.get("Content-Type") is not None or request.body is None:
+        return headers
+    media = request.body.media_type()
+    if media is None:
+        return headers
+    return headers.with_set("Content-Type", str(media))
+
+
 def _build_response(request: Request, opened: object) -> Response:
     status_code: int = getattr(opened, "status", 200)
-    try:
-        status = Status(status_code)
-    except ValueError as err:
-        # Only a genuinely out-of-range code (outside 100..599) reaches here:
-        # ``Status`` synthesizes a member for any in-range code. Release the
-        # underlying response first so the connection is not leaked.
-        _close_quietly(opened)
-        raise ServiceResponseError(f"Invalid status code: {status_code}", error=err) from err
+    # ``Status`` is total over integers (TRANSPORT-24): a code outside the
+    # registered 100..599 band synthesizes an ``UNKNOWN_<code>`` member rather
+    # than raising, so a vendor/unusual status still surfaces with its body.
+    status = Status(status_code)
     raw_headers = getattr(opened, "headers", None)
     headers = _convert_headers(raw_headers)
     content_length = _body_content_length(headers)
@@ -277,28 +357,38 @@ def _body_content_length(headers: Headers) -> int:
         return -1
 
 
-def _close_quietly(opened: object) -> None:
-    """Close ``opened`` if it exposes ``close``, swallowing any error.
+def _convert_headers(raw: object) -> Headers:
+    """Convert urllib's parsed response headers, dropping malformed names.
 
-    Used on the failure path before raising so a partially constructed
-    response does not leak its underlying connection.
+    ``http.client``/``email`` header parsing already tolerates obs-text in
+    values, but a name `Headers` rejects (e.g. one containing a space) must
+    still be dropped rather than aborting the whole conversion — entries are
+    added one at a time so a single bad name never takes down the good ones
+    that follow it, mirroring the defensive inbound-header handling every
+    adapter in this SDK provides. (A name malformed enough to confuse
+    ``http.client``'s own header parser may already have been dropped, or
+    have taken subsequent lines with it, upstream of this function — that is
+    a limitation of building on ``http.client``, not of this conversion.)
 
     Args:
-        opened: The urllib response (or ``HTTPError``) to release.
+        raw: The native header container (an ``email.message.Message``-like
+            object), or ``None``.
+
+    Returns:
+        The converted, lenient `Headers`.
     """
-    close = getattr(opened, "close", None)
-    if callable(close):
-        with contextlib.suppress(Exception):
-            close()
-
-
-def _convert_headers(raw: object) -> Headers:
     if raw is None:
         return Headers()
     items_method = getattr(raw, "items", None)
     if items_method is None:
         return Headers()
-    return Headers(list(items_method()))
+    headers = Headers()
+    for name, value in items_method():
+        try:
+            headers = headers.with_added(name, value)
+        except ValueError:
+            _LOGGER.warning("dropping malformed inbound response header: %r", name)
+    return headers
 
 
 class _ReadMappingStream:

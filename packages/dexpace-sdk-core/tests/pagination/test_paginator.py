@@ -88,6 +88,7 @@ def _three_page_pipeline() -> _MockPipeline:
     )
 
 
+@pytest.mark.req("PAGE-1")
 def test_iterates_items_across_all_pages() -> None:
     pipeline = _three_page_pipeline()
     paginator: Paginator[int] = Paginator(pipeline, _strategy(), _first_request())
@@ -103,6 +104,7 @@ def test_drives_the_pipeline_once_per_page() -> None:
     assert pipeline.calls[2].url.query.get("cursor") == "c2"
 
 
+@pytest.mark.req("PAGE-1")
 def test_by_page_yields_pages_with_raw_response() -> None:
     pipeline = _three_page_pipeline()
     paginator: Paginator[int] = Paginator(pipeline, _strategy(), _first_request())
@@ -145,6 +147,43 @@ def test_single_page_sequence_terminates() -> None:
     paginator: Paginator[int] = Paginator(pipeline, _strategy(), _first_request())
     assert list(paginator) == [7, 8]
     assert len(pipeline.calls) == 1
+
+
+@pytest.mark.req("PAGE-35", "PAGE-36")
+def test_same_options_instance_threads_through_every_page_fetch() -> None:
+    # The paginator uses the caller's fetcher verbatim: the first fetch runs it
+    # once, later fetches send whatever ``next_request`` the strategy returned,
+    # and a ``None`` next request terminates. Whatever per-call options the
+    # fetcher closes over are the SAME object on every fetch (never copied per
+    # page), and a mutation the caller makes mid-walk is observed by the next
+    # fetch. Modelled on the pipeline options-identity proof in test_defaults.py.
+    options: dict[str, object] = {"marker": "start"}
+    seen_options: list[dict[str, object]] = []
+    observed_markers: list[object] = []
+    bodies: dict[str | None, dict[str, object]] = {
+        None: {"data": [1], "next_cursor": "c1"},
+        "c1": {"data": [2], "next_cursor": "c2"},
+        "c2": {"data": [3], "next_cursor": None},
+    }
+
+    def fetch(request: Request) -> Response:
+        seen_options.append(options)  # capture the options identity per fetch
+        observed_markers.append(options["marker"])  # read caller-visible state
+        options["marker"] = f"page-{len(seen_options)}"  # mutate; next fetch sees it
+        cursor = request.url.query.get("cursor")
+        return Response(
+            request=request,
+            protocol=Protocol.HTTP_1_1,
+            status=Status.OK,
+            headers=Headers(),
+            body=_TrackingBody(json.dumps(bodies[cursor]).encode("utf-8")),
+        )
+
+    paginator: Paginator[int] = Paginator(fetch, _strategy(), _first_request())
+    assert list(paginator) == [1, 2, 3]
+    assert len(seen_options) == 3  # one fetch per page, terminated by the None cursor
+    assert all(opts is options for opts in seen_options)  # same object every fetch
+    assert observed_markers == ["start", "page-1", "page-2"]  # mutations seen downstream
 
 
 class _RawBodyPipeline:

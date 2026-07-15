@@ -24,6 +24,7 @@ def _chunked(data: bytes, size: int) -> list[bytes]:
     return [data[i : i + size] for i in range(0, len(data), size)]
 
 
+@pytest.mark.req("SSE-12")
 def test_leading_bom_stripped_so_first_field_parses() -> None:
     stream = _BOM + b"data: hello\n\n"
     assert _events(stream) == [SseEvent(data="hello")]
@@ -42,6 +43,7 @@ def test_bom_split_across_chunks_is_still_stripped() -> None:
     assert _events(stream, chunk_size=1) == [SseEvent(data="split")]
 
 
+@pytest.mark.req("SSE-12", "SSE-40")
 def test_bom_split_two_then_rest() -> None:
     parser = SseParser()
     parser.feed(_BOM[:2])
@@ -55,6 +57,7 @@ def test_no_bom_first_field_unaffected() -> None:
     assert _events(stream) == [SseEvent(data="plain")]
 
 
+@pytest.mark.req("SSE-12")
 def test_feff_not_at_start_is_not_stripped() -> None:
     # U+FEFF after the first event is content, never a BOM.
     stream = b"data: a\n\n" + "data: ﻿b".encode() + b"\n\n"

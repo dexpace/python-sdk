@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from dexpace.sdk.core.http.auth import (
     AuthenticateChallenge,
     DigestChallengeHandler,
@@ -71,6 +73,7 @@ def _base_params() -> dict[str, str]:
     }
 
 
+@pytest.mark.req("AUTH-21")
 def test_uses_utf8_when_charset_advertised() -> None:
     params = {**_base_params(), "charset": "UTF-8"}
 
@@ -79,6 +82,7 @@ def test_uses_utf8_when_charset_advertised() -> None:
     assert parsed["response"] == _RESPONSE_UTF8
 
 
+@pytest.mark.req("AUTH-21")
 def test_charset_directive_is_case_insensitive() -> None:
     params = {**_base_params(), "charset": "utf-8"}
 
@@ -87,6 +91,7 @@ def test_charset_directive_is_case_insensitive() -> None:
     assert parsed["response"] == _RESPONSE_UTF8
 
 
+@pytest.mark.req("AUTH-21")
 def test_uses_iso_8859_1_when_charset_absent() -> None:
     parsed = _handle(_base_params())
 

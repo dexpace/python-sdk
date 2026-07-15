@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from dexpace.sdk.core.errors import (
+    SdkError,
     ServiceRequestError,
     ServiceRequestTimeoutError,
     ServiceResponseTimeoutError,
@@ -312,26 +313,20 @@ def test_in_range_unregistered_status_returns_response() -> None:
             assert response.body.bytes() == payload
 
 
-def test_invalid_status_closes_response_and_raises() -> None:
-    """A genuinely invalid status releases the response and raises."""
-    from dexpace.sdk.core.errors import ServiceResponseError
-
-    closed = {"yes": False}
-
-    class _TrackedResponse(httpx.Response):
-        def close(self) -> None:
-            closed["yes"] = True
-            super().close()
+@pytest.mark.req("TRANSPORT-24")
+def test_out_of_range_status_surfaces_with_readable_body() -> None:
+    """TRANSPORT-24: an out-of-range status surfaces intact with its body."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return _TrackedResponse(999, content=b"")
+        return httpx.Response(999, content=b"hello")
 
     transport = httpx.MockTransport(handler)
     with HttpxHttpClient(transport=transport) as client:
         request = Request(method=Method.GET, url=Url.parse("http://example.test/"))
-        with pytest.raises(ServiceResponseError):
-            client.execute(request)
-    assert closed["yes"], "Response should be closed when status mapping fails"
+        response = client.execute(request)
+        assert int(response.status) == 999
+        assert response.body is not None
+        assert response.body.bytes() == b"hello"
 
 
 def test_shared_client_is_not_closed_on_close() -> None:
@@ -342,3 +337,95 @@ def test_shared_client_is_not_closed_on_close() -> None:
     client.close()
     assert not shared.is_closed
     shared.close()
+
+
+@pytest.mark.req("TRANSPORT-16")
+def test_byo_client_second_close_is_a_noop() -> None:
+    """Closing an adapter over a BYO client twice never touches the client."""
+    transport = httpx.MockTransport(_ok_handler(b"{}"))
+    shared = httpx.Client(transport=transport)
+    client = HttpxHttpClient(client=shared)
+    client.close()
+    client.close()  # idempotent, non-blocking
+    assert not shared.is_closed
+    shared.close()
+
+
+@pytest.mark.req("TRANSPORT-1")
+def test_byo_client_with_follow_redirects_true_is_overridden() -> None:
+    """A BYO client's own ``follow_redirects=True`` never leaks through.
+
+    ``follow_redirects=False`` is pinned explicitly on every ``.send()``
+    call, not just relied on as the client's construction-time default, so a
+    caller-supplied client built with ``follow_redirects=True`` still never
+    has its 3xx responses auto-followed by httpx itself — that decision
+    belongs solely to the SDK's own redirect policy.
+    """
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(302, headers={"location": "http://example.test/moved"})
+
+    transport = httpx.MockTransport(handler)
+    shared = httpx.Client(transport=transport, follow_redirects=True)
+    with HttpxHttpClient(client=shared) as client:
+        request = Request(method=Method.GET, url=Url.parse("http://example.test/"))
+        with client.execute(request) as response:
+            assert response.status == Status(302)
+            assert response.headers.get("location") == "http://example.test/moved"
+    assert calls == 1
+    shared.close()
+
+
+def test_owned_client_disables_trust_env() -> None:
+    """An adapter-constructed client never trusts the process environment.
+
+    httpx's own ``trust_env`` implicitly reads ``HTTP_PROXY`` /
+    ``HTTPS_PROXY`` / ``NO_PROXY``; proxy routing must only ever happen
+    through the SDK's own opt-in ``ProxyOptions`` resolution, so a client
+    this adapter builds itself pins ``trust_env=False``.
+    """
+    with HttpxHttpClient() as client:
+        assert client._client.trust_env is False
+
+
+# --------------------------------------------------------------------------- #
+# Exception-mapping matrix: proves the check ORDER, not just the final type.
+#
+# ``ConnectTimeout`` / ``ReadTimeout`` / ``WriteTimeout`` / ``PoolTimeout`` are
+# all ``httpx.TimeoutException`` subtypes; ``ConnectError`` / ``ReadError`` are
+# ``httpx.NetworkError`` subtypes; ``RemoteProtocolError`` is a
+# ``httpx.ProtocolError``. All of these are also ``httpx.TransportError``. If
+# the broad ``except httpx.RequestError`` clause in ``execute`` ran BEFORE the
+# specific timeout clauses, every timeout below would misclassify as
+# ``ServiceRequestError`` regardless of which phase actually timed out — this
+# matrix would catch that regression.
+# --------------------------------------------------------------------------- #
+
+_EXCEPTION_MATRIX: tuple[tuple[type[httpx.RequestError], type[SdkError]], ...] = (
+    (httpx.ConnectTimeout, ServiceRequestTimeoutError),
+    (httpx.ReadTimeout, ServiceResponseTimeoutError),
+    (httpx.WriteTimeout, ServiceRequestTimeoutError),
+    (httpx.PoolTimeout, ServiceRequestTimeoutError),
+    (httpx.ConnectError, ServiceRequestError),
+    (httpx.ReadError, ServiceRequestError),
+    (httpx.RemoteProtocolError, ServiceRequestError),
+)
+
+
+@pytest.mark.parametrize(("native_exc", "expected"), _EXCEPTION_MATRIX)
+def test_exception_mapping_matrix(
+    native_exc: type[httpx.RequestError], expected: type[SdkError]
+) -> None:
+    """Every native transport error maps to its documented SDK type, in order."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise native_exc("boom", request=request)
+
+    transport = httpx.MockTransport(handler)
+    with HttpxHttpClient(transport=transport) as client:
+        request = Request(method=Method.GET, url=Url.parse("http://example.test/"))
+        with pytest.raises(expected):
+            client.execute(request)

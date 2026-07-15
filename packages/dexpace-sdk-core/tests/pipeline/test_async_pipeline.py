@@ -318,6 +318,7 @@ async def test_async_retry_buffers_single_use_body_off_the_event_loop() -> None:
     assert body.replay_thread_id != loop_thread_id
 
 
+@pytest.mark.req("PIPE-29")
 def test_invalid_step_raises_type_error() -> None:
     with pytest.raises(TypeError):
         AsyncPipeline(_StubAsyncClient(), policies=["not callable"])  # type: ignore[list-item]

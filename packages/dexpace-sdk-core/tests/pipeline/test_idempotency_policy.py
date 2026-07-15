@@ -24,7 +24,9 @@ from dexpace.sdk.core.instrumentation import (
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import AsyncPipeline, Pipeline
 from dexpace.sdk.core.pipeline.policies.async_idempotency import AsyncIdempotencyPolicy
+from dexpace.sdk.core.pipeline.policies.async_retry import AsyncRetryPolicy
 from dexpace.sdk.core.pipeline.policies.idempotency import IdempotencyPolicy
+from dexpace.sdk.core.pipeline.policies.retry import RetryPolicy
 from dexpace.sdk.core.pipeline.stage import Stage
 
 _HEADER = "Idempotency-Key"
@@ -101,6 +103,7 @@ def test_key_added_to_write_methods(method: Method) -> None:
     assert client.calls[0].headers.get(_HEADER) is not None
 
 
+@pytest.mark.req("RECOV-32")
 @pytest.mark.parametrize("method", [Method.GET, Method.DELETE, Method.HEAD, Method.OPTIONS])
 def test_key_not_added_to_non_write_methods(method: Method) -> None:
     client = _RecordingClient()
@@ -109,6 +112,7 @@ def test_key_not_added_to_non_write_methods(method: Method) -> None:
     assert client.calls[0].headers.get(_HEADER) is None
 
 
+@pytest.mark.req("RECOV-32")
 def test_caller_set_key_preserved() -> None:
     client = _RecordingClient()
     with Pipeline(client, policies=[IdempotencyPolicy()]) as p:
@@ -128,6 +132,7 @@ def test_default_key_is_uuid4_shaped() -> None:
     assert parsed.version == 4
 
 
+@pytest.mark.req("RECOV-32")
 def test_existing_key_not_regenerated() -> None:
     """A request that already carries a key is forwarded untouched.
 
@@ -181,3 +186,89 @@ async def test_async_get_not_stamped() -> None:
     async with AsyncPipeline(client, policies=[AsyncIdempotencyPolicy()]) as p:
         await p.run(_request(Method.GET), DispatchContext(_instr("0" * 16 + "c")))
     assert client.calls[0].headers.get(_HEADER) is None
+
+
+# ----- ordering-sensitive semantics: composed with a real RetryPolicy --------
+#
+# The policy sits at Stage.POST_REDIRECT (outside the retry wrapper), so the
+# key must be minted exactly once per call and reused on every retry attempt.
+# Composing with a real RetryPolicy — rather than manually re-sending a stamped
+# request — is what actually proves the placement: were the policy moved inside
+# the retry loop, the counting factory below would mint a fresh key per attempt
+# and the assertions would fail.
+
+
+class _FlakyClient(HttpClient):
+    """Fails with the given statuses, then returns ``200`` on later calls."""
+
+    def __init__(self, *fail_with: Status) -> None:
+        self.calls: list[Request] = []
+        self._fail = list(fail_with)
+
+    def execute(self, request: Request) -> Response:
+        self.calls.append(request)
+        status = self._fail.pop(0) if self._fail else Status.OK
+        return Response(request=request, protocol=Protocol.HTTP_1_1, status=status)
+
+
+class _FlakyAsyncClient(AsyncHttpClient):
+    def __init__(self, *fail_with: Status) -> None:
+        self.calls: list[Request] = []
+        self._fail = list(fail_with)
+
+    async def execute(self, request: Request) -> AsyncResponse:
+        self.calls.append(request)
+        status = self._fail.pop(0) if self._fail else Status.OK
+        return AsyncResponse(request=request, protocol=Protocol.HTTP_1_1, status=status)
+
+
+def test_key_stable_across_retry_attempts() -> None:
+    """One retried call carries a single key across every attempt.
+
+    ``PUT`` is a retryable write method, so a ``503`` drives a second attempt.
+    The counting factory would yield ``key-1`` then ``key-2`` if it were called
+    per attempt; a single ``key-1`` across both captured requests proves the
+    key is minted once, outside the retry wrapper.
+    """
+    factory = _CountingFactory()
+    client = _FlakyClient(Status.SERVICE_UNAVAILABLE)
+    policies = [IdempotencyPolicy(key_factory=factory), RetryPolicy(backoff_factor=0)]
+    with Pipeline(client, policies=policies) as p:
+        p.run(_request(Method.PUT), DispatchContext(_instr("0" * 16 + "d")))
+    assert len(client.calls) == 2  # one failure + one success
+    keys = {req.headers.get(_HEADER) for req in client.calls}
+    assert keys == {"key-1"}
+
+
+def test_keys_distinct_across_separate_calls() -> None:
+    """Different calls get different keys even when the request is identical."""
+    factory = _CountingFactory()
+    client = _RecordingClient()
+    with Pipeline(client, policies=[IdempotencyPolicy(key_factory=factory)]) as p:
+        p.run(_request(Method.POST), DispatchContext(_instr("0" * 16 + "e")))
+        p.run(_request(Method.POST), DispatchContext(_instr("0" * 15 + "10")))
+    assert client.calls[0].headers.get(_HEADER) == "key-1"
+    assert client.calls[1].headers.get(_HEADER) == "key-2"
+
+
+def test_default_uuid_keys_distinct_across_calls() -> None:
+    """The default UUID4 factory also yields a fresh key per call."""
+    client = _RecordingClient()
+    with Pipeline(client, policies=[IdempotencyPolicy()]) as p:
+        p.run(_request(Method.POST), DispatchContext(_instr("0" * 16 + "f")))
+        p.run(_request(Method.POST), DispatchContext(_instr("0" * 15 + "11")))
+    first = client.calls[0].headers.get(_HEADER)
+    second = client.calls[1].headers.get(_HEADER)
+    assert first is not None and second is not None
+    assert first != second
+
+
+async def test_async_key_stable_across_retry_attempts() -> None:
+    factory = _CountingFactory()
+    client = _FlakyAsyncClient(Status.SERVICE_UNAVAILABLE)
+    policies = [AsyncIdempotencyPolicy(key_factory=factory), AsyncRetryPolicy(backoff_factor=0)]
+    async with AsyncPipeline(client, policies=policies) as p:
+        await p.run(_request(Method.PUT), DispatchContext(_instr("0" * 15 + "12")))
+    assert len(client.calls) == 2
+    keys = {req.headers.get(_HEADER) for req in client.calls}
+    assert keys == {"key-1"}

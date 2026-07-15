@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from dexpace.sdk.core.http.auth import (
     AuthenticateChallenge,
     DigestChallengeHandler,
@@ -79,6 +81,7 @@ class TestUnencodableCredentials:
 
 
 class TestQopLessHeader:
+    @pytest.mark.req("AUTH-22")
     def test_qopless_header_omits_cnonce_and_nc(self) -> None:
         # RFC 2069: server omits ``qop``. The response header must not carry
         # ``cnonce`` or ``nc`` per RFC 7616 §3.4.
@@ -161,6 +164,7 @@ class TestSessionVariantQopLess:
 
 
 class TestPreferenceAllowList:
+    @pytest.mark.req("AUTH-16")
     def test_sha256_preference_declines_md5_only_server(self) -> None:
         handler = DigestChallengeHandler(
             _USERNAME,
@@ -175,6 +179,7 @@ class TestPreferenceAllowList:
         assert handler.handle(Method.GET, _URL, [md5_only], is_proxy=False) is None
         assert handler.can_handle([md5_only]) is False
 
+    @pytest.mark.req("AUTH-16")
     def test_default_preference_still_reaches_md5(self) -> None:
         handler = DigestChallengeHandler(
             _USERNAME,

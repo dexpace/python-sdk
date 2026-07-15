@@ -7,13 +7,26 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterable, AsyncIterator, Mapping
-from typing import Protocol, runtime_checkable
-from urllib.parse import quote
+from typing import Final, Protocol, runtime_checkable
 
+from .._once_guard import _OnceGuard
 from .._shielded import _shielded_cleanup
 from ..common import common_media_types
 from ..common.media_type import MediaType
-from .request_body import _check_chunk_size
+from .request_body import _check_chunk_size, _form_urlencode
+
+_STREAM_SINGLE_USE_MSG: Final[str] = (
+    "AsyncRequestBody.aiter_bytes() was already called — this single-use body "
+    "backed by a stream is exhausted (consuming it also exhausts the caller's "
+    "underlying stream). Call to_replayable() BEFORE the first aiter_bytes() if "
+    "the body may need to be sent more than once (for example, on retry)."
+)
+_ITER_SINGLE_USE_MSG: Final[str] = (
+    "AsyncRequestBody.aiter_bytes() was already called — this single-use body "
+    "backed by an async iterable is exhausted. Call to_replayable() BEFORE the "
+    "first aiter_bytes() if the body may need to be sent more than once (for "
+    "example, on retry)."
+)
 
 
 @runtime_checkable
@@ -105,10 +118,7 @@ class AsyncRequestBody(ABC):
         fields: Mapping[str, str],
         encoding: str = "utf-8",
     ) -> AsyncRequestBody:
-        encoded = "&".join(
-            f"{quote(k, safe='', encoding=encoding)}={quote(v, safe='', encoding=encoding)}"
-            for k, v in fields.items()
-        )
+        encoded = _form_urlencode(fields, encoding)
         return _AsyncBytesBody(
             encoded.encode(encoding),
             common_media_types.APPLICATION_FORM_URLENCODED,
@@ -154,17 +164,25 @@ class _AsyncBytesBody(AsyncRequestBody):
     async def to_replayable(self) -> AsyncRequestBody:
         return self
 
-    async def aiter_bytes(self, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
+    def aiter_bytes(self, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
         _check_chunk_size(chunk_size)
+        return self._aiter(chunk_size)
+
+    async def _aiter(self, chunk_size: int) -> AsyncIterator[bytes]:
         view = memoryview(self._data)
         for start in range(0, len(view), chunk_size):
             yield bytes(view[start : start + chunk_size])
 
 
 class _AsyncIterBody(AsyncRequestBody):
-    """Single-use body backed by an ``AsyncIterable[bytes]``."""
+    """Single-use body backed by an ``AsyncIterable[bytes]``.
 
-    __slots__ = ("_chunks", "_consumed", "_length", "_media_type")
+    The single-use guarantee is enforced by a lock-protected once-guard
+    claimed eagerly at ``aiter_bytes`` call time, so a second call raises even
+    if the first returned iterator was never advanced.
+    """
+
+    __slots__ = ("_chunks", "_length", "_media_type", "_once")
 
     def __init__(
         self,
@@ -175,7 +193,7 @@ class _AsyncIterBody(AsyncRequestBody):
         self._chunks = chunks
         self._media_type = media_type
         self._length = length
-        self._consumed = False
+        self._once = _OnceGuard()
 
     def media_type(self) -> MediaType | None:
         return self._media_type
@@ -183,15 +201,13 @@ class _AsyncIterBody(AsyncRequestBody):
     def content_length(self) -> int:
         return self._length
 
-    async def aiter_bytes(self, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
+    def aiter_bytes(self, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
         _check_chunk_size(chunk_size)
-        del chunk_size
-        if self._consumed:
-            raise RuntimeError(
-                "AsyncRequestBody.aiter_bytes was already called — call "
-                "to_replayable() before iter if you need retries."
-            )
-        self._consumed = True
+        del chunk_size  # the source iterable chooses its own chunk boundaries
+        self._once.claim(_ITER_SINGLE_USE_MSG)
+        return self._aiter()
+
+    async def _aiter(self) -> AsyncIterator[bytes]:
         async for chunk in self._chunks:
             yield chunk
 
@@ -199,16 +215,21 @@ class _AsyncIterBody(AsyncRequestBody):
 class _AsyncStreamBody(AsyncRequestBody):
     """Single-use body backed by an async-read stream.
 
+    The single-use guarantee is enforced by a lock-protected once-guard
+    claimed eagerly at ``aiter_bytes`` call time, so a second call raises even
+    if the first returned iterator was never advanced. Consumption exhausts
+    the caller's underlying stream and closes it.
+
     Note:
-        Cancellation contract. ``aiter_bytes`` releases the underlying stream
-        from a ``finally`` clause. If the producing task is cancelled
-        mid-iteration that clause runs with a ``CancelledError`` already in
-        flight, so the close is routed through ``_shielded_cleanup`` to run to
-        completion before the cancellation continues to propagate — cleanup
-        never swallows it.
+        Cancellation contract. The iterator returned by ``aiter_bytes``
+        releases the underlying stream from a ``finally`` clause. If the
+        producing task is cancelled mid-iteration that clause runs with a
+        ``CancelledError`` already in flight, so the close is routed through
+        ``_shielded_cleanup`` to run to completion before the cancellation
+        continues to propagate — cleanup never swallows it.
     """
 
-    __slots__ = ("_consumed", "_length", "_media_type", "_stream")
+    __slots__ = ("_length", "_media_type", "_once", "_stream")
 
     def __init__(
         self,
@@ -219,7 +240,7 @@ class _AsyncStreamBody(AsyncRequestBody):
         self._stream = stream
         self._media_type = media_type
         self._length = length
-        self._consumed = False
+        self._once = _OnceGuard()
 
     def media_type(self) -> MediaType | None:
         return self._media_type
@@ -227,13 +248,12 @@ class _AsyncStreamBody(AsyncRequestBody):
     def content_length(self) -> int:
         return self._length
 
-    async def aiter_bytes(self, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
+    def aiter_bytes(self, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
         _check_chunk_size(chunk_size)
-        if self._consumed:
-            raise RuntimeError(
-                "AsyncRequestBody.aiter_bytes was already called — the stream is exhausted."
-            )
-        self._consumed = True
+        self._once.claim(_STREAM_SINGLE_USE_MSG)
+        return self._aiter(chunk_size)
+
+    async def _aiter(self, chunk_size: int) -> AsyncIterator[bytes]:
         try:
             while True:
                 chunk = await self._stream.read(chunk_size)

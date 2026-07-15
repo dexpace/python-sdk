@@ -22,17 +22,26 @@ class CallContext(abc.ABC):
     callers can ``with`` a context to ensure the `ContextStore` entry is
     evicted on exit.
 
-    The shared `ContextStore` is thread-safe; contexts for different
-    trace ids can be promoted concurrently without external synchronisation.
+    The shared `ContextStore` is thread-safe; contexts can be promoted
+    concurrently without external synchronisation, and calls that share a
+    trace id stay isolated because each carries its own `store_key`.
     """
 
     instrumentation_context: InstrumentationContext  # supplied by subclasses
+    store_key: str | None  # ContextStore key; None until the call is registered
 
     def close(self) -> None:
-        """Remove this context from `ContextStore` (idempotent)."""
+        """Remove this context from `ContextStore` (idempotent).
+
+        Removes the entry under this call's `store_key`. The request and
+        exchange tiers of one call share that key, so a single close clears
+        both. A context that was never registered (``store_key is None``) is a
+        no-op.
+        """
         from .context_store import ContextStore
 
-        ContextStore.remove(self.instrumentation_context.trace_id.value)
+        if self.store_key is not None:
+            ContextStore.remove(self.store_key)
 
     def __enter__(self) -> Self:
         return self
