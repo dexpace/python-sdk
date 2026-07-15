@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+import sys
 import tracemalloc
 from collections.abc import Mapping
 
@@ -156,7 +157,30 @@ def test_meter_callback_exception_is_not_wrapped() -> None:
 
 
 @pytest.mark.req("OBS-25")
+def _measurement_tracer_active() -> bool:
+    """Return whether a coverage/line tracer is active alongside the test.
+
+    A ``tracemalloc`` allocation delta only isolates the code under test when no
+    other tracer allocates during the measured loop. ``sys.gettrace`` catches
+    ``settrace``-based tracers and debuggers; coverage on Python 3.12+ drives
+    ``sys.monitoring`` (PEP 669) instead of ``settrace``, so ask coverage directly
+    whether a measurement is in progress.
+    """
+    if sys.gettrace() is not None:
+        return True
+    try:
+        from coverage import Coverage
+    except ImportError:
+        return False
+    return Coverage.current() is not None
+
+
 def test_noop_metric_calls_retain_no_memory() -> None:
+    if _measurement_tracer_active():
+        pytest.skip(
+            "a coverage/line tracer allocates alongside the code under test, so the "
+            "tracemalloc delta cannot isolate a genuine per-call leak"
+        )
     # A genuine no-op retains nothing PER CALL: repeating the loop must not
     # grow traced memory further. The first loop is a warm-up round, not just
     # a single warm-up call — it settles any one-time cost that isn't the
