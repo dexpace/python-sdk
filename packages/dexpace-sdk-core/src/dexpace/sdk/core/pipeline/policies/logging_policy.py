@@ -83,8 +83,9 @@ class LoggingPolicy(Policy):
     The ``detail_level`` selects granularity: ``NONE`` emits nothing (tracing
     and metrics still run via the tracing policy), ``HEADERS`` emits events and
     header fields with no body capture, ``BODY`` adds the body preview. It
-    defaults to ``BODY``; wire logging as a whole stays off until the underlying
-    stdlib logger is raised to ``INFO`` (this port's opt-in gate).
+    defaults to ``NONE`` (no request/response log events until the caller opts
+    into ``HEADERS`` or ``BODY``); span and metrics emission are unaffected by
+    the level.
 
     Disable per-call by setting ``ctx.options["logging_enabled"] = False``.
 
@@ -102,7 +103,7 @@ class LoggingPolicy(Policy):
         logger: ClientLogger | None = None,
         redactor: UrlRedactor | None = None,
         header_redactor: HeaderRedactor | None = None,
-        detail_level: HttpLogDetailLevel = HttpLogDetailLevel.BODY,
+        detail_level: HttpLogDetailLevel = HttpLogDetailLevel.NONE,
         preview_bytes: int = DEFAULT_PREVIEW_BYTES,
     ) -> None:
         """Configure the policy.
@@ -114,7 +115,10 @@ class LoggingPolicy(Policy):
             header_redactor: Header-name allow-list + URL-valued-header redactor,
                 shared with the async policy. Defaults to a stock
                 ``HeaderRedactor``.
-            detail_level: Logging granularity. Defaults to ``BODY``.
+            detail_level: Logging granularity. Defaults to ``NONE`` (no
+                request/response log events until the caller opts into
+                ``HEADERS`` or ``BODY``); span and metrics emission are
+                unaffected by the level.
             preview_bytes: Byte ceiling on the request-body preview.
 
         Raises:

@@ -73,7 +73,7 @@ class AsyncLoggingPolicy(AsyncPolicy):
         logger: ClientLogger | None = None,
         redactor: UrlRedactor | None = None,
         header_redactor: HeaderRedactor | None = None,
-        detail_level: HttpLogDetailLevel = HttpLogDetailLevel.BODY,
+        detail_level: HttpLogDetailLevel = HttpLogDetailLevel.NONE,
         preview_bytes: int = DEFAULT_PREVIEW_BYTES,
     ) -> None:
         """Configure the policy.
@@ -86,7 +86,10 @@ class AsyncLoggingPolicy(AsyncPolicy):
             header_redactor: Header-name allow-list + URL-valued-header redactor,
                 shared with the sync policy. Defaults to a stock
                 ``HeaderRedactor``.
-            detail_level: Logging granularity. Defaults to ``BODY``.
+            detail_level: Logging granularity. Defaults to ``NONE`` (no
+                request/response log events until the caller opts into
+                ``HEADERS`` or ``BODY``); span and metrics emission are
+                unaffected by the level.
             preview_bytes: Byte ceiling on each body preview.
 
         Raises:

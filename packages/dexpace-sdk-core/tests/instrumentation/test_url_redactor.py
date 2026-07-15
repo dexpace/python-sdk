@@ -32,7 +32,7 @@ from dexpace.sdk.core.instrumentation.span import Span
 from dexpace.sdk.core.instrumentation.tracer import Tracer
 from dexpace.sdk.core.instrumentation.tracing_scope import TracingScope
 from dexpace.sdk.core.pipeline import Pipeline
-from dexpace.sdk.core.pipeline.policies import LoggingPolicy
+from dexpace.sdk.core.pipeline.policies import HttpLogDetailLevel, LoggingPolicy
 from dexpace.sdk.core.pipeline.policies.tracing_policy import TracingPolicy, _set_request_attributes
 
 _MALFORMED = "[malformed url]"
@@ -450,7 +450,7 @@ class TestUsedByAllEmitters:
 
     def test_logging_policy_redacts_url(self) -> None:
         logger = _RecordingLogger()
-        policy = LoggingPolicy(logger=logger)  # type: ignore[arg-type]
+        policy = LoggingPolicy(logger=logger, detail_level=HttpLogDetailLevel.HEADERS)  # type: ignore[arg-type]
         with Pipeline(_StubClient(), policies=[policy]) as pipeline:
             pipeline.run(self._request(), DispatchContext(NOOP_INSTRUMENTATION_CONTEXT))
         assert logger.records

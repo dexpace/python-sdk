@@ -104,7 +104,9 @@ def _post(body: RequestBody) -> Request:
 class TestLoggingPolicy:
     def test_emits_request_and_response(self, caplog: LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
-        with Pipeline(_OkClient(), policies=[LoggingPolicy()]) as p:
+        with Pipeline(
+            _OkClient(), policies=[LoggingPolicy(detail_level=HttpLogDetailLevel.HEADERS)]
+        ) as p:
             p.run(_request(), DispatchContext(_instr("0" * 16 + "1")))
         messages = [rec.getMessage() for rec in caplog.records]
         assert any("http.request" in m for m in messages)
@@ -121,7 +123,10 @@ class TestLoggingPolicy:
         caplog.set_level(logging.ERROR, logger="dexpace.sdk.core.http")
         boom = ServiceRequestError("connect failed")
         with (
-            Pipeline(_OkClient(raise_exc=boom), policies=[LoggingPolicy()]) as p,
+            Pipeline(
+                _OkClient(raise_exc=boom),
+                policies=[LoggingPolicy(detail_level=HttpLogDetailLevel.HEADERS)],
+            ) as p,
             pytest.raises(ServiceRequestError),
         ):
             p.run(_request(), DispatchContext(_instr("0" * 16 + "2")))
@@ -135,7 +140,9 @@ class TestLoggingPolicy:
     @pytest.mark.req("BODY-34")
     def test_opt_out_via_options(self, caplog: LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
-        with Pipeline(_OkClient(), policies=[LoggingPolicy()]) as p:
+        with Pipeline(
+            _OkClient(), policies=[LoggingPolicy(detail_level=HttpLogDetailLevel.BODY)]
+        ) as p:
             p.run(
                 _request(),
                 DispatchContext(_instr("0" * 16 + "3")),
@@ -162,7 +169,7 @@ class TestLoggingPolicy:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
         payload = b"x" * (8 * 1024 + 500)  # larger than the 8 KiB preview cap
         client = _CapturingClient()
-        with Pipeline(client, policies=[LoggingPolicy()]) as p:
+        with Pipeline(client, policies=[LoggingPolicy(detail_level=HttpLogDetailLevel.BODY)]) as p:
             p.run(_post(RequestBody.from_bytes(payload)), DispatchContext(_instr("0" * 16 + "8")))
         # The transport received every byte — only the diagnostic tap truncates.
         assert bytes(client.received) == payload
@@ -177,7 +184,7 @@ class TestLoggingPolicy:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
         payload = bytes(range(256)) * 40  # invalid UTF-8 sequences, > 8 KiB
         client = _CapturingClient()
-        with Pipeline(client, policies=[LoggingPolicy()]) as p:
+        with Pipeline(client, policies=[LoggingPolicy(detail_level=HttpLogDetailLevel.BODY)]) as p:
             p.run(_post(RequestBody.from_bytes(payload)), DispatchContext(_instr("0" * 16 + "9")))
         assert bytes(client.received) == payload
         assert any("http.response" in r.getMessage() for r in caplog.records)
@@ -193,7 +200,7 @@ class TestLoggingPolicy:
             RequestBody.from_bytes(payload), max_capture_bytes=32 * 1024
         )
         client = _CapturingClient()
-        with Pipeline(client, policies=[LoggingPolicy()]) as p:
+        with Pipeline(client, policies=[LoggingPolicy(detail_level=HttpLogDetailLevel.BODY)]) as p:
             p.run(_post(prewrapped), DispatchContext(_instr("0" * 16 + "a")))
         assert bytes(client.received) == payload
         assert prewrapped.captured_size == 16 * 1024  # tap kept the larger slice
@@ -231,6 +238,23 @@ class TestLogDetailLevel:
         assert not any(
             m.split()[0].startswith("http.") for m in (r.getMessage() for r in caplog.records)
         )
+
+    @pytest.mark.req("OBS-34")
+    def test_default_detail_level_is_none(self, caplog: LogCaptureFixture) -> None:
+        # Security default: a policy built with no explicit ``detail_level``
+        # defaults to NONE, so merely raising the logger to INFO does not leak
+        # request/response events (or their body previews) without an explicit
+        # opt-in. An explicit BODY level still emits both events.
+        caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
+        with Pipeline(_OkClient(), policies=[LoggingPolicy()]) as p:
+            p.run(_request(), DispatchContext(_instr("0" * 15 + "b4")))
+        assert not _request_events(caplog) and not _response_events(caplog)
+        caplog.clear()
+        with Pipeline(
+            _OkClient(), policies=[LoggingPolicy(detail_level=HttpLogDetailLevel.BODY)]
+        ) as p:
+            p.run(_request(), DispatchContext(_instr("0" * 15 + "b5")))
+        assert _request_events(caplog) and _response_events(caplog)
 
     @pytest.mark.req("OBS-34")
     def test_headers_level_omits_body_preview(self, caplog: LogCaptureFixture) -> None:
@@ -277,7 +301,9 @@ class TestNormativeFieldVocabulary:
     @pytest.mark.req("OBS-39")
     def test_success_events_use_normative_field_keys(self, caplog: LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
-        with Pipeline(_OkClient(), policies=[LoggingPolicy()]) as p:
+        with Pipeline(
+            _OkClient(), policies=[LoggingPolicy(detail_level=HttpLogDetailLevel.HEADERS)]
+        ) as p:
             p.run(_request(), DispatchContext(_instr("0" * 15 + "c0")))
         request_event = _request_events(caplog)[0]
         response_event = _response_events(caplog)[0]
@@ -291,7 +317,9 @@ class TestNormativeFieldVocabulary:
     @pytest.mark.req("OBS-39")
     def test_url_full_is_always_redacted(self, caplog: LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
-        with Pipeline(_OkClient(), policies=[LoggingPolicy()]) as p:
+        with Pipeline(
+            _OkClient(), policies=[LoggingPolicy(detail_level=HttpLogDetailLevel.HEADERS)]
+        ) as p:
             p.run(_request(), DispatchContext(_instr("0" * 15 + "c1")))
         joined = " ".join(r.getMessage() for r in caplog.records)
         assert "secret" not in joined
@@ -314,7 +342,9 @@ class TestHeaderLogging:
     @pytest.mark.req("OBS-17")
     def test_url_valued_response_header_is_redacted(self, caplog: LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
-        with Pipeline(self._client(), policies=[LoggingPolicy()]) as p:
+        with Pipeline(
+            self._client(), policies=[LoggingPolicy(detail_level=HttpLogDetailLevel.HEADERS)]
+        ) as p:
             p.run(_request(), DispatchContext(_instr("0" * 15 + "d0")))
         response_event = _response_events(caplog)[0]
         assert "SEKRET" not in response_event
@@ -324,7 +354,9 @@ class TestHeaderLogging:
     @pytest.mark.req("OBS-18")
     def test_credential_header_value_is_never_logged(self, caplog: LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
-        with Pipeline(self._client(), policies=[LoggingPolicy()]) as p:
+        with Pipeline(
+            self._client(), policies=[LoggingPolicy(detail_level=HttpLogDetailLevel.HEADERS)]
+        ) as p:
             p.run(_request(), DispatchContext(_instr("0" * 15 + "d1")))
         response_event = _response_events(caplog)[0]
         assert "super-secret-token" not in response_event

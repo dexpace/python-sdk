@@ -42,7 +42,7 @@ from dexpace.sdk.core.instrumentation import (
 )
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import AsyncPipeline
-from dexpace.sdk.core.pipeline.policies import AsyncRetryPolicy
+from dexpace.sdk.core.pipeline.policies import AsyncRetryPolicy, HttpLogDetailLevel
 from dexpace.sdk.core.pipeline.policies.async_logging_policy import AsyncLoggingPolicy
 from dexpace.sdk.core.pipeline.policies.async_tracing_policy import AsyncTracingPolicy
 
@@ -139,7 +139,10 @@ def _messages(caplog: LogCaptureFixture) -> list[str]:
 class TestAsyncLoggingPolicy:
     async def test_emits_request_and_response(self, caplog: LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
-        async with AsyncPipeline(_StubAsyncClient(), policies=[AsyncLoggingPolicy()]) as p:
+        async with AsyncPipeline(
+            _StubAsyncClient(),
+            policies=[AsyncLoggingPolicy(detail_level=HttpLogDetailLevel.HEADERS)],
+        ) as p:
             await p.run(_request(), DispatchContext(_instr("0" * 16 + "1")))
         messages = _messages(caplog)
         assert any("http.request" in m for m in messages)
@@ -155,7 +158,8 @@ class TestAsyncLoggingPolicy:
         caplog.set_level(logging.ERROR, logger="dexpace.sdk.core.http")
         boom = ServiceRequestError("connect failed")
         async with AsyncPipeline(
-            _StubAsyncClient(raise_exc=boom), policies=[AsyncLoggingPolicy()]
+            _StubAsyncClient(raise_exc=boom),
+            policies=[AsyncLoggingPolicy(detail_level=HttpLogDetailLevel.HEADERS)],
         ) as p:
             with pytest.raises(ServiceRequestError):
                 await p.run(_request(), DispatchContext(_instr("0" * 16 + "2")))
@@ -168,7 +172,10 @@ class TestAsyncLoggingPolicy:
 
     async def test_opt_out_via_options(self, caplog: LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
-        async with AsyncPipeline(_StubAsyncClient(), policies=[AsyncLoggingPolicy()]) as p:
+        async with AsyncPipeline(
+            _StubAsyncClient(),
+            policies=[AsyncLoggingPolicy(detail_level=HttpLogDetailLevel.BODY)],
+        ) as p:
             await p.run(
                 _request(),
                 DispatchContext(_instr("0" * 16 + "3")),
@@ -189,7 +196,9 @@ class TestAsyncLoggingPolicy:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
         payload = b"x" * (8 * 1024 + 500)
         client = _StubAsyncClient()
-        async with AsyncPipeline(client, policies=[AsyncLoggingPolicy()]) as p:
+        async with AsyncPipeline(
+            client, policies=[AsyncLoggingPolicy(detail_level=HttpLogDetailLevel.BODY)]
+        ) as p:
             await p.run(
                 _post(RequestBody.from_bytes(payload)), DispatchContext(_instr("0" * 16 + "8"))
             )
@@ -206,7 +215,9 @@ class TestAsyncLoggingPolicy:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
         payload = bytes(range(256)) * 40  # invalid UTF-8 sequences, > 8 KiB
         client = _StubAsyncClient()
-        async with AsyncPipeline(client, policies=[AsyncLoggingPolicy()]) as p:
+        async with AsyncPipeline(
+            client, policies=[AsyncLoggingPolicy(detail_level=HttpLogDetailLevel.BODY)]
+        ) as p:
             await p.run(
                 _post(RequestBody.from_bytes(payload)), DispatchContext(_instr("0" * 16 + "9"))
             )
@@ -219,7 +230,9 @@ class TestAsyncLoggingPolicy:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
         payload = b'{"ok":true}'
         client = _StubAsyncClient(body_factory=lambda: AsyncResponseBody.from_bytes(payload))
-        async with AsyncPipeline(client, policies=[AsyncLoggingPolicy()]) as p:
+        async with AsyncPipeline(
+            client, policies=[AsyncLoggingPolicy(detail_level=HttpLogDetailLevel.BODY)]
+        ) as p:
             response = await p.run(_request(), DispatchContext(_instr("0" * 16 + "a")))
             # The full body is still available to the caller after previewing.
             assert await response.body.bytes() == payload  # type: ignore[union-attr]
@@ -236,7 +249,10 @@ class TestAsyncLoggingPolicy:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
         payload = b"R" * 1024
         client = _StubAsyncClient(body_factory=lambda: AsyncResponseBody.from_bytes(payload))
-        async with AsyncPipeline(client, policies=[AsyncLoggingPolicy(preview_bytes=256)]) as p:
+        async with AsyncPipeline(
+            client,
+            policies=[AsyncLoggingPolicy(preview_bytes=256, detail_level=HttpLogDetailLevel.BODY)],
+        ) as p:
             response = await p.run(_request(), DispatchContext(_instr("0" * 15 + "a1")))
             assert await response.body.bytes() == payload  # type: ignore[union-attr]
         responses = [m for m in _messages(caplog) if "http.response" in m]
@@ -251,7 +267,9 @@ class TestAsyncLoggingPolicy:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
         payload = b"streamed-unknown-length-body"
         client = _StubAsyncClient(body_factory=lambda: _UnknownLengthResponseBody(payload))
-        async with AsyncPipeline(client, policies=[AsyncLoggingPolicy()]) as p:
+        async with AsyncPipeline(
+            client, policies=[AsyncLoggingPolicy(detail_level=HttpLogDetailLevel.BODY)]
+        ) as p:
             response = await p.run(_request(), DispatchContext(_instr("0" * 16 + "b")))
             # The body is passed through untouched; the caller drains it in full.
             assert await response.body.bytes() == payload  # type: ignore[union-attr]
@@ -272,7 +290,9 @@ class TestAsyncLoggingPolicy:
             ]
         )
         client = _StubAsyncClient(headers=headers)
-        async with AsyncPipeline(client, policies=[AsyncLoggingPolicy()]) as p:
+        async with AsyncPipeline(
+            client, policies=[AsyncLoggingPolicy(detail_level=HttpLogDetailLevel.HEADERS)]
+        ) as p:
             await p.run(_request(), DispatchContext(_instr("0" * 15 + "d2")))
         response_event = next(m for m in _messages(caplog) if m.split()[0] == "http.response")
         assert "SEKRET" not in response_event
@@ -287,7 +307,9 @@ class TestAsyncLoggingPolicy:
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
         payload = bytes(range(256))  # invalid UTF-8, known length
         client = _StubAsyncClient(body_factory=lambda: AsyncResponseBody.from_bytes(payload))
-        async with AsyncPipeline(client, policies=[AsyncLoggingPolicy()]) as p:
+        async with AsyncPipeline(
+            client, policies=[AsyncLoggingPolicy(detail_level=HttpLogDetailLevel.BODY)]
+        ) as p:
             response = await p.run(_request(), DispatchContext(_instr("0" * 16 + "c")))
             assert await response.body.bytes() == payload  # type: ignore[union-attr]
         assert any("http.response" in m for m in _messages(caplog))
@@ -448,7 +470,10 @@ class TestLevelIndependence:
         instr = _instr("0" * 16 + "e", tracer_factory=_RecordingTracerFactory(http_tracer))
         async with AsyncPipeline(
             _StubAsyncClient(),
-            policies=[AsyncLoggingPolicy(), AsyncTracingPolicy(tracer=span_tracer)],
+            policies=[
+                AsyncLoggingPolicy(detail_level=HttpLogDetailLevel.BODY),
+                AsyncTracingPolicy(tracer=span_tracer),
+            ],
         ) as p:
             await p.run(_request(), DispatchContext(instr), logging_enabled=False)
         # No wire logs (logging disabled) ...
@@ -457,6 +482,26 @@ class TestLevelIndependence:
         assert span_tracer.spans and span_tracer.spans[0].ended
         assert "request_sent" in http_tracer.events
         assert "response_received" in http_tracer.events
+
+    @pytest.mark.req("OBS-34")
+    async def test_default_detail_level_is_none(self, caplog: LogCaptureFixture) -> None:
+        # Security default: a policy built with no explicit ``detail_level``
+        # defaults to NONE, so merely raising the logger to INFO does not leak
+        # request/response events (or their body previews) without an explicit
+        # opt-in. An explicit BODY level still emits both events.
+        caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
+        async with AsyncPipeline(_StubAsyncClient(), policies=[AsyncLoggingPolicy()]) as p:
+            await p.run(_request(), DispatchContext(_instr("0" * 15 + "e4")))
+        assert not any("http.request" in m or "http.response" in m for m in _messages(caplog))
+        caplog.clear()
+        async with AsyncPipeline(
+            _StubAsyncClient(),
+            policies=[AsyncLoggingPolicy(detail_level=HttpLogDetailLevel.BODY)],
+        ) as p:
+            await p.run(_request(), DispatchContext(_instr("0" * 15 + "e5")))
+        messages = _messages(caplog)
+        assert any("http.request" in m for m in messages)
+        assert any("http.response" in m for m in messages)
 
 
 def _event_names(caplog: LogCaptureFixture) -> set[str]:
@@ -479,11 +524,16 @@ class TestEventNameParity:
                 return Response(request=request, protocol=Protocol.HTTP_1_1, status=Status.OK)
 
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
-        with Pipeline(_SyncOkClient(), policies=[LoggingPolicy()]) as sp:
+        with Pipeline(
+            _SyncOkClient(), policies=[LoggingPolicy(detail_level=HttpLogDetailLevel.HEADERS)]
+        ) as sp:
             sp.run(_request(), DispatchContext(_instr("0" * 15 + "11")))
         sync_events = _event_names(caplog)
         caplog.clear()
-        async with AsyncPipeline(_StubAsyncClient(), policies=[AsyncLoggingPolicy()]) as ap:
+        async with AsyncPipeline(
+            _StubAsyncClient(),
+            policies=[AsyncLoggingPolicy(detail_level=HttpLogDetailLevel.HEADERS)],
+        ) as ap:
             await ap.run(_request(), DispatchContext(_instr("0" * 15 + "12")))
         async_events = _event_names(caplog)
         assert async_events == sync_events == {"http.request", "http.response"}
@@ -510,7 +560,11 @@ class TestPerAttemptLogging:
 
         caplog.set_level(logging.INFO, logger="dexpace.sdk.core.http")
         retry = AsyncRetryPolicy(backoff_factor=0, clock=_AsyncFakeClock())
-        pipeline = default_async_pipeline(_ScriptedClient(), retry=retry).build()
+        pipeline = default_async_pipeline(
+            _ScriptedClient(),
+            retry=retry,
+            logging=AsyncLoggingPolicy(detail_level=HttpLogDetailLevel.HEADERS),
+        ).build()
         async with pipeline as p:
             await p.run(_request(), DispatchContext(_instr("0" * 15 + "13")))
         messages = _messages(caplog)
