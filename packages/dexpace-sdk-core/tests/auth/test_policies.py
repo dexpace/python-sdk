@@ -299,11 +299,13 @@ def test_bearer_token_policy_skips_https_enforcement_cross_origin() -> None:
     from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
 
     # http:// target is cross-origin (scheme + host differ); the bearer policy
-    # must forward it unchanged rather than raising the HTTPS-only error.
+    # must forward it unchanged rather than raising the HTTPS-only error. The
+    # http target is also an HTTPS->HTTP downgrade, which the redirect policy
+    # denies by default, so opt in here to exercise the bearer-policy path.
     client = _RedirectingClient("http://other.example.org/next")
     cred = _StaticCredential()
     policy = BearerTokenPolicy(cred, "scope-a")
-    with Pipeline(client, policies=[RedirectPolicy(), policy]) as p:
+    with Pipeline(client, policies=[RedirectPolicy(allow_scheme_downgrade=True), policy]) as p:
         response = p.run(_request(), DispatchContext(_instr("0" * 15 + "33")))
     assert response.status is Status.OK
     assert "authorization" not in client.calls[1].headers

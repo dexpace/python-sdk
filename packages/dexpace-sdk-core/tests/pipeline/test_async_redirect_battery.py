@@ -17,13 +17,11 @@ satisfy before it may be wired into ``default_async_pipeline()`` by default:
 - ``Location`` resolution;
 - HTTPS→HTTP downgrade handling.
 
-Dimensions the twin already satisfies are asserted directly. Dimensions it does
-NOT yet satisfy are captured as ``xfail(strict=True)`` tests that encode the
-*target* behaviour: they run today (proving the gap is real and grounding the
-gate) and will flip to a hard failure the moment the shared resolution logic is
-certified — a built-in reminder to remove the marker and un-gate the twin. The
-twin delegates every per-hop decision to the wrapped sync ``RedirectPolicy``,
-so certifying that shared logic closes these gaps on both sides at once.
+Every dimension is now asserted directly. The credential-hygiene dimensions once
+committed as ``xfail(strict=True)`` specs — HTTPS→HTTP downgrade denial,
+cross-origin ``Cookie`` / ``Proxy-Authorization`` stripping, seed-origin
+cross-origin judgment — are certified on the shared core the twin delegates to,
+so they pass in lock-step with the sync battery.
 """
 
 from __future__ import annotations
@@ -34,6 +32,7 @@ import pytest
 
 from dexpace.sdk.core.client.async_http_client import AsyncHttpClient
 from dexpace.sdk.core.http.common import Protocol, Url
+from dexpace.sdk.core.http.common.url import _origin
 from dexpace.sdk.core.http.context import DispatchContext
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.request.request_body import RequestBody
@@ -49,7 +48,7 @@ from dexpace.sdk.core.instrumentation import (
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import AsyncPipeline
 from dexpace.sdk.core.pipeline.policies.async_redirect import AsyncRedirectPolicy
-from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
+from dexpace.sdk.core.pipeline.policies.redirect import RedirectCondition, RedirectPolicy
 
 
 def _instr(trace: str) -> InstrumentationContext:
@@ -308,16 +307,17 @@ class TestBatterySatisfied:
         )
         assert "Authorization" not in client.requests[1].headers
 
-    async def test_authorization_kept_on_same_origin(self) -> None:
-        # Same-origin hops keep the header: stripping it would de-authenticate
-        # against the very service that issued the redirect.
+    @pytest.mark.req("REDIR-7", "XCUT-17")
+    async def test_authorization_stripped_on_same_origin(self) -> None:
+        # Authorization is stripped before EVERY reissue — even same-origin.
+        # Re-stamping a credential for a known origin is the auth layer's job.
         client = _ScriptedAsyncClient(
             [_Hop(Status.MOVED_PERMANENTLY, "https://example.com/new"), _Hop(Status.OK)],
         )
         await _run(
             client, AsyncRedirectPolicy(), _request(headers={"Authorization": "Bearer secret"})
         )
-        assert client.requests[1].headers.get("Authorization") == "Bearer secret"
+        assert "Authorization" not in client.requests[1].headers
 
 
 # --------------------------------------------------------------------------- #
@@ -351,36 +351,46 @@ class TestSharedResolutionLogic:
         seed = _request(url="https://example.com/start")
         await _run(client, policy, seed)
         reissued = client.requests[1]
-        direct = policy.config._build_next_request(seed, 302, "/next?a=b%20c")
+        direct = policy.config._build_next_request(seed, 302, "/next?a=b%20c", _origin(seed.url))
         assert direct is not None
         assert str(reissued.url) == str(direct.url)
         assert reissued.method is direct.method
 
 
 # --------------------------------------------------------------------------- #
-# Battery dimensions the async twin does NOT yet satisfy (the gate reasons).  #
+# Credential-hygiene battery dimensions — now certified on the shared core.    #
 #                                                                             #
-# These encode the target behaviour and fail today. `strict=True` turns an    #
-# unexpected pass into a hard failure, so once the shared resolution logic is  #
-# certified they flip red and force this file — and the default_async_pipeline #
-# gate — to be revisited.                                                      #
+# These once encoded the async gate's reasons as ``xfail(strict=True)`` specs. #
+# The shared resolution core the twin delegates to now provides them, so they  #
+# assert directly and pass in lock-step with the sync battery.                 #
 # --------------------------------------------------------------------------- #
 
-_PENDING = "pending full-battery certification of the shared redirect resolution logic"
 
-
-class TestBatteryGaps:
-    @pytest.mark.xfail(strict=True, reason=f"HTTPS->HTTP downgrade not default-denied; {_PENDING}")
+class TestCredentialHygieneBattery:
+    @pytest.mark.req("REDIR-15", "XCUT-17")
     async def test_https_to_http_downgrade_default_denied(self) -> None:
-        # A scheme downgrade should not be followed by default. The twin follows
-        # it today (stripping credentials but still reissuing to the http host).
+        # A scheme downgrade is not followed by default: the current response is
+        # handed back unfollowed so the TLS guarantee cannot silently vanish.
         client = _ScriptedAsyncClient(
             [_Hop(Status.FOUND, "http://example.com/new"), _Hop(Status.OK)],
         )
         await _run(client, AsyncRedirectPolicy(), _request(url="https://example.com/start"))
         assert len(client.requests) == 1  # not followed
 
-    @pytest.mark.xfail(strict=True, reason=f"Cookie not stripped cross-origin; {_PENDING}")
+    @pytest.mark.req("REDIR-15", "XCUT-17")
+    async def test_https_to_http_downgrade_followed_when_opted_in(self) -> None:
+        client = _ScriptedAsyncClient(
+            [_Hop(Status.FOUND, "http://example.com/new"), _Hop(Status.OK)],
+        )
+        await _run(
+            client,
+            AsyncRedirectPolicy(allow_scheme_downgrade=True),
+            _request(url="https://example.com/start"),
+        )
+        assert len(client.requests) == 2  # followed
+        assert str(client.requests[1].url) == "http://example.com/new"
+
+    @pytest.mark.req("REDIR-9", "XCUT-17")
     async def test_cross_origin_strips_cookie(self) -> None:
         client = _ScriptedAsyncClient(
             [_Hop(Status.FOUND, "https://other.org/new"), _Hop(Status.OK)],
@@ -388,9 +398,7 @@ class TestBatteryGaps:
         await _run(client, AsyncRedirectPolicy(), _request(headers={"Cookie": "session=abc"}))
         assert "Cookie" not in client.requests[1].headers
 
-    @pytest.mark.xfail(
-        strict=True, reason=f"Proxy-Authorization not stripped cross-origin; {_PENDING}"
-    )
+    @pytest.mark.req("REDIR-9", "XCUT-17")
     async def test_cross_origin_strips_proxy_authorization(self) -> None:
         client = _ScriptedAsyncClient(
             [_Hop(Status.FOUND, "https://other.org/new"), _Hop(Status.OK)],
@@ -401,6 +409,43 @@ class TestBatteryGaps:
             _request(headers={"Proxy-Authorization": "Basic xyz"}),
         )
         assert "Proxy-Authorization" not in client.requests[1].headers
+
+    @pytest.mark.req("REDIR-8", "XCUT-17")
+    async def test_cross_origin_judged_against_seed_not_previous_hop(self) -> None:
+        # a.example.com -> b.example.com -> b.example.com: the last hop is
+        # same-origin vs the previous hop but cross-origin vs the seed, so the
+        # origin-scoped Cookie stays stripped for the whole chain.
+        client = _ScriptedAsyncClient(
+            [
+                _Hop(Status.FOUND, "https://b.example.com/step"),
+                _Hop(Status.FOUND, "https://b.example.com/again"),
+                _Hop(Status.OK),
+            ],
+        )
+        await _run(
+            client,
+            AsyncRedirectPolicy(),
+            _request(url="https://a.example.com/start", headers={"Cookie": "session=abc"}),
+        )
+        assert "Cookie" not in client.requests[1].headers
+        assert "Cookie" not in client.requests[2].headers
+
+    @pytest.mark.req("REDIR-20")
+    async def test_custom_predicate_overrides_follow_decision(self) -> None:
+        conditions: list[RedirectCondition] = []
+
+        def never(condition: RedirectCondition) -> bool:
+            conditions.append(condition)
+            return False
+
+        client = _ScriptedAsyncClient(
+            [_Hop(Status.MOVED_PERMANENTLY, "https://example.com/new"), _Hop(Status.OK)],
+        )
+        response = await _run(client, AsyncRedirectPolicy(should_redirect=never), _request())
+        assert response.status is Status.MOVED_PERMANENTLY
+        assert len(client.requests) == 1
+        assert conditions[0].redirect_count == 0
+        assert conditions[0].visited_uris == ("https://example.com/start",)
 
     async def test_location_resolution_is_wire_exact(self) -> None:
         # A %20 in the target query must survive verbatim. Fixed by the pure

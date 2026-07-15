@@ -306,18 +306,19 @@ class TestHopAndLoopGuards:
 
 
 class TestSecurity:
-    def test_authorization_kept_on_same_origin_redirect(self) -> None:
-        # A same-origin hop (here a path change on the same host/scheme/port)
-        # keeps a caller-set Authorization header: stripping it would
-        # de-authenticate the request against the very service that issued the
-        # redirect (e.g. a trailing-slash 301).
+    @pytest.mark.req("REDIR-7", "XCUT-17")
+    def test_authorization_stripped_on_same_origin_redirect(self) -> None:
+        # The Authorization header is stripped before EVERY reissue — even a
+        # same-origin path change. Re-stamping a credential for a known origin
+        # is the auth layer's job (a downstream auth policy re-applies it for a
+        # same-origin reissue), not the redirect layer's.
         client = _ScriptedClient(
             [_Hop(Status.MOVED_PERMANENTLY, "https://example.com/new"), _Hop(Status.OK)],
         )
         policy = RedirectPolicy(strip_authorization=True)
         response = _run(client, policy, _request(auth="Bearer secret"))
         assert response.is_success
-        assert client.requests[1].headers.get("Authorization") == "Bearer secret"
+        assert "Authorization" not in client.requests[1].headers
         # Original request kept its header.
         assert client.requests[0].headers.get("Authorization") == "Bearer secret"
 
@@ -332,34 +333,64 @@ class TestSecurity:
         assert response.is_success
         assert "Authorization" not in client.requests[1].headers
 
-    def test_authorization_stripped_on_scheme_downgrade(self) -> None:
-        # http -> https (or vice versa) is a cross-origin change even with the
-        # same host, so the header is stripped.
+    @pytest.mark.req("REDIR-15", "XCUT-17")
+    def test_scheme_downgrade_not_followed_by_default(self) -> None:
+        # An HTTPS->HTTP downgrade is rejected by default: the hop is not
+        # followed and the current 3xx response is handed back, so the TLS
+        # guarantee cannot silently disappear across a redirect.
         client = _ScriptedClient(
             [_Hop(Status.FOUND, "http://example.com/new"), _Hop(Status.OK)],
         )
         policy = RedirectPolicy(strip_authorization=True)
-        _run(client, policy, _request(url="https://example.com/start", auth="Bearer secret"))
-        assert "Authorization" not in client.requests[1].headers
+        response = _run(
+            client, policy, _request(url="https://example.com/start", auth="Bearer secret")
+        )
+        assert response.status is Status.FOUND
+        assert len(client.requests) == 1
 
-    def test_authorization_stripped_on_port_change(self) -> None:
-        # Same scheme and host but a non-default port is a different origin.
+    @pytest.mark.req("REDIR-15", "XCUT-17")
+    def test_scheme_downgrade_followed_when_opted_in_strips_credentials(self) -> None:
+        # allow_scheme_downgrade=True follows the downgrade; credential
+        # stripping still applies (the scheme change is cross-origin).
+        client = _ScriptedClient(
+            [_Hop(Status.FOUND, "http://example.com/new"), _Hop(Status.OK)],
+        )
+        policy = RedirectPolicy(strip_authorization=True, allow_scheme_downgrade=True)
+        request = _request(url="https://example.com/start", auth="Bearer secret").with_header(
+            "Cookie", "session=abc"
+        )
+        _run(client, policy, request)
+        assert len(client.requests) == 2
+        assert "Authorization" not in client.requests[1].headers
+        assert "Cookie" not in client.requests[1].headers
+
+    @pytest.mark.req("REDIR-8", "REDIR-9")
+    def test_cookie_stripped_on_port_change(self) -> None:
+        # Same scheme and host but a non-default port is a different origin, so
+        # the origin-scoped Cookie is stripped.
         client = _ScriptedClient(
             [_Hop(Status.FOUND, "https://example.com:8443/new"), _Hop(Status.OK)],
         )
         policy = RedirectPolicy(strip_authorization=True)
-        _run(client, policy, _request(url="https://example.com/start", auth="Bearer secret"))
-        assert "Authorization" not in client.requests[1].headers
+        request = _request(url="https://example.com/start").with_header("Cookie", "session=abc")
+        _run(client, policy, request)
+        assert "Cookie" not in client.requests[1].headers
 
-    def test_authorization_kept_on_explicit_default_port_redirect(self) -> None:
+    @pytest.mark.req("REDIR-8")
+    def test_cookie_kept_on_explicit_default_port_redirect(self) -> None:
         # An explicit :443 against an implied default https port is the same
-        # origin, so the header survives.
+        # origin (port normalized to the scheme default), so the origin-scoped
+        # Cookie survives while Authorization is still stripped every reissue.
         client = _ScriptedClient(
             [_Hop(Status.MOVED_PERMANENTLY, "https://example.com:443/new"), _Hop(Status.OK)],
         )
         policy = RedirectPolicy(strip_authorization=True)
-        _run(client, policy, _request(url="https://example.com/start", auth="Bearer secret"))
-        assert client.requests[1].headers.get("Authorization") == "Bearer secret"
+        request = _request(url="https://example.com/start", auth="Bearer secret").with_header(
+            "Cookie", "session=abc"
+        )
+        _run(client, policy, request)
+        assert client.requests[1].headers.get("Cookie") == "session=abc"
+        assert "Authorization" not in client.requests[1].headers
 
     def test_authorization_stripped_on_cross_origin_303_get(self) -> None:
         # The 303 GET-rewrite path also honours cross-origin stripping.
@@ -370,24 +401,29 @@ class TestSecurity:
         _run(client, policy, _request(method=Method.POST, auth="Bearer secret"))
         assert "Authorization" not in client.requests[1].headers
 
-    def test_authorization_kept_on_same_origin_303_get(self) -> None:
+    @pytest.mark.req("REDIR-7", "XCUT-17")
+    def test_authorization_stripped_on_same_origin_303_get(self) -> None:
+        # The 303 GET rebuild strips Authorization too — even same-origin.
         client = _ScriptedClient(
             [_Hop(Status.SEE_OTHER, "https://example.com/new"), _Hop(Status.OK)],
         )
         policy = RedirectPolicy(strip_authorization=True)
         _run(client, policy, _request(method=Method.POST, auth="Bearer secret"))
-        assert client.requests[1].headers.get("Authorization") == "Bearer secret"
+        assert "Authorization" not in client.requests[1].headers
 
-    def test_strip_authorization_false_preserves_header_cross_origin(self) -> None:
-        # strip_authorization=False never strips, even across origins.
+    def test_strip_authorization_false_preserves_headers_cross_origin(self) -> None:
+        # strip_authorization=False never strips any credential, even across
+        # origins — the caller has audited every destination in the chain.
         client = _ScriptedClient(
             [_Hop(Status.MOVED_PERMANENTLY, "https://other.example.org/new"), _Hop(Status.OK)],
         )
         policy = RedirectPolicy(strip_authorization=False)
-        _run(client, policy, _request(auth="Bearer secret"))
+        request = _request(auth="Bearer secret").with_header("Cookie", "session=abc")
+        _run(client, policy, request)
         assert client.requests[1].headers.get("Authorization") == "Bearer secret"
+        assert client.requests[1].headers.get("Cookie") == "session=abc"
 
-    @pytest.mark.req("REDIR-12")
+    @pytest.mark.req("REDIR-12", "XCUT-17")
     def test_userinfo_in_location_dropped(self) -> None:
         client = _ScriptedClient(
             [

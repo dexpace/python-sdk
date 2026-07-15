@@ -5,28 +5,47 @@
 
 Walks the response's ``Location`` header through up to ``max_hops``
 intermediate responses, following the per-status method/body rules from
-RFC 7231 §6.4 and RFC 7538 / RFC 7231 §6.4.7. A caller-set
-``Authorization`` header is stripped by default only when the reissue
-crosses origin relative to the request being redirected; same-origin hops
-keep it. ``userinfo`` in the ``Location`` URL is always discarded. Loops
-are detected via a visited-URL set and cause the policy to return the
+RFC 7231 §6.4 and RFC 7538 / RFC 7231 §6.4.7.
+
+Credential hygiene follows the same rules as browsers / OkHttp / the JDK:
+
+- The ``Authorization`` header is stripped before **every** reissue — even a
+  same-origin hop and the 303 GET rebuild. Re-stamping a credential for a
+  known origin is the auth layer's job (a downstream auth policy re-applies it
+  for same-origin reissues), not the redirect layer's.
+- On a **cross-origin** hop the origin-scoped ``Cookie`` and
+  ``Proxy-Authorization`` headers are additionally stripped. Cross-origin is
+  judged against the **seed** (original) request origin — the RFC 6454
+  ``(scheme, host, effective_port)`` tuple — not the immediately preceding
+  hop, so a same-origin sub-redirect that lands back on a foreign host cannot
+  re-expose the caller's credentials.
+- ``userinfo`` in the ``Location`` URL is always discarded.
+- An HTTPS→HTTP scheme downgrade is rejected by default (the hop is not
+  followed); ``allow_scheme_downgrade=True`` permits it but logs a warning.
+
+Loops are detected via a visited-URL set and cause the policy to return the
 current response instead of raising.
 
 Status-code matrix:
 
 - ``301`` / ``302``: follow with the original method when it is in
   ``allowed_methods``; otherwise return the response unchanged.
-- ``303``: when ``follow_303`` is ``True`` (default), reissue as ``GET``
-  with the body dropped and any ``Content-*`` headers removed.
-- ``307`` / ``308``: follow with the original method **and body**; the
-  body must be replayable or a ``RuntimeError`` is raised.
+- ``303``: when ``follow_303`` is ``True`` (default), reissue as ``GET`` with
+  the body dropped and any ``Content-*`` headers removed.
+- ``307`` / ``308``: follow with the original method **and body**; the body
+  must be replayable or a ``RuntimeError`` is raised.
 - Any other status (including other 3xx like ``304``): return unchanged.
+
+A caller may supply a custom ``should_redirect`` predicate that fully
+overrides the built-in follow decision (see `RedirectCondition`).
 """
 
 from __future__ import annotations
 
-from dataclasses import replace
-from typing import TYPE_CHECKING, ClassVar, Literal, cast
+import logging
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast
 from urllib.parse import urljoin
 
 from ...http.common.url import Url, _origin
@@ -35,14 +54,24 @@ from ..policy import Policy
 from ..stage import Stage
 
 if TYPE_CHECKING:
+    from ...http.common.headers import Headers
     from ...http.request.request import Request
     from ...http.response.response import Response
+    from ...http.response.status import Status
     from ...instrumentation import HttpTracer
     from ..context import PipelineContext
 
 
+_LOGGER = logging.getLogger(__name__)
+
 _REDIRECT_STATUSES: frozenset[int] = frozenset({301, 302, 303, 307, 308})
 _CONTENT_HEADER_PREFIX: str = "content-"
+_AUTHORIZATION_HEADER: str = "authorization"
+
+#: Origin-scoped credential headers stripped only when a reissue crosses
+#: origin relative to the seed request (in addition to ``Authorization``,
+#: which is stripped on every reissue). Lower-case canonical form.
+_CROSS_ORIGIN_CREDENTIAL_HEADERS: tuple[str, ...] = ("cookie", "proxy-authorization")
 
 
 #: ``ctx.data`` key holding the per-operation ``HttpTracer``. The first policy
@@ -74,6 +103,55 @@ def resolve_http_tracer(ctx: PipelineContext) -> HttpTracer:
     return tracer
 
 
+class RedirectResponse(Protocol):
+    """Structural read-only view of a response handed to a redirect predicate.
+
+    Both `Response` and `AsyncResponse` satisfy it: a predicate inspects the
+    status code and headers to decide whether to follow, without consuming or
+    closing the body.
+
+    Attributes:
+        status: The response status.
+        headers: The response headers.
+    """
+
+    @property
+    def status(self) -> Status: ...
+
+    @property
+    def headers(self) -> Headers: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RedirectCondition:
+    """Read-only snapshot handed to a custom ``should_redirect`` predicate.
+
+    A predicate returns ``True`` to follow the redirect (the standard per-hop
+    reissue is then built from the ``Location``) or ``False`` to stop and hand
+    the current response back. The snapshot is a defensive copy: ``visited_uris``
+    is an immutable tuple, so a predicate cannot mutate the live cycle-detection
+    state.
+
+    Attributes:
+        response: The current response being evaluated.
+        redirect_count: The number of redirects already followed on this
+            operation — ``0`` on the first decision.
+        visited_uris: Insertion-ordered URIs visited so far, including the
+            current request's URI. Immutable.
+    """
+
+    response: RedirectResponse
+    redirect_count: int
+    visited_uris: tuple[str, ...]
+
+
+#: A custom redirect predicate. Given a read-only `RedirectCondition`, returns
+#: ``True`` to follow the redirect or ``False`` to stop. When configured it
+#: fully overrides the built-in follow decision (status matrix, method
+#: allow-list, ``follow_303``).
+type RedirectPredicate = Callable[[RedirectCondition], bool]
+
+
 class RedirectPolicy(Policy):
     """Follow HTTP redirects per RFC 7231 §6.4 with credential stripping.
 
@@ -93,13 +171,18 @@ class RedirectPolicy(Policy):
         allowed_methods: Methods that are followed on ``301`` / ``302`` /
             ``307`` / ``308``. ``303`` is always rewritten to ``GET`` (which
             is implicitly allowed). Defaults to ``{GET, HEAD}``.
-        strip_authorization: When ``True`` (the default), a caller-set
-            ``Authorization`` header is stripped before a redirect reissue
-            only when the reissue crosses origin — a change in scheme, host,
-            or effective port — relative to the request being redirected.
-            Same-origin hops (e.g. a trailing-slash 301) keep the header.
-            Set ``False`` to never strip, e.g. when the caller has audited
-            every destination in the chain.
+        strip_authorization: When ``True`` (the default), the ``Authorization``
+            header is stripped before **every** reissue and the origin-scoped
+            ``Cookie`` / ``Proxy-Authorization`` headers are additionally
+            stripped on a cross-origin reissue. Set ``False`` to never strip
+            any credential, e.g. when the caller has audited every destination
+            in the chain.
+        allow_scheme_downgrade: When ``False`` (the default), an HTTPS→HTTP
+            scheme downgrade on a hop is not followed (the current response is
+            handed back). When ``True``, the downgrade is followed and a
+            warning is logged; credential stripping still applies.
+        should_redirect: Optional custom predicate that fully overrides the
+            built-in follow decision (see `RedirectCondition`).
 
     Example:
         ```python
@@ -112,7 +195,14 @@ class RedirectPolicy(Policy):
 
     STAGE: ClassVar[Literal[Stage.REDIRECT]] = Stage.REDIRECT
 
-    __slots__ = ("allowed_methods", "follow_303", "max_hops", "strip_authorization")
+    __slots__ = (
+        "allow_scheme_downgrade",
+        "allowed_methods",
+        "follow_303",
+        "max_hops",
+        "should_redirect",
+        "strip_authorization",
+    )
 
     def __init__(
         self,
@@ -121,6 +211,8 @@ class RedirectPolicy(Policy):
         follow_303: bool = True,
         allowed_methods: frozenset[Method] = frozenset({Method.GET, Method.HEAD}),
         strip_authorization: bool = True,
+        allow_scheme_downgrade: bool = False,
+        should_redirect: RedirectPredicate | None = None,
     ) -> None:
         if max_hops < 0:
             raise ValueError(f"max_hops must be >= 0, got {max_hops}")
@@ -128,12 +220,15 @@ class RedirectPolicy(Policy):
         self.follow_303 = follow_303
         self.allowed_methods = allowed_methods
         self.strip_authorization = strip_authorization
+        self.allow_scheme_downgrade = allow_scheme_downgrade
+        self.should_redirect = should_redirect
 
     # ----- main loop ------------------------------------------------------
 
     def send(self, request: Request, ctx: PipelineContext) -> Response:
         tracer = resolve_http_tracer(ctx)
         tracer.request_url_resolved(str(request.url))
+        seed_origin = _origin(request.url)
         visited: dict[str, None] = {str(request.url): None}
         hops = 0
         current_request = request
@@ -141,14 +236,10 @@ class RedirectPolicy(Policy):
             response = self.next.send(current_request, ctx)
             if hops >= self.max_hops:
                 return response
-            status = int(response.status)
-            if status not in _REDIRECT_STATUSES:
-                return response
-            location = response.headers.get("Location")
-            if location is None or not location.strip():
-                return response
             try:
-                next_request = self._build_next_request(current_request, status, location)
+                next_request = self._decide_next(
+                    current_request, response, seed_origin, hops, tuple(visited)
+                )
             except RuntimeError:
                 # A body-preserving redirect with a non-replayable body cannot
                 # be reissued. Close the in-hand 3xx response before the error
@@ -169,6 +260,43 @@ class RedirectPolicy(Policy):
             current_request = next_request
             hops += 1
 
+    # ----- per-hop decision -----------------------------------------------
+
+    def _decide_next(
+        self,
+        request: Request,
+        response: RedirectResponse,
+        seed_origin: tuple[str, str, int | None],
+        hops: int,
+        visited: tuple[str, ...],
+    ) -> Request | None:
+        """Compute the reissued request for one hop, or ``None`` to stop.
+
+        ``None`` means "hand the current response back unfollowed". A custom
+        ``should_redirect`` predicate, when set, fully overrides the built-in
+        follow decision; otherwise the status-code matrix decides.
+
+        Raises:
+            RuntimeError: 307/308 (or a predicate-authorised body-preserving
+                reissue) with a non-replayable body.
+        """
+        status = int(response.status)
+        predicate = self.should_redirect
+        if predicate is not None:
+            condition = RedirectCondition(
+                response=response, redirect_count=hops, visited_uris=visited
+            )
+            if not predicate(condition):
+                return None
+        elif status not in _REDIRECT_STATUSES:
+            return None
+        location = response.headers.get("Location")
+        if location is None or not location.strip():
+            return None
+        return self._build_next_request(
+            request, status, location, seed_origin, predicate_authorized=predicate is not None
+        )
+
     # ----- per-hop reissue construction -----------------------------------
 
     def _build_next_request(
@@ -176,42 +304,61 @@ class RedirectPolicy(Policy):
         request: Request,
         status: int,
         location: str,
+        seed_origin: tuple[str, str, int | None],
+        *,
+        predicate_authorized: bool = False,
     ) -> Request | None:
         """Construct the reissued request for one redirect hop.
 
-        Returns ``None`` when the redirect should not be followed — a
-        malformed ``Location`` that cannot be resolved to an absolute URL, a
+        Returns ``None`` when the redirect should not be followed — a malformed
+        ``Location`` that cannot be resolved, a denied HTTPS→HTTP downgrade, a
         method not in ``allowed_methods`` for 301/302/307/308, or
-        ``follow_303`` being ``False`` for 303. The caller treats ``None`` as
+        ``follow_303`` being ``False`` for 303. ``predicate_authorized``
+        bypasses the method-allowlist and ``follow_303`` gates (the caller's
+        predicate already decided to follow). The caller treats ``None`` as
         "stop and hand back the current response unfollowed", leaving that
         response open.
 
+        Cross-origin is judged against ``seed_origin`` (the original request's
+        origin), not this hop's origin, so a same-origin sub-redirect on a
+        foreign host still strips origin-scoped credentials.
+
         Raises:
-            RuntimeError: 307/308 with a non-replayable body.
+            RuntimeError: 307/308 (or a predicate-authorised reissue) with a
+                non-replayable body.
         """
         try:
             next_url = self._resolve_location(request.url, location)
         except ValueError:
             # A malformed Location header (bad scheme/host, un-parseable
-            # authority, …) has no resolvable target. Rather than let the parse
-            # error escape and leak the in-hand 3xx response, signal "do not
-            # follow" so the loop hands that response back unfollowed and open —
-            # the same disposition as loop detection / max-hops exhaustion.
+            # authority, …) has no resolvable target. Signal "do not follow" so
+            # the loop hands the response back unfollowed and open — the same
+            # disposition as loop detection / max-hops exhaustion.
             return None
-        cross_origin = _origin(request.url) != _origin(next_url)
+        if self._is_scheme_downgrade(request.url, next_url):
+            if not self.allow_scheme_downgrade:
+                return None
+            _LOGGER.warning(
+                "Following HTTPS->HTTP redirect downgrade from host %s to %s "
+                "(allow_scheme_downgrade=True)",
+                request.url.host,
+                next_url.host,
+            )
+        cross_origin = seed_origin != _origin(next_url)
         if status == 303:
-            if not self.follow_303:
+            if not predicate_authorized and not self.follow_303:
                 return None
             return self._reissue_as_get(request, next_url, cross_origin=cross_origin)
-        # 301, 302, 307, 308 all require the original method to be allowed.
-        if request.method not in self.allowed_methods:
+        # 301, 302, 307, 308 (and any predicate-authorised status) require the
+        # original method to be allowed unless a predicate overrode the gate.
+        if not predicate_authorized and request.method not in self.allowed_methods:
             return None
-        if status in (307, 308):
-            return self._reissue_preserving_body(request, next_url, cross_origin=cross_origin)
-        # 301 / 302: follow with the original method; body carries over
-        # (matches Java's DefaultRedirectStep — caller can downgrade to GET
-        # by setting follow_303 plus allowing only safe methods).
         return self._reissue_preserving_body(request, next_url, cross_origin=cross_origin)
+
+    @staticmethod
+    def _is_scheme_downgrade(from_url: Url, to_url: Url) -> bool:
+        """Report whether ``from_url``→``to_url`` drops HTTPS down to HTTP."""
+        return from_url.scheme.lower() == "https" and to_url.scheme.lower() == "http"
 
     def _resolve_location(self, base: Url, location: str) -> Url:
         """Resolve a possibly-relative Location header into an absolute Url.
@@ -225,6 +372,26 @@ class RedirectPolicy(Policy):
             return parsed
         return replace(parsed, userinfo=None)
 
+    def _strip_credentials(self, request: Request, *, cross_origin: bool) -> Request:
+        """Strip credential headers from a reissued request.
+
+        ``Authorization`` is stripped on every reissue; the origin-scoped
+        ``Cookie`` / ``Proxy-Authorization`` headers are additionally stripped
+        when the reissue crosses origin. All stripping is gated by
+        ``strip_authorization``.
+
+        Args:
+            request: The request being reissued.
+            cross_origin: Whether the reissue crosses the seed origin.
+        """
+        if not self.strip_authorization:
+            return request
+        stripped = request.without_header(_AUTHORIZATION_HEADER)
+        if cross_origin:
+            for name in _CROSS_ORIGIN_CREDENTIAL_HEADERS:
+                stripped = stripped.without_header(name)
+        return stripped
+
     def _reissue_as_get(
         self,
         request: Request,
@@ -235,23 +402,19 @@ class RedirectPolicy(Policy):
         """Build the reissued GET for a 303 hop.
 
         Drops the request body and every ``Content-*`` header (per RFC 7231
-        §6.4.4 — the body no longer applies to a GET). A caller-set
-        ``Authorization`` header is stripped only on a cross-origin hop when
-        ``strip_authorization`` is enabled.
+        §6.4.4 — the body no longer applies to a GET), then strips credentials
+        per `_strip_credentials`.
 
         Args:
             request: The request being redirected (the current hop).
             next_url: The resolved absolute target of the redirect.
-            cross_origin: Whether ``next_url`` differs in origin from
-                ``request.url``.
+            cross_origin: Whether ``next_url`` differs in origin from the seed.
         """
         stripped = request.with_method(Method.GET).with_url(next_url).with_body(None)
         for name in tuple(stripped.headers):
             if name.startswith(_CONTENT_HEADER_PREFIX):
                 stripped = stripped.without_header(name)
-        if self.strip_authorization and cross_origin:
-            stripped = stripped.without_header("Authorization")
-        return stripped
+        return self._strip_credentials(stripped, cross_origin=cross_origin)
 
     def _reissue_preserving_body(
         self,
@@ -265,18 +428,16 @@ class RedirectPolicy(Policy):
         307/308 must preserve the body, so a non-replayable body raises
         ``RuntimeError`` — sending the same payload twice with a single-use
         body is not possible. 301/302 also carry the body (matches Java's
-        ``DefaultRedirectStep``); the same replay requirement applies. A
-        caller-set ``Authorization`` header is stripped only on a cross-origin
-        hop when ``strip_authorization`` is enabled.
+        ``DefaultRedirectStep``); the same replay requirement applies.
+        Credentials are stripped per `_strip_credentials`.
 
         Args:
             request: The request being redirected (the current hop).
             next_url: The resolved absolute target of the redirect.
-            cross_origin: Whether ``next_url`` differs in origin from
-                ``request.url``.
+            cross_origin: Whether ``next_url`` differs in origin from the seed.
 
         Raises:
-            RuntimeError: 307/308 with a non-replayable body.
+            RuntimeError: A non-replayable body cannot be reissued.
         """
         body = request.body
         if body is not None and not body.is_replayable():
@@ -286,9 +447,14 @@ class RedirectPolicy(Policy):
                 "expected."
             )
         reissued = request.with_url(next_url)
-        if self.strip_authorization and cross_origin:
-            reissued = reissued.without_header("Authorization")
-        return reissued
+        return self._strip_credentials(reissued, cross_origin=cross_origin)
 
 
-__all__ = ["HTTP_TRACER_KEY", "RedirectPolicy", "resolve_http_tracer"]
+__all__ = [
+    "HTTP_TRACER_KEY",
+    "RedirectCondition",
+    "RedirectPolicy",
+    "RedirectPredicate",
+    "RedirectResponse",
+    "resolve_http_tracer",
+]

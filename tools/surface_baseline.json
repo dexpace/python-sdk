@@ -1549,12 +1549,25 @@
         }
       },
       "dexpace.sdk.core.pipeline.policies.redirect": {
+        "RedirectCondition": {
+          "bases": [],
+          "methods": {}
+        },
         "RedirectPolicy": {
           "bases": [
             "Policy"
           ],
           "methods": {
             "send": "send(self, request: Request, ctx: PipelineContext) -> Response"
+          }
+        },
+        "RedirectResponse": {
+          "bases": [
+            "Protocol"
+          ],
+          "methods": {
+            "headers": "headers(self) -> Headers",
+            "status": "status(self) -> Status"
           }
         },
         "resolve_http_tracer": "resolve_http_tracer(ctx: PipelineContext) -> HttpTracer"

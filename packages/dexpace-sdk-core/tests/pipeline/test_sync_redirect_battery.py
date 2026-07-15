@@ -24,15 +24,13 @@ Dimensions exercised:
 - ``Location`` resolution is wire-exact against every golden ``redirect`` vector
   — percent-encoding preserved verbatim and IPv6 ``[brackets]`` kept intact.
 
-Dimensions the shared resolution core does NOT yet satisfy are captured as
-``xfail(strict=True)`` executable specs, identical to the async battery: an
-HTTPS→HTTP downgrade is not default-denied, and ``Cookie`` /
-``Proxy-Authorization`` are not stripped on a cross-origin hop. These fail today
-on both pillars (the core is shared) and are the reasons the async twin stays
-gated out of ``default_async_pipeline()`` (see ``docs/deviations.md``). Because
-``strict=True`` turns an unexpected pass into a hard failure, each flips red the
-moment the shared core closes the gap — forcing this file, the async battery,
-and the async gate to be revisited together.
+The credential-hygiene dimensions once committed as ``xfail(strict=True)``
+executable specs are now certified directly on the shared core: ``Authorization``
+is stripped before every reissue, an HTTPS→HTTP downgrade is default-denied (and
+follow-on-opt-in), ``Cookie`` / ``Proxy-Authorization`` are stripped on a
+cross-origin hop, cross-origin is judged against the seed origin, and a custom
+predicate can fully override the follow decision. The async battery's twins pass
+in lock-step because it delegates every per-hop decision to this same core.
 """
 
 from __future__ import annotations
@@ -43,6 +41,7 @@ import pytest
 
 from dexpace.sdk.core.client.http_client import HttpClient
 from dexpace.sdk.core.http.common import Protocol, Url
+from dexpace.sdk.core.http.common.url import _origin
 from dexpace.sdk.core.http.context import DispatchContext
 from dexpace.sdk.core.http.request import Method, Request
 from dexpace.sdk.core.http.request.request_body import RequestBody
@@ -57,7 +56,7 @@ from dexpace.sdk.core.instrumentation import (
 )
 from dexpace.sdk.core.instrumentation.noop import NOOP_SPAN
 from dexpace.sdk.core.pipeline import Pipeline
-from dexpace.sdk.core.pipeline.policies.redirect import RedirectPolicy
+from dexpace.sdk.core.pipeline.policies.redirect import RedirectCondition, RedirectPolicy
 from dexpace.sdk.tck.golden_corpus import RedirectVector, load_redirect
 
 
@@ -315,14 +314,15 @@ class TestBatterySatisfied:
         _run(client, RedirectPolicy(), _request(headers={"Authorization": "Bearer secret"}))
         assert "Authorization" not in client.requests[1].headers
 
-    def test_authorization_kept_on_same_origin(self) -> None:
-        # Same-origin hops keep the header: stripping it would de-authenticate
-        # against the very service that issued the redirect.
+    @pytest.mark.req("REDIR-7", "XCUT-17")
+    def test_authorization_stripped_on_same_origin(self) -> None:
+        # Authorization is stripped before EVERY reissue — even same-origin.
+        # Re-stamping a credential for a known origin is the auth layer's job.
         client = _ScriptedClient(
             [_Hop(Status.MOVED_PERMANENTLY, "https://example.com/new"), _Hop(Status.OK)],
         )
         _run(client, RedirectPolicy(), _request(headers={"Authorization": "Bearer secret"}))
-        assert client.requests[1].headers.get("Authorization") == "Bearer secret"
+        assert "Authorization" not in client.requests[1].headers
 
 
 # --------------------------------------------------------------------------- #
@@ -390,38 +390,49 @@ class TestSharedResolutionLogic:
         seed = _request(url="https://example.com/start")
         _run(client, policy, seed)
         reissued = client.requests[1]
-        direct = policy._build_next_request(seed, 302, "/next?a=b%20c")
+        direct = policy._build_next_request(seed, 302, "/next?a=b%20c", _origin(seed.url))
         assert direct is not None
         assert str(reissued.url) == str(direct.url)
         assert reissued.method is direct.method
 
 
 # --------------------------------------------------------------------------- #
-# Battery dimensions the shared resolution core does NOT yet satisfy.         #
+# Credential-hygiene battery dimensions — now certified on the shared core.    #
 #                                                                             #
-# These mirror ``test_async_redirect_battery.py::TestBatteryGaps`` exactly:   #
-# the resolution core is shared, so the gaps are shared. `strict=True` turns  #
-# an unexpected pass into a hard failure, so each flips red the moment the    #
-# core closes the gap — forcing this file, the async battery, and the async   #
-# `default_async_pipeline()` gate (docs/deviations.md) to be revisited        #
-# together.                                                                   #
+# These once stood as ``xfail(strict=True)`` executable specs (HTTPS->HTTP    #
+# downgrade denial, cross-origin Cookie / Proxy-Authorization stripping, and  #
+# seed-origin cross-origin judgment). The shared resolution core now provides #
+# them, so they assert directly — the async battery's twins flip in lock-step #
+# because it delegates every per-hop decision to this same core.              #
 # --------------------------------------------------------------------------- #
 
-_PENDING = "pending full-battery certification of the shared redirect resolution logic"
 
-
-class TestBatteryGaps:
-    @pytest.mark.xfail(strict=True, reason=f"HTTPS->HTTP downgrade not default-denied; {_PENDING}")
+class TestCredentialHygieneBattery:
+    @pytest.mark.req("REDIR-15", "XCUT-17")
     def test_https_to_http_downgrade_default_denied(self) -> None:
-        # A scheme downgrade should not be followed by default. The core follows
-        # it today (stripping Authorization but still reissuing to the http host).
+        # A scheme downgrade is not followed by default: the current response is
+        # handed back unfollowed so the TLS guarantee cannot silently vanish.
         client = _ScriptedClient(
             [_Hop(Status.FOUND, "http://example.com/new"), _Hop(Status.OK)],
         )
         _run(client, RedirectPolicy(), _request(url="https://example.com/start"))
         assert len(client.requests) == 1  # not followed
 
-    @pytest.mark.xfail(strict=True, reason=f"Cookie not stripped cross-origin; {_PENDING}")
+    @pytest.mark.req("REDIR-15", "XCUT-17")
+    def test_https_to_http_downgrade_followed_when_opted_in(self) -> None:
+        # allow_scheme_downgrade=True follows the downgrade (and logs a warning).
+        client = _ScriptedClient(
+            [_Hop(Status.FOUND, "http://example.com/new"), _Hop(Status.OK)],
+        )
+        _run(
+            client,
+            RedirectPolicy(allow_scheme_downgrade=True),
+            _request(url="https://example.com/start"),
+        )
+        assert len(client.requests) == 2  # followed
+        assert str(client.requests[1].url) == "http://example.com/new"
+
+    @pytest.mark.req("REDIR-9", "XCUT-17")
     def test_cross_origin_strips_cookie(self) -> None:
         client = _ScriptedClient(
             [_Hop(Status.FOUND, "https://other.org/new"), _Hop(Status.OK)],
@@ -429,15 +440,110 @@ class TestBatteryGaps:
         _run(client, RedirectPolicy(), _request(headers={"Cookie": "session=abc"}))
         assert "Cookie" not in client.requests[1].headers
 
-    @pytest.mark.xfail(
-        strict=True, reason=f"Proxy-Authorization not stripped cross-origin; {_PENDING}"
-    )
+    @pytest.mark.req("REDIR-9", "XCUT-17")
     def test_cross_origin_strips_proxy_authorization(self) -> None:
         client = _ScriptedClient(
             [_Hop(Status.FOUND, "https://other.org/new"), _Hop(Status.OK)],
         )
         _run(client, RedirectPolicy(), _request(headers={"Proxy-Authorization": "Basic xyz"}))
         assert "Proxy-Authorization" not in client.requests[1].headers
+
+    @pytest.mark.req("REDIR-9")
+    def test_same_origin_keeps_cookie_and_proxy_authorization(self) -> None:
+        # A same-origin hop keeps origin-scoped credentials — only Authorization
+        # is stripped on a same-origin reissue.
+        client = _ScriptedClient(
+            [_Hop(Status.MOVED_PERMANENTLY, "https://example.com/new"), _Hop(Status.OK)],
+        )
+        headers = {"Cookie": "session=abc", "Proxy-Authorization": "Basic xyz"}
+        _run(client, RedirectPolicy(), _request(headers=headers))
+        assert client.requests[1].headers.get("Cookie") == "session=abc"
+        assert client.requests[1].headers.get("Proxy-Authorization") == "Basic xyz"
+
+    @pytest.mark.req("REDIR-8", "XCUT-17")
+    def test_cross_origin_judged_against_seed_not_previous_hop(self) -> None:
+        # Seed a.example.com -> b.example.com (foreign) -> a.example.com again.
+        # The final hop is same-origin relative to the PREVIOUS hop (b) but
+        # cross-origin relative to the SEED (a). Because origin is judged against
+        # the seed, the origin-scoped Cookie stays stripped for the whole chain
+        # rather than being re-exposed when the chain lands back on a's host.
+        client = _ScriptedClient(
+            [
+                _Hop(Status.FOUND, "https://b.example.com/step"),
+                _Hop(Status.FOUND, "https://b.example.com/again"),
+                _Hop(Status.OK),
+            ],
+        )
+        _run(
+            client,
+            RedirectPolicy(),
+            _request(url="https://a.example.com/start", headers={"Cookie": "session=abc"}),
+        )
+        # Hop 1 (a -> b): cross-origin, Cookie stripped.
+        assert "Cookie" not in client.requests[1].headers
+        # Hop 2 (b -> b): same-origin vs the previous hop, but the request no
+        # longer carries a Cookie to leak; the seed-origin rule kept it stripped.
+        assert "Cookie" not in client.requests[2].headers
+
+    @pytest.mark.req("REDIR-20")
+    def test_custom_predicate_overrides_follow_decision(self) -> None:
+        # A predicate returning False stops a redirect the built-in matrix would
+        # otherwise follow (a plain 301 for a GET).
+        conditions: list[RedirectCondition] = []
+
+        def never(condition: RedirectCondition) -> bool:
+            conditions.append(condition)
+            return False
+
+        client = _ScriptedClient(
+            [_Hop(Status.MOVED_PERMANENTLY, "https://example.com/new"), _Hop(Status.OK)],
+        )
+        response = _run(client, RedirectPolicy(should_redirect=never), _request())
+        assert response.status is Status.MOVED_PERMANENTLY
+        assert len(client.requests) == 1
+        assert len(conditions) == 1
+        # First decision: zero redirects followed, visited holds only the seed.
+        assert conditions[0].redirect_count == 0
+        assert conditions[0].visited_uris == ("https://example.com/start",)
+
+    @pytest.mark.req("REDIR-20")
+    def test_custom_predicate_follows_non_default_method(self) -> None:
+        # A predicate returning True follows a POST 302 the default allow-list
+        # would refuse — proof it fully overrides the built-in follow decision.
+        client = _ScriptedClient(
+            [_Hop(Status.FOUND, "https://example.com/new"), _Hop(Status.OK)],
+        )
+        response = _run(
+            client,
+            RedirectPolicy(should_redirect=lambda _condition: True),
+            _request(method=Method.POST),
+        )
+        assert response.status is Status.OK
+        assert len(client.requests) == 2
+        assert client.requests[1].method is Method.POST
+
+    @pytest.mark.req("REDIR-20")
+    def test_custom_predicate_snapshot_is_defensive_copy(self) -> None:
+        # The visited-URI snapshot is an immutable tuple, so a predicate cannot
+        # mutate the live cycle-detection state. It also includes the current
+        # request's URI, and the count advances per followed hop.
+        seen: list[tuple[int, tuple[str, ...]]] = []
+
+        def record(condition: RedirectCondition) -> bool:
+            assert isinstance(condition.visited_uris, tuple)  # immutable copy
+            seen.append((condition.redirect_count, condition.visited_uris))
+            return True
+
+        client = _ScriptedClient(
+            [
+                _Hop(Status.FOUND, "https://example.com/a"),
+                _Hop(Status.FOUND, "https://example.com/b"),
+                _Hop(Status.OK),
+            ],
+        )
+        _run(client, RedirectPolicy(should_redirect=record), _request())
+        assert seen[0] == (0, ("https://example.com/start",))
+        assert seen[1] == (1, ("https://example.com/start", "https://example.com/a"))
 
     def test_location_resolution_is_wire_exact(self) -> None:
         # A %20 in the target query must survive verbatim. Fixed by the pure
