@@ -291,8 +291,10 @@ class RequestBody(ABC):
             A replayable ``RequestBody`` backed by the given file.
 
         Raises:
-            ValueError: If ``offset`` is negative or ``count`` is ``0``
-                or less than ``-1``.
+            ValueError: If ``offset`` is negative; if ``count`` is ``0`` or less
+                than ``-1``; if ``path`` does not exist or is not a regular file;
+                or if ``offset`` (or ``offset + count``) exceeds the file's size
+                captured at construction.
         """
         from .file_request_body import FileRequestBody
 

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import stat as stat_module
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Final
@@ -28,13 +29,19 @@ class FileRequestBody(RequestBody):
     default ``iter_bytes`` implementation uses regular reads so the
     optimisation is transparent — transports just need to ``isinstance``-check.
 
+    The file is stat-ed once at construction: existence, regular-file-ness, and
+    the ``offset`` / ``offset + count`` window are all validated against the size
+    captured then, so an invalid body fails fast rather than deferring the error
+    to the first read. ``content_length`` reports from that captured size, giving
+    the exact byte count the body will upload.
+
     Attributes:
         path: File on disk to stream.
         offset: Byte offset from the start of the file.
         count: Number of bytes to read, or ``-1`` for read-to-EOF.
     """
 
-    __slots__ = ("_count", "_media_type", "_offset", "_path")
+    __slots__ = ("_count", "_media_type", "_offset", "_path", "_size")
 
     def __init__(
         self,
@@ -43,7 +50,7 @@ class FileRequestBody(RequestBody):
         offset: int = 0,
         count: int = -1,
     ) -> None:
-        """Initialise the body.
+        """Initialise the body, validating the file and window fail-fast.
 
         Args:
             path: File on disk to stream.
@@ -52,17 +59,25 @@ class FileRequestBody(RequestBody):
             count: Number of bytes to read, or ``-1`` for read-to-EOF.
 
         Raises:
-            ValueError: If ``offset`` is negative or ``count`` is ``0``
-                or less than ``-1``.
+            ValueError: If ``offset`` is negative; if ``count`` is ``0`` or less
+                than ``-1``; if ``path`` does not exist or is not a regular file;
+                or if ``offset`` (or ``offset + count``) exceeds the size the
+                file has at construction.
         """
         if offset < 0:
             raise ValueError(f"offset must be non-negative, got {offset}")
         if count < -1 or count == 0:
             raise ValueError(f"count must be -1 (read to EOF) or positive, got {count}")
+        size = _validate_file(path)
+        if offset > size:
+            raise ValueError(f"offset {offset} is past the file size {size}: {path}")
+        if count != -1 and offset + count > size:
+            raise ValueError(f"offset+count {offset + count} exceeds the file size {size}: {path}")
         self._path = path
         self._media_type = media_type
         self._offset = offset
         self._count = count
+        self._size = size
 
     @property
     def path(self) -> Path:
@@ -80,19 +95,11 @@ class FileRequestBody(RequestBody):
         return self._media_type
 
     def content_length(self) -> int:
-        # Stat lazily — the file may grow between body construction and send;
-        # whatever stat returns at call time is the best estimate we have.
-        try:
-            size = self._path.stat().st_size
-        except OSError:
-            # No stat available: fall back to the requested count, or unknown.
-            return self._count if self._count != -1 else -1
-        available = max(0, size - self._offset)
+        # Report from the size captured at construction — validation already
+        # guaranteed the whole window fits, so this is the exact upload size.
         if self._count == -1:
-            return available
-        # ``iter_bytes`` stops at EOF, so a count past EOF would over-report;
-        # advertise only what can actually be read.
-        return min(self._count, available)
+            return self._size - self._offset
+        return self._count
 
     def is_replayable(self) -> bool:
         return True
@@ -119,6 +126,28 @@ class FileRequestBody(RequestBody):
                 yield chunk
                 if remaining != -1:
                     remaining -= len(chunk)
+
+
+def _validate_file(path: Path) -> int:
+    """Stat ``path`` fail-fast and return its size in bytes.
+
+    Args:
+        path: File the body will stream from.
+
+    Returns:
+        The regular file's size, in bytes, as observed at this call.
+
+    Raises:
+        ValueError: If ``path`` does not exist / cannot be stat-ed, or names a
+            directory or other non-regular file.
+    """
+    try:
+        info = path.stat()
+    except OSError as exc:
+        raise ValueError(f"file does not exist or is not accessible: {path}") from exc
+    if not stat_module.S_ISREG(info.st_mode):
+        raise ValueError(f"not a regular file: {path}")
+    return info.st_size
 
 
 __all__ = ["FileRequestBody"]

@@ -65,6 +65,35 @@ class _CountingBody(ResponseBody):
         self.closed = True
 
 
+class _SingleUseFailingBody(ResponseBody):
+    """Single-use body of invalid JSON that refuses a second read.
+
+    Drives the failure-memoization path: the first drain succeeds and decoding
+    it raises, and any second drain raises a *different* error — so a test can
+    tell whether the parse latch re-read the body or replayed the cached failure.
+    """
+
+    __slots__ = ("reads",)
+
+    def __init__(self) -> None:
+        self.reads = 0
+
+    def media_type(self) -> None:
+        return None
+
+    def content_length(self) -> int:
+        return -1
+
+    def iter_bytes(self, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
+        self.reads += 1
+        if self.reads > 1:
+            raise RuntimeError("body already consumed")
+        yield b"not valid json{"
+
+    def close(self) -> None:
+        pass
+
+
 class _TrackingBody(ResponseBody):
     """Response body that records whether it was read and/or closed."""
 
@@ -225,6 +254,49 @@ def test_replace_resets_the_parse_latch() -> None:
     # aliased across ``replace``).
     resp2 = resp.with_body(ResponseBody.from_bytes(b"[2]"))
     assert resp2.parse(list[int]) == [2]
+
+
+@pytest.mark.req("HTTP-44")
+def test_raw_metadata_is_readable_without_consuming_the_body() -> None:
+    body = _CountingBody(b"[1, 2, 3]")
+    resp = _response(body)
+    # status / headers / protocol / reason / request are plain fields, reachable
+    # with the single-use body still intact.
+    assert resp.status is Status.OK
+    assert resp.protocol is Protocol.HTTP_1_1
+    assert isinstance(resp.headers, Headers)
+    assert resp.reason is None
+    assert resp.request.method is Method.GET
+    assert body.reads == 0  # none of the metadata reads drained the body
+
+
+@pytest.mark.req("HTTP-44")
+def test_parse_memoizes_a_thrown_failure_and_reraises_it() -> None:
+    from dexpace.sdk.core.errors import DeserializationError
+
+    body = _SingleUseFailingBody()
+    resp = _response(body)
+    with pytest.raises(DeserializationError) as first:
+        resp.parse(list[int])
+    assert body.reads == 1
+    # A second parse replays the memoized failure verbatim — the same exception
+    # object — without re-running the decode or re-reading the single-use body
+    # (a re-read would raise the "body already consumed" RuntimeError instead).
+    with pytest.raises(DeserializationError) as second:
+        resp.parse(list[int])
+    assert second.value is first.value
+    assert body.reads == 1
+
+
+@pytest.mark.req("HTTP-44")
+def test_parse_memoizes_a_none_success() -> None:
+    # A null (``None``) success is memoized just like any other value: the body
+    # is read exactly once and the cached ``None`` is returned on later calls.
+    body = _CountingBody(b"null")
+    resp = _response(body)
+    assert resp.parse(object) is None
+    assert resp.parse(object) is None
+    assert body.reads == 1
 
 
 @pytest.mark.req("HTTP-45")

@@ -9,12 +9,42 @@ import pytest
 
 from dexpace.sdk.core.http.common import Protocol
 from dexpace.sdk.core.http.request import Method
+from dexpace.sdk.core.http.request.method import _IDEMPOTENT_METHODS
 from dexpace.sdk.core.http.response import Status
 
 
+@pytest.mark.req("HTTP-9")
 def test_method_str_round_trip() -> None:
     assert Method("GET") is Method.GET
     assert str(Method.POST) == "POST"
+
+
+@pytest.mark.req("HTTP-9")
+@pytest.mark.parametrize("method", list(Method))
+def test_method_wire_token_equals_uppercase_name(method: Method) -> None:
+    # The canonical wire token is the member's value, which equals its uppercase
+    # name — so a method drops straight into a request line without translation.
+    assert method.value == method.name
+    assert str(method) == method.name
+    assert method.value.isupper()
+
+
+@pytest.mark.req("HTTP-9")
+def test_idempotent_method_set_is_the_canonical_five() -> None:
+    expected = {Method.GET, Method.HEAD, Method.OPTIONS, Method.PUT, Method.DELETE}
+    assert set(_IDEMPOTENT_METHODS) == expected
+
+
+@pytest.mark.req("HTTP-9")
+def test_retry_allowlist_derives_from_the_single_idempotency_source() -> None:
+    # The default retry method allow-list is not an independent list: it is
+    # derived from `_IDEMPOTENT_METHODS`, so the two can never diverge (and, in
+    # particular, TRACE is not silently retried).
+    from dexpace.sdk.core.pipeline.policies.retry import _DEFAULT_METHOD_ALLOWLIST
+
+    expected = {m.value for m in _IDEMPOTENT_METHODS}
+    assert set(_DEFAULT_METHOD_ALLOWLIST) == expected
+    assert "TRACE" not in _DEFAULT_METHOD_ALLOWLIST
 
 
 def test_method_is_str_compatible() -> None:

@@ -105,16 +105,41 @@ def test_missing_method_raises_field_named_error() -> None:
         Request(method=None, url=Url.parse("https://example.com/"))  # type: ignore[arg-type]
 
 
+@pytest.mark.req("HTTP-7")
 def test_body_on_get_is_rejected() -> None:
     body = RequestBody.from_string("payload")
     with pytest.raises(ValueError, match="body is not permitted on a GET request"):
         Request(method=Method.GET, url=Url.parse("https://example.com/"), body=body)
 
 
+@pytest.mark.req("HTTP-7")
 def test_body_on_head_is_rejected() -> None:
     body = RequestBody.from_string("payload")
     with pytest.raises(ValueError, match="body is not permitted on a HEAD request"):
         Request(method=Method.HEAD, url=Url.parse("https://example.com/"), body=body)
+
+
+@pytest.mark.req("HTTP-7")
+@pytest.mark.parametrize("method", [Method.GET, Method.HEAD, Method.TRACE, Method.CONNECT])
+def test_body_on_bodyless_method_is_rejected_at_construction(method: Method) -> None:
+    # Every method whose classification forbids a body — including TRACE and
+    # CONNECT — rejects a non-null body at construction, never deferring the
+    # error to the transport.
+    body = RequestBody.from_string("payload")
+    with pytest.raises(ValueError, match=f"body is not permitted on a {method} request"):
+        Request(method=method, url=Url.parse("https://example.com/"), body=body)
+
+
+@pytest.mark.req("HTTP-7")
+@pytest.mark.parametrize("method", [Method.TRACE, Method.CONNECT])
+def test_with_method_to_bodyless_drops_body(method: Method) -> None:
+    # Downgrading a body-carrying request to TRACE/CONNECT clears the body so the
+    # resulting request stays valid (mirrors the GET/HEAD downgrade path).
+    post = _post_request().with_body(RequestBody.from_string("payload"))
+    switched = post.with_method(method)
+    assert switched.method is method
+    assert switched.body is None
+    assert post.body is not None  # value semantics: original untouched
 
 
 def test_with_body_on_get_is_rejected() -> None:

@@ -7,13 +7,14 @@ Certifies the RFC 7231/7230 behaviours the SDK relies on: the normalisation
 invariant lives behind unexported fields read through accessors (HTTP-53); the
 quoted-string-aware parse/render loop round-trips (HTTP-23/24); type, subtype,
 and parameter keys lower-case while parameter values are preserved verbatim
-(HTTP-25/26); and the ``charset`` accessor degrades an unknown encoding to
-``None`` (HTTP-27).
+(HTTP-25); construction rejects control characters and non-ASCII bytes so a
+media type can always be emitted as a ``Content-Type`` header (HTTP-26); and the
+``charset`` accessor degrades an unknown encoding to ``None`` (HTTP-27).
 
 `hypothesis` is not a workspace dev dependency (see the root ``pyproject.toml``
 ``[dependency-groups]``), so the parse/render round-trip is exercised as an
-enumerated property over a curated corpus of separator-, quote-, escape-, and
-non-ASCII-bearing values rather than as a generated property test.
+enumerated property over a curated corpus of separator-, quote-, and
+escape-bearing values rather than as a generated property test.
 """
 
 from __future__ import annotations
@@ -144,7 +145,7 @@ class TestQuotedStringRendering:
     @pytest.mark.req("HTTP-25")
     @pytest.mark.parametrize(
         "value",
-        ["foo bar", "a;b", "a,b", "a/b", "a=b c", "a\tb", "café", "π", 'has"quote', "back\\slash"],
+        ["foo bar", "a;b", "a,b", "a/b", "a=b c", "a\tb", 'has"quote', "back\\slash"],
     )
     def test_values_needing_quotes_round_trip(self, value: str) -> None:
         mt = MediaType.of("multipart", "mixed", {"p": value})
@@ -159,6 +160,67 @@ class TestQuotedStringRendering:
         mt = MediaType.of("text", "plain", {"p": ""})
         assert str(mt) == 'text/plain;p=""'
         assert MediaType.parse(str(mt)) == mt
+
+
+@pytest.mark.req("HTTP-26")
+class TestControlAndNonAsciiRejection:
+    """HTTP-26: construction rejects control / non-ASCII bytes fail-fast.
+
+    Every component — type, subtype, parameter key, parameter value — must be
+    emittable as part of a ``Content-Type`` header, so a C0 control (except
+    HTAB), ``DEL``, or a non-ASCII byte is refused at construction rather than
+    slipping through to be caught late at the header boundary (which is also
+    where a CR/LF injection would otherwise land).
+    """
+
+    # A representative forbidden byte from each class the predicate rejects.
+    _FORBIDDEN = ["\r", "\n", "\0", "\x1f", "\x7f", "café", "π", "\x80"]
+
+    @pytest.mark.parametrize("bad", _FORBIDDEN)
+    def test_forbidden_parameter_value_rejected(self, bad: str) -> None:
+        with pytest.raises(ValueError, match="control character or non-ASCII"):
+            MediaType.of("text", "plain", {"charset": bad})
+
+    @pytest.mark.parametrize("bad", _FORBIDDEN)
+    def test_forbidden_parameter_key_rejected(self, bad: str) -> None:
+        with pytest.raises(ValueError, match="control character or non-ASCII"):
+            MediaType.of("text", "plain", {f"x{bad}": "utf-8"})
+
+    @pytest.mark.parametrize("bad", _FORBIDDEN)
+    def test_forbidden_type_rejected(self, bad: str) -> None:
+        with pytest.raises(ValueError, match="control character or non-ASCII"):
+            MediaType.of(f"text{bad}", "plain")
+
+    @pytest.mark.parametrize("bad", _FORBIDDEN)
+    def test_forbidden_subtype_rejected(self, bad: str) -> None:
+        with pytest.raises(ValueError, match="control character or non-ASCII"):
+            MediaType.of("text", f"plain{bad}")
+
+    def test_rejection_fires_on_the_raw_constructor_too(self) -> None:
+        # ``__post_init__`` runs the check on every construction path, not just
+        # the ``of``/``parse`` factories.
+        with pytest.raises(ValueError, match="control character or non-ASCII"):
+            MediaType("text", "plain", (("charset", "caf\xe9"),))
+
+    def test_crlf_injection_is_rejected_at_construction(self) -> None:
+        # The header-splitting payload is refused when the media type is built,
+        # not deferred to the ``Content-Type`` header assignment.
+        with pytest.raises(ValueError, match="control character or non-ASCII"):
+            MediaType.of("text", "plain", {"boundary": "x\r\nInjected: y"})
+
+    def test_htab_and_space_are_permitted(self) -> None:
+        # HTAB and SP are not control characters under the predicate; they only
+        # force quoting, so a value carrying them is accepted and round-trips.
+        mt = MediaType.of("multipart", "mixed", {"p": "a\tb c"})
+        assert MediaType.parse(str(mt)) == mt
+
+    def test_ascii_media_type_always_survives_as_header_value(self) -> None:
+        from dexpace.sdk.core.http.common import Headers
+        from dexpace.sdk.core.http.common.http_header_name import CONTENT_TYPE
+
+        mt = MediaType.of("application", "json", {"charset": "utf-8"})
+        headers = Headers.outbound([(CONTENT_TYPE, str(mt))])
+        assert headers.get(CONTENT_TYPE) == str(mt)
 
 
 def _corpus() -> list[str]:
@@ -176,7 +238,7 @@ def _corpus() -> list[str]:
         'has"dquote',
         "back\\slash",
         "semi;and space",
-        "café-π",
+        "colon:and/slash",
         "",
         " leading-token",
     ]

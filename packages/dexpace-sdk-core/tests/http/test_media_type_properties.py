@@ -7,9 +7,15 @@ Invariants covered:
 
 - ``MediaType.parse(str(mt)) == mt`` — rendering to wire form and parsing back
   is the identity, including parameter values that require quoting (spaces,
-  separators, quotes, control bytes, and non-ASCII text).
+  separators, and quotes).
 - ``MediaType.of`` normalisation is idempotent — constructing from an already
   normalised media type's parts reproduces it.
+
+Parameter values are drawn from the ``field-content`` byte set (HTAB, SP, and
+visible ASCII) because `MediaType` construction rejects control characters and
+non-ASCII bytes outright (HTTP-26) — the same predicate outbound header-value
+validation uses — so a generated value that could not be emitted as a
+``Content-Type`` header is never constructed in the first place.
 
 The example count and deadline are governed by the capped "ci" Hypothesis
 profile registered in ``tests/conftest.py``.
@@ -31,10 +37,13 @@ _TOKEN_CHARS = "!#$%&'*+-.^_`|~0123456789" + ascii_lowercase
 
 _tokens = st.text(alphabet=_TOKEN_CHARS, min_size=1, max_size=20)
 _param_keys = st.text(alphabet=_TOKEN_CHARS, min_size=1, max_size=15)
-# Parameter values are unrestricted text: the renderer quotes anything that is
-# not a bare token and the parser unquotes it, so the round-trip must survive
-# spaces, separators, quotes, control bytes, and non-ASCII characters.
-_param_values = st.text(st.characters(codec="utf-8"), max_size=25)
+# Parameter values range over the ``field-content`` byte set — HTAB plus the
+# visible-ASCII range 0x20-0x7E. The renderer quotes anything that is not a bare
+# token and the parser unquotes it, so the round-trip must survive spaces,
+# separators, and quotes; control bytes and non-ASCII are excluded because
+# construction rejects them (HTTP-26), matching outbound header validation.
+_value_chars = st.characters(min_codepoint=0x20, max_codepoint=0x7E) | st.just("\t")
+_param_values = st.text(_value_chars, max_size=25)
 _params = st.dictionaries(_param_keys, _param_values, max_size=5)
 
 

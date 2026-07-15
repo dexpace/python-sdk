@@ -167,20 +167,21 @@ def test_control_char_in_custom_header_value_rejected(ctrl: str) -> None:
         MultipartField(name="f", value=b"v", headers=(("X-Ok", f"bad{ctrl}value"),))
 
 
+@pytest.mark.req("HTTP-26")
 @pytest.mark.parametrize("ctrl", ["\r", "\n", "\0"])
 def test_control_char_in_media_type_subtype_rejected(ctrl: str) -> None:
     # The part media type is rendered into a ``Content-Type:`` header, so a
-    # subtype carrying CR/LF would inject an extra header line.
-    media_type = MediaType.of("application", f"octet-stream{ctrl}X-Evil: 1")
-    with pytest.raises(ValueError, match="control characters"):
-        MultipartField(name="f", value=b"v", media_type=media_type)
+    # subtype carrying CR/LF would inject an extra header line — rejected at
+    # ``MediaType`` construction, before it can reach the multipart boundary.
+    with pytest.raises(ValueError, match="control character or non-ASCII"):
+        MediaType.of("application", f"octet-stream{ctrl}X-Evil: 1")
 
 
+@pytest.mark.req("HTTP-26")
 @pytest.mark.parametrize("ctrl", ["\r", "\n", "\0"])
 def test_control_char_in_media_type_param_rejected(ctrl: str) -> None:
-    media_type = MediaType.of("text", "plain", {"charset": f"utf-8{ctrl}X-Evil: 1"})
-    with pytest.raises(ValueError, match="control characters"):
-        MultipartField(name="f", value=b"v", media_type=media_type)
+    with pytest.raises(ValueError, match="control character or non-ASCII"):
+        MediaType.of("text", "plain", {"charset": f"utf-8{ctrl}X-Evil: 1"})
 
 
 @pytest.mark.parametrize("ctrl", ["\r", "\n", "\0"])

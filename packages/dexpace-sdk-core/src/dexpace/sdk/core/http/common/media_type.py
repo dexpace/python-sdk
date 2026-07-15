@@ -10,11 +10,37 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Self
 
+from .headers import _NON_FIELD_CONTENT
+
 # RFC 7230 §3.2.6 — characters that are NOT valid in a ``token``. Any
 # parameter value containing one of these (or a non-printable byte) must be
 # rendered as a quoted-string. Space and HTAB are included because they
 # terminate a token even though they are valid inside quoted-strings.
 _TOKEN_SEPARATORS = frozenset('()<>@,;:\\"/[]?={} \t')
+
+
+def _reject_forbidden_chars(label: str, value: str) -> None:
+    """Reject a media-type component that could not survive as a header value.
+
+    Applies the exact predicate outbound header-value validation uses
+    (`Headers.outbound`): any C0 control character except HTAB, ``DEL``, or a
+    non-ASCII byte is refused. Enforcing it at `MediaType` construction means a
+    media type can always be emitted as a ``Content-Type`` header without a late
+    rejection — and forecloses CR / LF injection at the point the type is built.
+
+    Args:
+        label: Human-readable name of the offending component, for the message.
+        value: The component text (type, subtype, parameter key, or value).
+
+    Raises:
+        ValueError: If ``value`` carries a forbidden byte. The value itself is
+            never echoed, so a control character cannot smuggle itself into the
+            message.
+    """
+    if _NON_FIELD_CONTENT.search(value):
+        raise ValueError(
+            f"invalid media type {label}: contains a control character or non-ASCII byte"
+        )
 
 
 def _split_params(value: str) -> list[str]:
@@ -134,6 +160,15 @@ class MediaType:
         object.__setattr__(self, "subtype", self.subtype.lower())
         normalized = tuple(sorted((key.lower(), value) for key, value in self.parameters))
         object.__setattr__(self, "parameters", normalized)
+        # Reject any byte that outbound header-value validation would reject, so
+        # this media type can always be serialised into a ``Content-Type`` header
+        # without a late failure or a CR/LF injection. Runs on every construction
+        # path (raw constructor included) — the same guarantee as normalisation.
+        _reject_forbidden_chars("type", self.type)
+        _reject_forbidden_chars("subtype", self.subtype)
+        for key, value in self.parameters:
+            _reject_forbidden_chars("parameter name", key)
+            _reject_forbidden_chars("parameter value", value)
 
     @property
     def full_type(self) -> str:

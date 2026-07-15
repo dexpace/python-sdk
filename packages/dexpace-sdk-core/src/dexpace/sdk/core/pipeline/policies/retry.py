@@ -52,6 +52,7 @@ from ...errors import (
     ServiceResponseError,
     ServiceResponseTimeoutError,
 )
+from ...http.request.method import _IDEMPOTENT_METHODS
 from ...util.clock import SYSTEM_CLOCK, CancellationToken, Clock
 from .._pure.backoff import apply_jitter, compute_backoff
 from .._pure.classifier import DEFAULT_RETRYABLE_STATUS, is_retryable, status_is_retryable
@@ -106,8 +107,12 @@ class _ResponseLike(Protocol):
     def headers(self) -> Any: ...
 
 
+# The default retry method allow-list is *derived* from the single idempotent
+# classification (`_IDEMPOTENT_METHODS`) rather than hand-maintained here, so
+# the allow-list and the inherent replay-safety gate can never diverge — only a
+# GET/HEAD/OPTIONS/PUT/DELETE is retried by default (no TRACE, no POST/PATCH).
 _DEFAULT_METHOD_ALLOWLIST: Final[frozenset[str]] = frozenset(
-    {"HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE"}
+    method.value for method in _IDEMPOTENT_METHODS
 )
 _POST_PATCH_STATUS_RETRIES: Final[frozenset[int]] = frozenset({500, 503, 504})
 

@@ -19,9 +19,15 @@ if TYPE_CHECKING:
 type _Name = str | HttpHeaderName
 
 #: Methods whose semantics forbid a request payload body. Constructing a request
-#: for one of these with a body is rejected; ``with_method`` drops an existing
-#: body when switching to one of them so fluent chains stay valid.
-_BODYLESS_METHODS: Final[frozenset[Method]] = frozenset({Method.GET, Method.HEAD})
+#: for one of these with a body is rejected at construction (never deferred to
+#: the transport); ``with_method`` drops an existing body when switching to one
+#: of them so fluent chains stay valid. ``GET`` / ``HEAD`` carry no body by
+#: definition; ``TRACE`` must not be sent with an entity body (RFC 7231 §4.3.8)
+#: and ``CONNECT``'s body has tunnel-specific meaning, so both are body-less
+#: here — a payload on either is a construction error, not a wire-time surprise.
+_BODYLESS_METHODS: Final[frozenset[Method]] = frozenset(
+    {Method.GET, Method.HEAD, Method.TRACE, Method.CONNECT}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +47,8 @@ class Request:
         method: The HTTP method.
         url: The absolute request target.
         headers: The request headers (an immutable, case-insensitive value).
-        body: The optional request payload. Forbidden for ``GET`` / ``HEAD``.
+        body: The optional request payload. Forbidden for the body-less
+            methods (``GET`` / ``HEAD`` / ``TRACE`` / ``CONNECT``).
         timeout: Optional per-call timeout in seconds. Must be positive.
         retries: Optional per-call retry budget. ``0`` disables retries for
             this call; a negative value is rejected.
@@ -59,9 +66,9 @@ class Request:
 
         Raises:
             ValueError: If ``method`` or ``url`` is missing, if a body is
-                supplied for a method that forbids one (``GET`` / ``HEAD``), if
-                ``timeout`` is not positive, or if ``retries`` is negative. The
-                message names the offending field.
+                supplied for a method that forbids one (``GET`` / ``HEAD`` /
+                ``TRACE`` / ``CONNECT``), if ``timeout`` is not positive, or if
+                ``retries`` is negative. The message names the offending field.
         """
         if self.method is None:
             raise ValueError("method is required")
@@ -96,9 +103,10 @@ class Request:
     def with_method(self, method: Method) -> Self:
         """Return a copy with ``method`` replaced.
 
-        Switching to a body-less method (``GET`` / ``HEAD``) drops any existing
-        body, because that combination is invalid; every other switch leaves the
-        body untouched. Dropping here keeps fluent chains such as a redirect's
+        Switching to a body-less method (``GET`` / ``HEAD`` / ``TRACE`` /
+        ``CONNECT``) drops any existing body, because that combination is
+        invalid; every other switch leaves the body untouched. Dropping here
+        keeps fluent chains such as a redirect's
         ``with_method(GET).with_body(None)`` valid on the intermediate hop.
         """
         if method in _BODYLESS_METHODS and self.body is not None:

@@ -9,7 +9,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from types import TracebackType
-from typing import TYPE_CHECKING, Final, Self, cast
+from typing import TYPE_CHECKING, Self, cast
 
 from ..common.headers import Headers
 from ..common.http_header_name import HttpHeaderName
@@ -23,52 +23,91 @@ if TYPE_CHECKING:
 
 type _Name = str | HttpHeaderName
 
-#: Sentinel marking the parse latch as not-yet-populated. A unique object so it
-#: can never collide with a legitimately parsed value (including ``None``).
-_UNSET: Final = object()
+
+class _Outcome:
+    """A memoized parse result: either a value or the exception it raised.
+
+    Wrapping both possibilities in one object lets the latch publish the outcome
+    with a single attribute store while still distinguishing "not computed yet"
+    (the cell holds ``None``) from a legitimately parsed ``None`` value (the cell
+    holds an `_Outcome` whose ``_value`` is ``None``).
+    """
+
+    __slots__ = ("_error", "_value")
+
+    def __init__(self, value: object, error: Exception | None) -> None:
+        self._value = value
+        self._error = error
+
+    @classmethod
+    def capture(cls, factory: Callable[[], object]) -> _Outcome:
+        """Run ``factory`` once, capturing its value or the exception it raises."""
+        try:
+            return cls(factory(), None)
+        except Exception as exc:
+            # Any decode/handler failure is stored verbatim and re-raised on
+            # every later access; control-flow exceptions (KeyboardInterrupt,
+            # SystemExit) are not ``Exception`` and propagate uncached.
+            return cls(None, exc)
+
+    def unwrap(self) -> object:
+        """Return the captured value, or re-raise the captured failure."""
+        if self._error is not None:
+            raise self._error
+        return self._value
 
 
 class _ParseLatch:
     """Double-checked memoization cell backing `Response.parse`.
 
-    The decoded value is computed at most once and then served to every later
-    (and concurrent) caller. Correctness does not rest on any atomicity of the
-    fast-path read: a racing reader may observe the cell as empty and fall
-    through to the lock, but only the caller that wins the lock ever runs the
-    factory, and the re-check *inside* the lock closes the window. Publishing
-    the value is a single attribute store, so a fast-path reader observes either
-    the unset sentinel or the fully built value — never a half-initialized one.
-    This holds on free-threaded CPython (PEP 703), where the GIL no longer
-    serializes the check-then-act, exactly as it does under the GIL.
+    The decoded outcome — a value *or* a thrown failure — is computed at most
+    once and then served to every later (and concurrent) caller. Correctness
+    does not rest on any atomicity of the fast-path read: a racing reader may
+    observe the cell as empty and fall through to the lock, but only the caller
+    that wins the lock ever runs the factory, and the re-check *inside* the lock
+    closes the window. Publishing the outcome is a single attribute store, so a
+    fast-path reader observes either ``None`` or the fully built `_Outcome` —
+    never a half-initialized one. This holds on free-threaded CPython (PEP 703),
+    where the GIL no longer serializes the check-then-act, exactly as it does
+    under the GIL.
+
+    Both a successful result (including ``None``) and a thrown failure are
+    memoized: a later `Response.parse` after a decode failure re-raises the same
+    error without re-running the factory or re-reading the single-use body.
     """
 
-    __slots__ = ("_lock", "_value")
+    __slots__ = ("_lock", "_outcome")
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._value: object = _UNSET
+        self._outcome: _Outcome | None = None
 
     def get(self, factory: Callable[[], object]) -> object:
-        """Return the cached value, computing it via ``factory`` exactly once.
+        """Return the memoized value, computing it via ``factory`` exactly once.
 
         Args:
             factory: Zero-arg callable producing the value on first access. It
                 runs at most once, under the lock, even across concurrent first
-                calls; if it raises, nothing is cached and a later call retries.
+                calls; whether it returns or raises, the outcome is cached and
+                every later call replays it (re-raising the same failure).
 
         Returns:
             The memoized value.
+
+        Raises:
+            Exception: The same exception the factory raised on first access,
+                re-raised on every later call.
         """
-        value = self._value
-        if value is not _UNSET:
-            return value
+        outcome = self._outcome
+        if outcome is not None:
+            return outcome.unwrap()
         with self._lock:
-            value = self._value
-            if value is not _UNSET:
-                return value
-            computed = factory()
-            self._value = computed
-            return computed
+            outcome = self._outcome
+            if outcome is not None:
+                return outcome.unwrap()
+            outcome = _Outcome.capture(factory)
+            self._outcome = outcome
+            return outcome.unwrap()
 
 
 @dataclass(frozen=True, slots=True)
