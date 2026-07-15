@@ -203,7 +203,8 @@
             "get_duration": "get_duration(self, name: str, default_seconds: float) -> float",
             "get_int": "get_int(self, name: str, default: int) -> int",
             "get_raw": "get_raw(self, name: str, default: str | None) -> str | None",
-            "with_override": "with_override(self, name: str, value: str) -> Configuration"
+            "with_override": "with_override(self, name: str, value: str) -> Configuration",
+            "without_override": "without_override(self, name: str) -> Configuration"
           }
         },
         "ConfigurationBuilder": {
@@ -1394,12 +1395,14 @@
           "bases": [],
           "methods": {
             "append": "append(self, policy: AsyncPolicy, *, force: bool) -> Self",
+            "append_all": "append_all(self, policies: Iterable[AsyncPolicy], *, force: bool) -> Self",
             "batch": "batch(self) -> Iterator[Self]",
             "build": "build(self) -> AsyncPipeline",
             "from_pipeline": "from_pipeline(cls, pipeline: AsyncPipeline) -> Self",
             "insert_after": "insert_after(self, target: type[AsyncPolicy], new: AsyncPolicy) -> Self",
             "insert_before": "insert_before(self, target: type[AsyncPolicy], new: AsyncPolicy) -> Self",
             "prepend": "prepend(self, policy: AsyncPolicy, *, force: bool) -> Self",
+            "prepend_all": "prepend_all(self, policies: Iterable[AsyncPolicy], *, force: bool) -> Self",
             "remove": "remove(self, target: type[AsyncPolicy]) -> Self",
             "replace": "replace(self, target: type[AsyncPolicy], new: AsyncPolicy) -> Self"
           }
@@ -1660,12 +1663,14 @@
           "bases": [],
           "methods": {
             "append": "append(self, policy: Policy, *, force: bool) -> Self",
+            "append_all": "append_all(self, policies: Iterable[Policy], *, force: bool) -> Self",
             "batch": "batch(self) -> Iterator[Self]",
             "build": "build(self) -> Pipeline",
             "from_pipeline": "from_pipeline(cls, pipeline: Pipeline) -> Self",
             "insert_after": "insert_after(self, target: type[Policy], new: Policy) -> Self",
             "insert_before": "insert_before(self, target: type[Policy], new: Policy) -> Self",
             "prepend": "prepend(self, policy: Policy, *, force: bool) -> Self",
+            "prepend_all": "prepend_all(self, policies: Iterable[Policy], *, force: bool) -> Self",
             "remove": "remove(self, target: type[Policy]) -> Self",
             "replace": "replace(self, target: type[Policy], new: Policy) -> Self"
           }
