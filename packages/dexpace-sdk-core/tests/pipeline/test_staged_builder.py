@@ -96,6 +96,88 @@ class TestAppendPrepend:
         assert b._pillars[Stage.RETRY] is replacement
 
 
+class TestSameInstancePillarIdempotency:
+    """Re-installing the SAME step onto its pillar is an idempotent no-op."""
+
+    @pytest.mark.req("PIPE-6")
+    def test_reappend_same_pillar_instance_is_noop(self, transport: _StubTransport) -> None:
+        b = StagedPipelineBuilder(transport)
+        retry = RetryPolicy()
+        b.append(retry)
+        # Re-appending the *same* object must not raise and must not duplicate.
+        b.append(retry)
+        assert b._pillars[Stage.RETRY] is retry
+        flat = b._flatten()
+        assert sum(1 for p in flat if isinstance(p, RetryPolicy)) == 1
+
+    @pytest.mark.req("PIPE-6")
+    def test_reprepend_same_pillar_instance_is_noop(self, transport: _StubTransport) -> None:
+        b = StagedPipelineBuilder(transport)
+        retry = RetryPolicy()
+        b.append(retry)
+        # The prepend path must be idempotent for the same instance too.
+        b.prepend(retry)
+        assert b._pillars[Stage.RETRY] is retry
+        assert sum(1 for p in b._flatten() if isinstance(p, RetryPolicy)) == 1
+
+    @pytest.mark.req("PIPE-6")
+    def test_distinct_pillar_instance_still_raises(self, transport: _StubTransport) -> None:
+        # Reference identity, not value equality: a *distinct* RetryPolicy
+        # (a different object) still collides with the incumbent.
+        b = StagedPipelineBuilder(transport)
+        b.append(RetryPolicy())
+        with pytest.raises(ValueError, match="Pillar stage RETRY is already filled"):
+            b.append(RetryPolicy())
+
+
+class TestBatchAdd:
+    """append_all preserves batch order; prepend_all reverses it (PIPE-38)."""
+
+    @pytest.mark.req("PIPE-38")
+    def test_append_all_preserves_order(self, transport: _StubTransport) -> None:
+        b = StagedPipelineBuilder(transport)
+        b.append_all([_MarkerPolicy("a"), _MarkerPolicy("b"), _MarkerPolicy("c")])
+        tags = [p.tag for p in b._flatten() if isinstance(p, _MarkerPolicy)]
+        assert tags == ["a", "b", "c"]
+
+    @pytest.mark.req("PIPE-38")
+    def test_prepend_all_reverses_order(self, transport: _StubTransport) -> None:
+        b = StagedPipelineBuilder(transport)
+        b.prepend_all([_MarkerPolicy("a"), _MarkerPolicy("b"), _MarkerPolicy("c")])
+        tags = [p.tag for p in b._flatten() if isinstance(p, _MarkerPolicy)]
+        # Each element prepended individually → reversed batch order.
+        assert tags == ["c", "b", "a"]
+
+    @pytest.mark.req("PIPE-38")
+    def test_append_all_and_prepend_all_are_asymmetric(self, transport: _StubTransport) -> None:
+        batch = ["a", "b", "c"]
+        appended = StagedPipelineBuilder(transport)
+        appended.append_all([_MarkerPolicy(t) for t in batch])
+        prepended = StagedPipelineBuilder(transport)
+        prepended.prepend_all([_MarkerPolicy(t) for t in batch])
+        app_tags = [p.tag for p in appended._flatten() if isinstance(p, _MarkerPolicy)]
+        pre_tags = [p.tag for p in prepended._flatten() if isinstance(p, _MarkerPolicy)]
+        assert app_tags == batch
+        assert pre_tags == list(reversed(batch))
+
+    @pytest.mark.req("PIPE-38")
+    def test_append_all_returns_self_for_chaining(self, transport: _StubTransport) -> None:
+        b = StagedPipelineBuilder(transport)
+        assert b.append_all([_MarkerPolicy("a")]) is b
+        assert b.prepend_all([_MarkerPolicy("z")]) is b
+
+    @pytest.mark.req("PIPE-38")
+    def test_append_all_is_atomic_on_pillar_conflict(self, transport: _StubTransport) -> None:
+        # A rejected element (second distinct pillar) rolls the whole batch back.
+        b = StagedPipelineBuilder(transport)
+        original = RetryPolicy()
+        b.append(original)
+        with pytest.raises(ValueError, match="RETRY"):
+            b.append_all([_MarkerPolicy("m"), RetryPolicy()])
+        assert b._pillars[Stage.RETRY] is original
+        assert not any(isinstance(p, _MarkerPolicy) for p in b._flatten())
+
+
 class TestSurgicalEdits:
     @pytest.mark.req("PIPE-19")
     def test_replace_pillar(self, transport: _StubTransport) -> None:

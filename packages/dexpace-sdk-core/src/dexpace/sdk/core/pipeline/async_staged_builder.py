@@ -3,10 +3,13 @@
 
 """Async twin of `StagedPipelineBuilder`.
 
-Behaviour mirrors the sync builder exactly: pillar enforcement, surgical
-edits, ``from_pipeline`` round-trip. The only differences are the policy
-types (``AsyncPolicy`` instead of ``Policy``) and the produced pipeline
-(``AsyncPipeline`` instead of ``Pipeline``).
+Behaviour mirrors the sync builder exactly: pillar enforcement (including
+same-instance idempotency), surgical edits, batch adds, and the
+``from_pipeline`` round-trip. The only differences are the policy types
+(``AsyncPolicy`` instead of ``Policy``) and the produced pipeline
+(``AsyncPipeline`` instead of ``Pipeline``). See `StagedPipelineBuilder` for
+the full contract, including the ``append_all`` / ``prepend_all`` ordering
+asymmetry.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ from .async_policy import AsyncPolicy
 from .stage import Stage
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterable, Iterator
 
     from ..client.async_http_client import AsyncHttpClient
 
@@ -58,6 +61,54 @@ class AsyncStagedPipelineBuilder:
             self._install_pillar(policy, stage, force=force)
         else:
             self._buckets.setdefault(stage, []).insert(0, policy)
+        return self
+
+    def append_all(self, policies: Iterable[AsyncPolicy], *, force: bool = False) -> Self:
+        """Append every policy, preserving iteration order.
+
+        Appending ``[a, b, c]`` yields ``[a, b, c]`` within each stage — the
+        mirror image of `prepend_all`, which reverses the batch. The batch is
+        all-or-nothing: if any element is rejected, the builder rolls back to
+        its pre-call state. See `StagedPipelineBuilder.append_all`.
+
+        Args:
+            policies: Policies to append, consumed in iteration order.
+            force: Forwarded to `append` for pillar overwrites.
+
+        Returns:
+            ``self`` for chaining.
+
+        Raises:
+            ValueError: If any element cannot be added; the builder is left
+                unchanged.
+        """
+        with self.batch() as staged:
+            for policy in policies:
+                staged.append(policy, force=force)
+        return self
+
+    def prepend_all(self, policies: Iterable[AsyncPolicy], *, force: bool = False) -> Self:
+        """Prepend every policy one at a time, reversing order.
+
+        Prepending ``[a, b, c]`` yields ``[c, b, a]`` within each stage,
+        because each element is prepended to the head in turn. This asymmetry
+        with `append_all` (which preserves order) is intentional. The batch is
+        all-or-nothing. See `StagedPipelineBuilder.prepend_all`.
+
+        Args:
+            policies: Policies to prepend, consumed in iteration order.
+            force: Forwarded to `prepend` for pillar overwrites.
+
+        Returns:
+            ``self`` for chaining.
+
+        Raises:
+            ValueError: If any element cannot be added; the builder is left
+                unchanged.
+        """
+        with self.batch() as staged:
+            for policy in policies:
+                staged.prepend(policy, force=force)
         return self
 
     def replace(self, target: type[AsyncPolicy], new: AsyncPolicy) -> Self:
@@ -185,8 +236,13 @@ class AsyncStagedPipelineBuilder:
         return builder
 
     def _install_pillar(self, policy: AsyncPolicy, stage: Stage, *, force: bool) -> None:
-        if stage in self._pillars and not force:
-            existing = type(self._pillars[stage]).__name__
+        incumbent = self._pillars.get(stage)
+        if incumbent is policy:
+            # Re-installing the SAME instance is an idempotent no-op: reference
+            # identity, not value equality, tells 'same' from 'distinct'.
+            return
+        if incumbent is not None and not force:
+            existing = type(incumbent).__name__
             raise ValueError(
                 f"Pillar stage {stage.name} is already filled by {existing}. "
                 f"Use replace({type(policy).__name__}, new) to swap, or "

@@ -16,6 +16,18 @@ the incumbent policy type; use ``replace(target, new)`` for explicit swaps or
 runtime composition). Shipped singletons own their stage and cannot be
 relocated to a different one. Group several edits with ``batch()`` for
 all-or-nothing application.
+
+Re-installing the *same* policy instance onto its already-occupied pillar is
+an idempotent no-op: reference identity, not value equality, distinguishes
+"same" from "distinct". A second *distinct* occupant still raises, but
+re-adding the incumbent object simply returns without error or duplication.
+
+Batch adds come in two flavours with a deliberate ordering asymmetry.
+``append_all(policies)`` preserves the batch's iteration order within each
+stage (``[a, b, c]`` stays ``[a, b, c]``); ``prepend_all(policies)`` prepends
+each element individually and therefore REVERSES it (``[a, b, c]`` becomes
+``[c, b, a]``, because ``c`` is prepended last and so ends up first). Both are
+all-or-nothing.
 """
 
 from __future__ import annotations
@@ -28,7 +40,7 @@ from .policy import Policy
 from .stage import Stage
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterable, Iterator
 
     from ..client.http_client import HttpClient
 
@@ -86,6 +98,62 @@ class StagedPipelineBuilder:
             self._install_pillar(policy, stage, force=force)
         else:
             self._buckets.setdefault(stage, []).insert(0, policy)
+        return self
+
+    def append_all(self, policies: Iterable[Policy], *, force: bool = False) -> Self:
+        """Append every policy in ``policies``, preserving iteration order.
+
+        Each element is appended in turn, so the batch keeps its order within
+        its stage: appending ``[a, b, c]`` yields ``[a, b, c]``. This is the
+        deliberate mirror image of `prepend_all`, which reverses the batch —
+        see that method for the rationale behind the asymmetry.
+
+        The batch is all-or-nothing: if any element is rejected (for example a
+        second distinct occupant for a filled pillar) the builder rolls back to
+        its pre-call state and no element is left applied.
+
+        Args:
+            policies: Policies to append, consumed in iteration order.
+            force: Forwarded to `append` for pillar overwrites.
+
+        Returns:
+            ``self`` for chaining.
+
+        Raises:
+            ValueError: If any element cannot be added (e.g. it double-fills a
+                pillar); the builder is left unchanged.
+        """
+        with self.batch() as staged:
+            for policy in policies:
+                staged.append(policy, force=force)
+        return self
+
+    def prepend_all(self, policies: Iterable[Policy], *, force: bool = False) -> Self:
+        """Prepend every policy in ``policies`` one at a time, reversing order.
+
+        Because each element is prepended to the head in turn, the batch's
+        order is REVERSED within its stage: prepending ``[a, b, c]`` yields
+        ``[c, b, a]`` — ``c`` is prepended last, so it ends up first. This
+        asymmetry with `append_all` (which preserves order) is intentional and
+        matches prepending elements individually; callers who want the batch to
+        keep its order should reverse the input or use `append_all`.
+
+        The batch is all-or-nothing, exactly like `append_all`.
+
+        Args:
+            policies: Policies to prepend, consumed in iteration order.
+            force: Forwarded to `prepend` for pillar overwrites.
+
+        Returns:
+            ``self`` for chaining.
+
+        Raises:
+            ValueError: If any element cannot be added (e.g. it double-fills a
+                pillar); the builder is left unchanged.
+        """
+        with self.batch() as staged:
+            for policy in policies:
+                staged.prepend(policy, force=force)
         return self
 
     def replace(self, target: type[Policy], new: Policy) -> Self:
@@ -233,8 +301,13 @@ class StagedPipelineBuilder:
         return builder
 
     def _install_pillar(self, policy: Policy, stage: Stage, *, force: bool) -> None:
-        if stage in self._pillars and not force:
-            existing = type(self._pillars[stage]).__name__
+        incumbent = self._pillars.get(stage)
+        if incumbent is policy:
+            # Re-installing the SAME instance is an idempotent no-op: reference
+            # identity, not value equality, tells 'same' from 'distinct'.
+            return
+        if incumbent is not None and not force:
+            existing = type(incumbent).__name__
             raise ValueError(
                 f"Pillar stage {stage.name} is already filled by {existing}. "
                 f"Use replace({type(policy).__name__}, new) to swap, or "

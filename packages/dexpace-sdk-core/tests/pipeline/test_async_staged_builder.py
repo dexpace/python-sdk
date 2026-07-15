@@ -93,6 +93,36 @@ def test_pillar_force_overwrites(async_transport: _AsyncStubTransport) -> None:
     assert b._pillars[Stage.RETRY] is second
 
 
+@pytest.mark.req("PIPE-6")
+def test_reinstall_same_pillar_instance_is_idempotent(
+    async_transport: _AsyncStubTransport,
+) -> None:
+    b = AsyncStagedPipelineBuilder(async_transport)
+    retry = AsyncRetryPolicy()
+    b.append(retry)
+    # Re-adding the same instance is a no-op; a distinct one still raises.
+    b.append(retry)
+    b.prepend(retry)
+    assert b._pillars[Stage.RETRY] is retry
+    assert sum(1 for p in b._flatten() if isinstance(p, AsyncRetryPolicy)) == 1
+    with pytest.raises(ValueError, match="already filled"):
+        b.append(AsyncRetryPolicy())
+
+
+@pytest.mark.req("PIPE-38")
+def test_append_all_preserves_prepend_all_reverses(
+    async_transport: _AsyncStubTransport,
+) -> None:
+    appended = AsyncStagedPipelineBuilder(async_transport)
+    appended.append_all([_AsyncMarkerPolicy(t) for t in ("a", "b", "c")])
+    prepended = AsyncStagedPipelineBuilder(async_transport)
+    prepended.prepend_all([_AsyncMarkerPolicy(t) for t in ("a", "b", "c")])
+    app = [p.tag for p in appended._flatten() if isinstance(p, _AsyncMarkerPolicy)]
+    pre = [p.tag for p in prepended._flatten() if isinstance(p, _AsyncMarkerPolicy)]
+    assert app == ["a", "b", "c"]
+    assert pre == ["c", "b", "a"]
+
+
 def test_replace_pillar(async_transport: _AsyncStubTransport) -> None:
     b = AsyncStagedPipelineBuilder(async_transport)
     first = AsyncRetryPolicy()
