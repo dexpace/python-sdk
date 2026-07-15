@@ -58,10 +58,11 @@ class HttpResponseError(SdkError, Generic[ModelT]):  # noqa: UP046
             libraries when they parse the error body). Typed as
             ``ModelT | None``.
         retryable: Whether retrying the request might succeed. Derived from
-            the response status by default (request timeout, rate limiting,
-            and transient 5xx are retryable) so the retry policy can read the
-            flag directly instead of re-deriving it; callers may override it
-            explicitly via the ``retryable`` constructor keyword.
+            the response status by default via the single shared classifier
+            (408, 429, and every 5xx EXCEPT 501 and 505 are retryable) so the
+            baked flag is computed once at construction and always agrees with
+            that classifier; callers may override it explicitly via the
+            ``retryable`` constructor keyword.
     """
 
     status: Status | None
@@ -106,21 +107,22 @@ class HttpResponseError(SdkError, Generic[ModelT]):  # noqa: UP046
     def _status_is_retryable(self) -> bool:
         """Return whether this error's status is retryable by default.
 
-        Consults the shared pure classifier against its default retryable
-        status set, so ``retryable`` and the retry policy agree out of the box
-        from one definition instead of a hand-mirrored literal. The classifier
-        is imported lazily inside the method because it lives under
+        Consults the single shared canonical classifier
+        (``default_status_is_retryable``: 408, 429, and every 5xx except 501
+        and 505), so the flag is baked once from one definition instead of a
+        hand-mirrored literal and always agrees with that classifier. The
+        classifier is imported lazily inside the method because it lives under
         ``pipeline`` (whose package import pulls in policies that import this
         error module) — a module-level import would form an errors -> pipeline
         -> errors cycle.
 
         Returns:
-            ``True`` when the captured status is one of the default
-            retryable codes, ``False`` when no status was captured.
+            ``True`` when the captured status is 408, 429, or a 5xx other than
+            501 / 505; ``False`` when no status was captured.
         """
-        from ..pipeline._pure.classifier import DEFAULT_RETRYABLE_STATUS, status_is_retryable
+        from ..pipeline._pure.classifier import default_status_is_retryable
 
-        return status_is_retryable(self.status, DEFAULT_RETRYABLE_STATUS)
+        return default_status_is_retryable(self.status)
 
     def body_snapshot(self, max_bytes: int | None = None) -> bytes:
         """Preview the error response body without consuming it.

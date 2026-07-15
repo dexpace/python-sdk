@@ -14,6 +14,9 @@ be caught here — mirroring ``test_retry.TestCustomRetryStatusSet`` for sync.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
+
+import pytest
 
 from dexpace.sdk.core.client.async_http_client import AsyncHttpClient
 from dexpace.sdk.core.http.common import Protocol, Url
@@ -110,3 +113,28 @@ class TestAsyncCustomRetryStatusSet:
             response = await p.run(_get(), DispatchContext(_instr("0" * 15 + "61")))
         assert client.attempts == 1
         assert response.status is Status.SERVICE_UNAVAILABLE
+
+
+class TestAsyncRetryConfigValidation:
+    """Scalar configuration is validated at construction on the async twin too.
+
+    ``AsyncRetryPolicy`` delegates configuration to the inner ``RetryPolicy``,
+    so the same construction-time rejection of invalid scalars applies (RECOV-34).
+    """
+
+    @pytest.mark.req("RECOV-34")
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"total_retries": -1}, "total_retries"),
+            ({"connect_retries": -1}, "connect_retries"),
+            ({"backoff_factor": -0.1}, "backoff_factor"),
+            ({"timeout": -1.0}, "timeout"),
+            ({"backoff_max": float("inf")}, "backoff_max"),
+            ({"jitter": 1.5}, "jitter"),
+            ({"jitter": -0.1}, "jitter"),
+        ],
+    )
+    def test_rejects_invalid_scalar(self, kwargs: dict[str, Any], match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            AsyncRetryPolicy(**kwargs)

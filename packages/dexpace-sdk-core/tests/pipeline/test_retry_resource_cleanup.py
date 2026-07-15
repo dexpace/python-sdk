@@ -24,6 +24,7 @@ import pytest
 from dexpace.sdk.core.client.async_http_client import AsyncHttpClient
 from dexpace.sdk.core.client.http_client import HttpClient
 from dexpace.sdk.core.errors import (
+    SdkError,
     ServiceRequestError,
     ServiceResponseError,
     ServiceResponseTimeoutError,
@@ -378,11 +379,13 @@ class TestAsyncBodyBufferingHonorsPerCallTotal:
 
 
 class TestAsyncReadPhaseMethodGating:
-    """Async twin of the read-phase idempotency gating.
+    """Async twin of the uniform retry-safety gate.
 
-    A read-phase ``ServiceResponseError`` is not retried for POST (the write
-    may already have landed), but a connect-phase ``ServiceRequestError`` is
-    — the request never left the client.
+    Retry-safety is decided uniformly on the async path too (the async loop
+    reuses the sync ``_decrement_for_error``): a bare POST is not retried on a
+    read-phase ``ServiceResponseError`` nor on a connect-phase
+    ``ServiceRequestError`` — the method is non-idempotent regardless of which
+    transport phase failed (XCUT-10). An idempotent GET stays retryable.
     """
 
     async def test_post_not_retried_on_read_phase_error(self) -> None:
@@ -393,10 +396,69 @@ class TestAsyncReadPhaseMethodGating:
                 await p.run(_post(), DispatchContext(_instr("0" * 16 + "b")))
         assert client.attempts == 1
 
-    async def test_post_still_retried_on_connect_phase_error(self) -> None:
+    @pytest.mark.req("XCUT-10")
+    async def test_post_not_retried_on_connect_phase_error(self) -> None:
+        # XCUT-10 on the async path: a bare POST is body-less and non-idempotent,
+        # so a connect-phase error that never reached the server is still NOT
+        # retried — the safety gate does not special-case transport errors.
+        client = _AsyncErrorClient([ServiceRequestError("dns fail"), Status.OK])
+        retry = AsyncRetryPolicy(clock=_AsyncFakeClock())
+        with pytest.raises(ServiceRequestError):
+            async with AsyncPipeline(client, policies=[retry]) as p:
+                await p.run(_post(), DispatchContext(_instr("0" * 16 + "c")))
+        assert client.attempts == 1
+
+    @pytest.mark.req("XCUT-10")
+    async def test_get_still_retried_on_connect_phase_error(self) -> None:
+        # The uniform gate leaves idempotent methods retryable on both phases.
         client = _AsyncErrorClient([ServiceRequestError("dns fail"), Status.OK])
         retry = AsyncRetryPolicy(clock=_AsyncFakeClock())
         async with AsyncPipeline(client, policies=[retry]) as p:
-            response = await p.run(_post(), DispatchContext(_instr("0" * 16 + "c")))
+            response = await p.run(_get(), DispatchContext(_instr("0" * 16 + "d")))
         assert response.status is Status.OK
         assert client.attempts == 2
+
+
+class _AsyncCustomRetryableError(SdkError):
+    """Custom non-protocol async error advertising retryability via capability."""
+
+    retryable = True
+
+
+class TestAsyncOpenCapabilityRetry:
+    """The async loop honours the open retryability capability too (XCUT-6).
+
+    ``AsyncRetryPolicy`` delegates the error classification to the sync
+    ``_decrement_for_error``, so a custom transport/error type advertising
+    ``retryable`` participates in retries on the async path without a
+    concrete-type match.
+    """
+
+    @pytest.mark.req("XCUT-6")
+    async def test_custom_error_advertising_retryable_is_retried(self) -> None:
+        client = _AsyncErrorClient([_AsyncCustomRetryableError("boom"), Status.OK])
+        retry = AsyncRetryPolicy(clock=_AsyncFakeClock())
+        async with AsyncPipeline(client, policies=[retry]) as p:
+            response = await p.run(_get(), DispatchContext(_instr("0" * 16 + "e")))
+        assert response.status is Status.OK
+        assert client.attempts == 2
+
+
+class TestAsyncFatalErrorPropagation:
+    """Non-SDK fatal errors surface unchanged and unretried on the async path (RETRY-25)."""
+
+    @pytest.mark.req("RETRY-25")
+    async def test_non_sdk_fatal_propagates_unretried_untrailed(self) -> None:
+        # A MemoryError (CPython's OOM analog) is a BaseException that is not an
+        # SdkError, so the ``except SdkError`` clause never catches it: it
+        # propagates at the throw site, unretried, with no suppressed trail.
+        fatal = MemoryError("out of memory")
+        client = _AsyncErrorClient([fatal, Status.OK])
+        retry = AsyncRetryPolicy(clock=_AsyncFakeClock())
+        with pytest.raises(MemoryError) as excinfo:
+            async with AsyncPipeline(client, policies=[retry]) as p:
+                await p.run(_get(), DispatchContext(_instr("0" * 16 + "f")))
+        assert excinfo.value is fatal
+        assert client.attempts == 1
+        assert not hasattr(fatal, "attempts")
+        assert getattr(fatal, "__notes__", []) == []

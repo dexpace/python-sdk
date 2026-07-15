@@ -89,26 +89,61 @@ def test_retryable_inherited_by_subclasses() -> None:
     assert err.retryable is False
 
 
-@pytest.mark.req("RETRY-3")
+@pytest.mark.req("RETRY-3", "XCUT-5")
 def test_retryable_is_baked_once_and_stable_against_classifier_change(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The flag is derived from the shared classifier at construction time and
-    # then baked as a plain attribute, so mutating the classifier's configured
-    # set afterwards must not retroactively change an already-built error.
+    # The flag is derived from the single shared classifier at construction
+    # time and then baked as a plain attribute, so repointing the classifier
+    # afterwards must not retroactively change an already-built error.
     err = HttpResponseError(response=_response(Status.SERVICE_UNAVAILABLE))
     assert err.retryable is True
     baked = err.retryable
 
-    # Repoint the classifier's default set at an empty set *after* construction.
-    monkeypatch.setattr(classifier, "DEFAULT_RETRYABLE_STATUS", frozenset())
+    # Repoint the canonical classifier to never-retryable *after* construction.
+    monkeypatch.setattr(classifier, "default_status_is_retryable", lambda status: False)
 
     # The already-constructed error keeps its baked value (no recompute).
     assert err.retryable is baked is True
-    # Proof the patch is live: a freshly built error now reflects the empty set,
-    # confirming the first error's flag was frozen at its own construction.
+    # Proof the patch is live: a freshly built error now reflects the repointed
+    # classifier, confirming the first error's flag was frozen at its own
+    # construction from the same single source.
     fresh = HttpResponseError(response=_response(Status.SERVICE_UNAVAILABLE))
     assert fresh.retryable is False
+
+
+@pytest.mark.req("XCUT-5")
+@pytest.mark.parametrize(
+    "status",
+    [
+        Status.VARIANT_ALSO_NEGOTIATES,
+        Status.INSUFFICIENT_STORAGE,
+        Status.LOOP_DETECTED,
+        Status.NOT_EXTENDED,
+        Status.NETWORK_AUTHENTICATION_REQUIRED,
+    ],
+    ids=["506", "507", "508", "510", "511"],
+)
+def test_exotic_5xx_bakes_retryable_true(status: Status) -> None:
+    # XCUT-5: the baked flag treats ALL 5xx as retryable except 501 and 505 —
+    # not just the curated {500,502,503,504}. The exotic 5xx codes therefore
+    # bake ``retryable=True`` even though they are absent from the retry
+    # policy's narrower default eligibility set.
+    err = HttpResponseError(response=_response(status))
+    assert err.retryable is True
+
+
+@pytest.mark.req("XCUT-5")
+@pytest.mark.parametrize(
+    "status",
+    [Status.NOT_IMPLEMENTED, Status.HTTP_VERSION_NOT_SUPPORTED],
+    ids=["501", "505"],
+)
+def test_permanent_5xx_bakes_retryable_false(status: Status) -> None:
+    # The only two 5xx codes the canonical classifier excludes: retrying a
+    # 501/505 can never change the outcome, so the baked flag is False.
+    err = HttpResponseError(response=_response(status))
+    assert err.retryable is False
 
 
 def test_retry_policy_custom_set_does_not_rewrite_baked_error_flag() -> None:

@@ -133,14 +133,14 @@ class TestRateLimitResetParsing:
 
 
 class TestRateLimitResetHonored:
-    @pytest.mark.req("RECOV-25")
+    @pytest.mark.req("RECOV-25", "RETRY-15")
     def test_never_wakes_before_reset(self) -> None:
         clock = FakeClock(start=1_000.0)
         client = _ScriptedClient(
             [Status.TOO_MANY_REQUESTS, Status.OK],
             headers={"X-RateLimit-Reset": "1040"},
         )
-        # Bottom of the upward jitter band [1.0, 1.1] -> exactly the reset wait.
+        # Bottom of the upward jitter band [1.0, 1.2] -> exactly the reset wait.
         retry = RetryPolicy(clock=clock, rand=_FixedRandom(0.0))
         with Pipeline(client, policies=[retry]) as p:
             response = p.run(_get(), DispatchContext(_instr("0" * 16 + "1")))
@@ -148,18 +148,18 @@ class TestRateLimitResetHonored:
         # 40s until reset, jitter * 1.0 -> waits to the reset instant, never before.
         assert clock.monotonic() == pytest.approx(1_040.0)
 
-    @pytest.mark.req("RECOV-25")
+    @pytest.mark.req("RECOV-25", "RETRY-15")
     def test_reset_jitter_only_lengthens_the_wait(self) -> None:
         clock = FakeClock(start=1_000.0)
         client = _ScriptedClient(
             [Status.TOO_MANY_REQUESTS, Status.OK],
             headers={"X-RateLimit-Reset": "1040"},
         )
-        # Top of the band [1.0, 1.1] -> 40s * 1.1 = 44s, i.e. slightly past reset.
+        # Top of the band [1.0, 1.2] -> 40s * 1.2 = 48s, i.e. slightly past reset.
         retry = RetryPolicy(clock=clock, rand=_FixedRandom(1.0))
         with Pipeline(client, policies=[retry]) as p:
             p.run(_get(), DispatchContext(_instr("0" * 16 + "1")))
-        assert clock.monotonic() == pytest.approx(1_044.0)
+        assert clock.monotonic() == pytest.approx(1_048.0)
 
     @pytest.mark.req("RECOV-22", "RETRY-21")
     def test_retry_after_takes_precedence_over_reset(self) -> None:
@@ -172,6 +172,86 @@ class TestRateLimitResetHonored:
         with Pipeline(client, policies=[retry]) as p:
             p.run(_get(), DispatchContext(_instr("0" * 16 + "2")))
         assert clock.monotonic() == pytest.approx(1_005.0)
+
+
+# ----- millisecond-delta headers (retry-after-ms / x-ms-retry-after-ms) ----
+
+
+class TestRetryAfterMsHeaders:
+    """The two millisecond-delta pacing headers drive the sleep, in precedence.
+
+    The policy composes the pacing parsers in the fixed order Retry-After,
+    retry-after-ms, x-ms-retry-after-ms, X-RateLimit-Reset (RETRY-15 /
+    RECOV-24). These drive the real retry loop, not just the pure parsers.
+    """
+
+    @pytest.mark.req("RETRY-15", "RECOV-24")
+    def test_retry_after_ms_drives_the_sleep(self) -> None:
+        clock = FakeClock()
+        client = _ScriptedClient(
+            [Status.SERVICE_UNAVAILABLE, Status.OK],
+            headers={"retry-after-ms": "1500"},
+        )
+        retry = RetryPolicy(clock=clock)
+        with Pipeline(client, policies=[retry]) as p:
+            p.run(_get(), DispatchContext(_instr("0" * 15 + "a0")))
+        assert clock.monotonic() == pytest.approx(1.5)  # 1500 ms
+
+    @pytest.mark.req("RETRY-15", "RECOV-24")
+    def test_x_ms_retry_after_ms_drives_the_sleep(self) -> None:
+        clock = FakeClock()
+        client = _ScriptedClient(
+            [Status.SERVICE_UNAVAILABLE, Status.OK],
+            headers={"x-ms-retry-after-ms": "3000"},
+        )
+        retry = RetryPolicy(clock=clock)
+        with Pipeline(client, policies=[retry]) as p:
+            p.run(_get(), DispatchContext(_instr("0" * 15 + "a1")))
+        assert clock.monotonic() == pytest.approx(3.0)  # 3000 ms
+
+    @pytest.mark.req("RECOV-24")
+    def test_retry_after_seconds_beats_the_ms_variants(self) -> None:
+        clock = FakeClock()
+        client = _ScriptedClient(
+            [Status.SERVICE_UNAVAILABLE, Status.OK],
+            headers={
+                "Retry-After": "5",
+                "retry-after-ms": "1000",
+                "x-ms-retry-after-ms": "2000",
+            },
+        )
+        retry = RetryPolicy(clock=clock)
+        with Pipeline(client, policies=[retry]) as p:
+            p.run(_get(), DispatchContext(_instr("0" * 15 + "a2")))
+        assert clock.monotonic() == pytest.approx(5.0)
+
+    @pytest.mark.req("RECOV-24")
+    def test_retry_after_ms_beats_x_ms_and_reset(self) -> None:
+        clock = FakeClock(start=1_000.0)
+        client = _ScriptedClient(
+            [Status.TOO_MANY_REQUESTS, Status.OK],
+            headers={
+                "retry-after-ms": "1000",
+                "x-ms-retry-after-ms": "2000",
+                "X-RateLimit-Reset": "9999999",
+            },
+        )
+        retry = RetryPolicy(clock=clock)
+        with Pipeline(client, policies=[retry]) as p:
+            p.run(_get(), DispatchContext(_instr("0" * 15 + "a3")))
+        assert clock.monotonic() == pytest.approx(1_001.0)  # 1000 ms wins
+
+    @pytest.mark.req("RECOV-24")
+    def test_x_ms_retry_after_ms_beats_reset(self) -> None:
+        clock = FakeClock(start=1_000.0)
+        client = _ScriptedClient(
+            [Status.TOO_MANY_REQUESTS, Status.OK],
+            headers={"x-ms-retry-after-ms": "2000", "X-RateLimit-Reset": "9999999"},
+        )
+        retry = RetryPolicy(clock=clock)
+        with Pipeline(client, policies=[retry]) as p:
+            p.run(_get(), DispatchContext(_instr("0" * 15 + "a4")))
+        assert clock.monotonic() == pytest.approx(1_002.0)  # 2000 ms wins over reset
 
 
 # ----- full jitter --------------------------------------------------------

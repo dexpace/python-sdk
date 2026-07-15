@@ -1347,12 +1347,14 @@
           ],
           "methods": {}
         },
+        "default_status_is_retryable": "default_status_is_retryable(status: int | None) -> bool",
         "is_retryable": "is_retryable(error: BaseException) -> bool",
         "status_is_retryable": "status_is_retryable(status: int | None, retryable_statuses: Collection[int]) -> bool"
       },
       "dexpace.sdk.core.pipeline._pure.pacing": {
         "parse_rate_limit_reset": "parse_rate_limit_reset(value: str | None, now: float, *, max_delay: float) -> float | None",
-        "parse_retry_after": "parse_retry_after(value: str | None, now: float, *, max_delay: float) -> float | None"
+        "parse_retry_after": "parse_retry_after(value: str | None, now: float, *, max_delay: float) -> float | None",
+        "parse_retry_after_ms": "parse_retry_after_ms(value: str | None, *, max_delay: float) -> float | None"
       },
       "dexpace.sdk.core.pipeline._recovery": {
         "from_status": "from_status(response: Response, *, error_map: Mapping[int, type[HttpResponseError]] | None, max_body_bytes: int) -> Outcome[Response]",

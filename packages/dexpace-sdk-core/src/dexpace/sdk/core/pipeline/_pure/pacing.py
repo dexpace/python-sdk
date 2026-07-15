@@ -3,11 +3,18 @@
 
 """Pure parser for server-supplied retry-pacing headers.
 
-The single, shared home of the ``Retry-After`` and ``X-RateLimit-Reset``
-parsing the sync and async retry policies both consume. The module is
-stdlib-only apart from the shared RFC 1123 date helper in ``util.http_date`` and
-carries no pipeline, transport, or error dependencies, so it can sit below the
-pipeline runners in the import-linter layering.
+The single, shared home of the ``Retry-After``, ``retry-after-ms`` /
+``x-ms-retry-after-ms``, and ``X-RateLimit-Reset`` parsing the sync and async
+retry policies both consume. The module is stdlib-only apart from the shared
+RFC 1123 date helper in ``util.http_date`` and carries no pipeline, transport,
+or error dependencies, so it can sit below the pipeline runners in the
+import-linter layering.
+
+The policy composes these parsers in a fixed precedence (first usable wins):
+``Retry-After`` delta-seconds, then ``Retry-After`` as an HTTP-date, then the
+``retry-after-ms`` millisecond-delta, then the Microsoft/Azure
+``x-ms-retry-after-ms`` millisecond-delta, then ``X-RateLimit-Reset`` as an
+absolute Unix-epoch-seconds instant.
 
 Two properties are load-bearing:
 
@@ -40,6 +47,7 @@ __all__ = [
     "MAX_RETRY_AFTER_SECONDS",
     "parse_rate_limit_reset",
     "parse_retry_after",
+    "parse_retry_after_ms",
 ]
 
 #: Sanity ceiling, in seconds, on a resolved pacing delay (365 days). A hint
@@ -52,6 +60,13 @@ MAX_RETRY_AFTER_SECONDS: Final = 365.0 * 24 * 60 * 60
 #: tabs. Anchored with ``\A`` / ``\Z`` (not ``$``) so a trailing newline cannot
 #: sneak past, and ``[0-9]`` (not ``\d``) so Unicode digits are rejected.
 _DECIMAL_TOKEN: Final = re.compile(r"\A[ \t]*[0-9]+(?:\.[0-9]+)?[ \t]*\Z")
+
+#: Strict integer-milliseconds grammar for the ``retry-after-ms`` /
+#: ``x-ms-retry-after-ms`` headers: one run of ASCII digits (no fractional
+#: part — these headers carry whole milliseconds), optionally wrapped in ASCII
+#: spaces or tabs. Anchored and ASCII-only for the same reasons as
+#: ``_DECIMAL_TOKEN``.
+_INTEGER_TOKEN: Final = re.compile(r"\A[ \t]*[0-9]+[ \t]*\Z")
 
 
 def _screen_decimal(value: str) -> float | None:
@@ -128,6 +143,39 @@ def parse_retry_after(
     if delay is None:
         return None
     return min(delay, max_delay)
+
+
+def parse_retry_after_ms(
+    value: str | None,
+    *,
+    max_delay: float = MAX_RETRY_AFTER_SECONDS,
+) -> float | None:
+    """Parse a millisecond-delta pacing header into a delay in seconds.
+
+    Serves both the ``retry-after-ms`` and the Microsoft/Azure
+    ``x-ms-retry-after-ms`` headers, which carry a whole-millisecond delay.
+    The value is screened by a strict integer grammar before any ``float()``
+    parse — only bare ASCII digits (optionally wrapped in ASCII spaces or
+    tabs) survive — so ``float()``-permissive forms (``nan``, ``inf``, ``+5``,
+    ``1_000``, ``1e3``, hex floats, a fractional ``1.5``) all yield ``None``
+    and fall through to the next pacing signal instead of being mis-parsed.
+    The resolved delay is clamped to ``max_delay``.
+
+    Args:
+        value: Raw header value (whole milliseconds). ``None``, empty, or a
+            non-integer token yields ``None``.
+        max_delay: Ceiling on the resolved delay in seconds. Defaults to the
+            365-day sanity clamp; pass ``math.inf`` to disable clamping.
+
+    Returns:
+        Seconds to wait (``0 <= result <= max_delay``), or ``None`` when the
+        header is missing or not a bare integer of milliseconds. Never raises.
+    """
+    if value is None or not value.strip():
+        return None
+    if not _INTEGER_TOKEN.match(value):
+        return None
+    return min(float(value) / 1000.0, max_delay)
 
 
 def parse_rate_limit_reset(

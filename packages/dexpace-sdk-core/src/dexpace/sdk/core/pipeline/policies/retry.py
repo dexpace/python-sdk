@@ -37,6 +37,7 @@ over a retrying instance skips the buffering and pays no memory cost.
 from __future__ import annotations
 
 import logging
+import math
 import random
 from collections.abc import Iterable, Sequence
 from enum import StrEnum
@@ -44,6 +45,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from ...errors import (
     ClientAuthenticationError,
+    HttpResponseError,
     RequestCancelledError,
     SdkError,
     ServiceRequestError,
@@ -52,8 +54,8 @@ from ...errors import (
 )
 from ...util.clock import SYSTEM_CLOCK, CancellationToken, Clock
 from .._pure.backoff import apply_jitter, compute_backoff
-from .._pure.classifier import DEFAULT_RETRYABLE_STATUS, status_is_retryable
-from .._pure.pacing import parse_rate_limit_reset, parse_retry_after
+from .._pure.classifier import DEFAULT_RETRYABLE_STATUS, is_retryable, status_is_retryable
+from .._pure.pacing import parse_rate_limit_reset, parse_retry_after, parse_retry_after_ms
 from ..policy import Policy
 from ..stage import Stage
 from ._history import RequestHistory
@@ -75,11 +77,18 @@ _DEFAULT_RETRY_AFTER_MAX: Final[float] = 3600.0
 #: GitHub, Stripe, Slack, and others alongside (or instead of) ``Retry-After``.
 _RATE_LIMIT_RESET_HEADER: Final[str] = "X-RateLimit-Reset"
 
+#: Header carrying a whole-millisecond retry delay. The vendor-neutral spelling.
+_RETRY_AFTER_MS_HEADER: Final[str] = "retry-after-ms"
+
+#: The Microsoft/Azure spelling of the whole-millisecond retry delay header.
+_MS_RETRY_AFTER_MS_HEADER: Final[str] = "x-ms-retry-after-ms"
+
 #: Upward jitter fraction applied to an ``X-RateLimit-Reset`` wait. The delay is
-#: multiplied by a random sample in ``[1.0, 1.0 + this]`` so a client never wakes
-#: before the window resets, while a fleet that observed the same reset instant
-#: spreads its retries instead of firing in lockstep.
-_RATE_LIMIT_RESET_JITTER: Final[float] = 0.1
+#: multiplied by a random sample in ``[1.0, 1.0 + this]`` — i.e. ``[100%, 120%]``
+#: — so a client never wakes before the window resets, while a fleet that
+#: observed the same reset instant spreads its retries instead of firing in
+#: lockstep.
+_RATE_LIMIT_RESET_JITTER: Final[float] = 0.2
 
 
 @runtime_checkable
@@ -227,6 +236,26 @@ class RetryPolicy(Policy):
         self._jitter = jitter
         self._clock = clock
         self._rand = rand if rand is not None else random.Random()
+        self._validate()
+
+    def _validate(self) -> None:
+        """Reject invalid scalar configuration at construction time.
+
+        Retry counts must be non-negative integers (``0`` disables that axis),
+        every duration must be finite and non-negative, and the symmetric
+        jitter fraction must lie in ``[0.0, 1.0]``. Collection-valued settings
+        are already defensively copied into ``frozenset`` above, so a later
+        caller mutation of the source cannot alter behaviour.
+
+        Raises:
+            ValueError: When any scalar knob is out of range.
+        """
+        for name in ("total_retries", "connect_retries", "read_retries", "status_retries"):
+            _require_non_negative_int(name, getattr(self, name))
+        for name in ("backoff_factor", "backoff_max", "timeout", "retry_after_max"):
+            _require_non_negative_duration(name, getattr(self, name))
+        if not 0.0 <= self._jitter <= 1.0:
+            raise ValueError(f"jitter must lie in [0.0, 1.0], got {self._jitter}")
 
     # ----- public sentinel ------------------------------------------------
 
@@ -357,37 +386,41 @@ class RetryPolicy(Policy):
     ) -> bool:
         """Decrement counters after a network-side error.
 
-        ``ServiceRequestError`` is a connect-phase failure: the request never
-        left the client, so re-sending it is safe for every method. A
-        ``ServiceResponseError`` is a read-phase failure — the request may
-        have been fully processed before the read broke — so re-sending a
-        non-idempotent method (POST/PATCH not in the allowlist) risks
-        duplicating the write. Those methods are not retried on the read path,
-        mirroring the careful status-path rule in ``_method_is_retryable``.
+        Retry *safety* is decided first, independently of retryability, and
+        applied UNIFORMLY: a non-replayable body is never re-sent, and a
+        body-less request is re-sent only when its method is idempotent — so a
+        bare POST is never retried on a transport error, even a connect-phase
+        one that never reached the server. Retry *eligibility* is decided
+        second: ``ServiceRequestError`` and ``ServiceResponseError`` are the
+        known transport families (charged to the connect / read sub-budgets);
+        any other error is admitted only through the open retryability
+        capability (``is_retryable``), charged to the connect sub-budget. A
+        status-carrying ``HttpResponseError`` is excluded from that capability
+        path — its eligibility is the configured status set, not its baked flag.
 
         Args:
             settings: Mutable per-call settings dict.
-            request: The request that triggered the error, used to gate
-                read-phase retries on the method's idempotency.
+            request: The request that triggered the error, used to gate the
+                retry on the method's idempotency and the body's replayability.
             error: The error raised by the downstream chain.
 
         Returns:
             ``True`` if the budget allows another attempt.
         """
-        # The re-send safety gate applies to transport errors too: a request
-        # whose body cannot be replayed is never re-sent, regardless of method
-        # idempotency or which transport phase failed.
         if not _request_is_resendable(request):
+            return False
+        if not self._method_is_retryable(settings, request, None):
             return False
         if isinstance(error, ServiceRequestError):
             settings["total"] -= 1
             settings["connect"] -= 1
         elif isinstance(error, ServiceResponseError):
-            if not self._method_is_retryable(settings, request, None):
-                return False
             settings["total"] -= 1
             settings["read"] -= 1
-        else:  # pragma: no cover - upstream raised something we don't classify
+        elif not isinstance(error, HttpResponseError) and is_retryable(error):
+            settings["total"] -= 1
+            settings["connect"] -= 1
+        else:
             return False
         return _has_budget(settings)
 
@@ -422,25 +455,39 @@ class RetryPolicy(Policy):
     def _server_delay(self, response: _ResponseLike) -> float | None:
         """Resolve a server-supplied retry delay, capped and jittered.
 
-        ``Retry-After`` (seconds or HTTP-date) takes precedence; an
-        ``X-RateLimit-Reset`` epoch is the fallback and gets a slight *upward*
-        jitter. The jitter only ever lengthens the wait — retrying before the
+        Applies the fixed pacing precedence (first usable wins): ``Retry-After``
+        (delta-seconds, then HTTP-date), then the ``retry-after-ms`` and
+        ``x-ms-retry-after-ms`` millisecond-delta headers, then an
+        ``X-RateLimit-Reset`` epoch. The reset fallback gets a slight *upward*
+        jitter; the jitter only ever lengthens the wait — retrying before the
         window actually resets just earns another rate-limit response — while
         the small positive spread keeps a fleet of clients that observed the
-        same reset instant from retrying in lockstep. Both are capped at
-        ``retry_after_max``.
+        same reset instant from retrying in lockstep. Every resolved delay is
+        capped at ``retry_after_max``.
 
         Returns:
-            Seconds to wait, or ``None`` when neither header is present.
+            Seconds to wait, or ``None`` when no recognised header is present.
         """
-        now = self._clock.now()
-        retry_after = parse_retry_after(response.headers.get("Retry-After"), now)
+        headers = response.headers
+        retry_after = parse_retry_after(headers.get("Retry-After"), self._clock.now())
         if retry_after is not None:
             return min(retry_after, self.retry_after_max)
-        reset = parse_rate_limit_reset(
-            response.headers.get(_RATE_LIMIT_RESET_HEADER),
-            now,
-        )
+        for header in (_RETRY_AFTER_MS_HEADER, _MS_RETRY_AFTER_MS_HEADER):
+            delay_ms = parse_retry_after_ms(headers.get(header))
+            if delay_ms is not None:
+                return min(delay_ms, self.retry_after_max)
+        return self._rate_limit_reset_delay(headers)
+
+    def _rate_limit_reset_delay(self, headers: Any) -> float | None:
+        """Resolve the jittered, capped ``X-RateLimit-Reset`` fallback delay.
+
+        Args:
+            headers: The response headers to read ``X-RateLimit-Reset`` from.
+
+        Returns:
+            Seconds to wait, or ``None`` when the header is absent or malformed.
+        """
+        reset = parse_rate_limit_reset(headers.get(_RATE_LIMIT_RESET_HEADER), self._clock.now())
         if reset is None:
             return None
         jittered = reset * self._rand.uniform(1.0, 1.0 + _RATE_LIMIT_RESET_JITTER)
@@ -534,6 +581,34 @@ class _StatusRetryError(Exception):
     def __init__(self, status: int) -> None:
         super().__init__(f"retryable HTTP status {status}")
         self.status = status
+
+
+def _require_non_negative_int(name: str, value: int) -> None:
+    """Raise ``ValueError`` unless ``value`` is a non-negative retry count.
+
+    Args:
+        name: The configuration knob's name, for the error message.
+        value: The candidate retry count.
+
+    Raises:
+        ValueError: When ``value`` is negative.
+    """
+    if value < 0:
+        raise ValueError(f"{name} must be >= 0 (0 disables that axis), got {value}")
+
+
+def _require_non_negative_duration(name: str, value: float) -> None:
+    """Raise ``ValueError`` unless ``value`` is a finite, non-negative duration.
+
+    Args:
+        name: The configuration knob's name, for the error message.
+        value: The candidate duration, in seconds.
+
+    Raises:
+        ValueError: When ``value`` is NaN, infinite, or negative.
+    """
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be a finite, non-negative duration in seconds, got {value}")
 
 
 def _has_budget(settings: dict[str, Any]) -> bool:

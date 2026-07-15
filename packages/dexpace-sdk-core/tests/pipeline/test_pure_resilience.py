@@ -28,6 +28,7 @@ from dexpace.sdk.core.pipeline._pure.backoff import (
 from dexpace.sdk.core.pipeline._pure.classifier import (
     DEFAULT_RETRYABLE_STATUS,
     Retryable,
+    default_status_is_retryable,
     is_retryable,
     status_is_retryable,
 )
@@ -35,6 +36,7 @@ from dexpace.sdk.core.pipeline._pure.pacing import (
     MAX_RETRY_AFTER_SECONDS,
     parse_rate_limit_reset,
     parse_retry_after,
+    parse_retry_after_ms,
 )
 from dexpace.sdk.tck.golden_corpus import RetryPacingVector, load_retry_pacing
 
@@ -68,6 +70,51 @@ class TestStatusIsRetryable:
 
     def test_empty_set_disables_retry(self) -> None:
         assert status_is_retryable(503, frozenset()) is False
+
+
+# ----- classifier: canonical baked-flag rule (408, 429, all 5xx but 501/505) -
+
+
+class TestDefaultStatusIsRetryable:
+    """The single canonical classifier behind a protocol error's baked flag.
+
+    Distinct from ``status_is_retryable`` (the configurable policy gate): this
+    is the fixed rule ``408, 429, all 5xx EXCEPT 501/505`` (XCUT-5), broader
+    than the curated ``DEFAULT_RETRYABLE_STATUS`` policy default.
+    """
+
+    @pytest.mark.req("XCUT-5")
+    @pytest.mark.parametrize("status", [408, 429])
+    def test_two_retryable_client_codes(self, status: int) -> None:
+        assert default_status_is_retryable(status) is True
+
+    @pytest.mark.req("XCUT-5")
+    @pytest.mark.parametrize("status", list(range(500, 600)))
+    def test_every_5xx_except_501_and_505_is_retryable(self, status: int) -> None:
+        expected = status not in (501, 505)
+        assert default_status_is_retryable(status) is expected
+
+    @pytest.mark.req("XCUT-5")
+    def test_exotic_5xx_are_retryable_unlike_the_narrow_policy_default(self) -> None:
+        # The exotic 5xx codes the narrow policy default omits still bake True:
+        # the canonical classifier is a strict superset of the policy default.
+        for status in (506, 507, 508, 510, 511):
+            assert default_status_is_retryable(status) is True
+            assert status not in DEFAULT_RETRYABLE_STATUS
+
+    @pytest.mark.req("XCUT-5")
+    @pytest.mark.parametrize("status", [200, 301, 400, 404, 409, 428, 499, 600])
+    def test_non_retryable_codes(self, status: int) -> None:
+        assert default_status_is_retryable(status) is False
+
+    def test_none_is_never_retryable(self) -> None:
+        assert default_status_is_retryable(None) is False
+
+    def test_canonical_rule_is_a_superset_of_the_policy_default(self) -> None:
+        # Every code the narrow policy default retries is also retryable under
+        # the canonical rule; the reverse does not hold (the exotic 5xx above).
+        for status in DEFAULT_RETRYABLE_STATUS:
+            assert default_status_is_retryable(status) is True
 
 
 # ----- classifier: cause-chain walk ----------------------------------------
@@ -306,6 +353,41 @@ class TestParseRetryAfter:
             999_999_999.0
         )
         assert parse_retry_after("999999999", now=0.0, max_delay=10.0) == pytest.approx(10.0)
+
+
+class TestParseRetryAfterMs:
+    """The millisecond-delta parser shared by retry-after-ms / x-ms-retry-after-ms."""
+
+    @pytest.mark.req("RETRY-15", "RECOV-24")
+    def test_whole_milliseconds_convert_to_seconds(self) -> None:
+        assert parse_retry_after_ms("1500") == pytest.approx(1.5)
+        assert parse_retry_after_ms("0") == pytest.approx(0.0)
+        assert parse_retry_after_ms("250") == pytest.approx(0.25)
+
+    def test_surrounding_ascii_whitespace_is_tolerated(self) -> None:
+        assert parse_retry_after_ms(" 2000 ") == pytest.approx(2.0)
+        assert parse_retry_after_ms("\t2000\t") == pytest.approx(2.0)
+
+    @pytest.mark.req("RETRY-15", "RECOV-24")
+    def test_missing_blank_or_non_integer_returns_none(self) -> None:
+        assert parse_retry_after_ms(None) is None
+        assert parse_retry_after_ms("") is None
+        assert parse_retry_after_ms("   ") is None
+        assert parse_retry_after_ms("soon") is None
+
+    @pytest.mark.req("RECOV-24")
+    @pytest.mark.parametrize(
+        "token",
+        # Integer grammar: fractional and every float()-permissive form reject.
+        # The last two are non-ASCII digits (Arabic-Indic and fullwidth "3").
+        ["1.5", "nan", "inf", "+30", "-30", "1_000", "1e3", "0x1p4", "\u0663", "\uff13"],
+    )
+    def test_strict_integer_screen_rejects_non_integers(self, token: str) -> None:
+        assert parse_retry_after_ms(token) is None
+
+    def test_365_day_clamp_caps_absurd_delay(self) -> None:
+        assert parse_retry_after_ms(str(10**15)) == pytest.approx(_365_DAYS_SECONDS)
+        assert parse_retry_after_ms(str(10**15), max_delay=math.inf) == pytest.approx(10**12)
 
 
 class TestParseRateLimitReset:

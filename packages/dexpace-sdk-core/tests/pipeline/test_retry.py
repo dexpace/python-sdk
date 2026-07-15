@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import logging
 import random
+import threading
 import time
 from collections.abc import Sequence
 from typing import Any
@@ -15,6 +17,7 @@ import pytest
 from dexpace.sdk.core.client.http_client import HttpClient
 from dexpace.sdk.core.errors import (
     ClientAuthenticationError,
+    SdkError,
     ServiceRequestError,
     ServiceResponseError,
 )
@@ -235,13 +238,15 @@ class TestRetryOnError:
 
 
 class TestReadPhaseMethodGating:
-    """Read-phase errors are retried per the same idempotency rule as status.
+    """Retry-safety is decided uniformly for every transport failure.
 
-    A ``ServiceResponseError`` is a read-phase failure: the request may have
-    been fully processed before the read broke, so re-sending a non-idempotent
-    method (POST/PATCH) risks duplicating the write. A ``ServiceRequestError``
-    is a connect-phase failure — the request never left the client — so it is
-    safe to retry for every method.
+    The method-idempotency and body-replayability axes gate every retry
+    candidate, connect-phase and read-phase alike. A body-less non-idempotent
+    method (a bare POST/PATCH) is therefore never retried on *any* transport
+    error — not even a connect-phase ``ServiceRequestError`` that never left
+    the client — because retry-safety is a property of the request, decided
+    independently of which transport phase failed (XCUT-10). An idempotent GET
+    stays retryable on both phases.
     """
 
     @pytest.mark.req("BODY-5", "RETRY-7")
@@ -254,13 +259,26 @@ class TestReadPhaseMethodGating:
             p.run(_post(), DispatchContext(_instr("0" * 15 + "40")))
         assert client.attempts == 1
 
-    def test_post_still_retried_on_connect_phase_error(self) -> None:
-        # A ``ServiceRequestError`` means the request never left the client, so
-        # re-sending a POST is safe and must still happen.
+    @pytest.mark.req("XCUT-10")
+    def test_post_not_retried_on_connect_phase_error(self) -> None:
+        # XCUT-10: the safety gate MUST NOT special-case transport errors. A
+        # bare POST is not in the idempotent-method set, so even a connect-phase
+        # ``ServiceRequestError`` — which never reached the server — must NOT be
+        # retried; it propagates after the first attempt.
+        client = _ScriptedClient([ServiceRequestError("dns fail"), Status.OK])
+        retry = RetryPolicy(clock=FakeClock())
+        with Pipeline(client, policies=[retry]) as p, pytest.raises(ServiceRequestError):
+            p.run(_post(), DispatchContext(_instr("0" * 15 + "41")))
+        assert client.attempts == 1
+
+    @pytest.mark.req("XCUT-10")
+    def test_get_still_retried_on_connect_phase_error(self) -> None:
+        # The uniform gate does not suppress idempotent methods: a GET is in the
+        # allowlist, so a connect-phase error is still retried to success.
         client = _ScriptedClient([ServiceRequestError("dns fail"), Status.OK])
         retry = RetryPolicy(clock=FakeClock())
         with Pipeline(client, policies=[retry]) as p:
-            response = p.run(_post(), DispatchContext(_instr("0" * 15 + "41")))
+            response = p.run(_get(), DispatchContext(_instr("0" * 15 + "43")))
         assert response.is_success
         assert client.attempts == 2
 
@@ -701,3 +719,243 @@ def test_retry_clock_jitter_seeded() -> None:
     assert sequence_a == sequence_b
     # And the values are non-trivial (jitter actually varied them).
     assert len(set(sequence_a)) > 1
+
+
+class _CustomRetryableError(SdkError):
+    """A non-protocol custom SDK error advertising retryability via capability.
+
+    It is neither a ``ServiceRequestError``/``ServiceResponseError`` nor a
+    status-carrying ``HttpResponseError`` — only the structural ``retryable``
+    flag marks it retryable, exercising the open-capability path.
+    """
+
+    retryable = True
+
+
+class _CustomTerminalError(SdkError):
+    """A custom SDK error that declares itself non-retryable via the capability."""
+
+    retryable = False
+
+
+class TestOpenCapabilityRetry:
+    """Custom/transport-family errors participate via the retryability capability.
+
+    The retry step queries the capability (``is_retryable`` over the cause
+    chain), not a concrete-type match, so an error type the classifier has
+    never heard of can opt into retries (XCUT-6). A status-carrying protocol
+    error is handled by the configured status set instead, never by this path.
+    """
+
+    @pytest.mark.req("XCUT-6")
+    def test_custom_error_advertising_retryable_is_retried(self) -> None:
+        client = _ScriptedClient([_CustomRetryableError("boom"), Status.OK])
+        retry = RetryPolicy(clock=FakeClock())
+        with Pipeline(client, policies=[retry]) as p:
+            response = p.run(_get(), DispatchContext(_instr("0" * 15 + "80")))
+        assert response.is_success
+        assert client.attempts == 2
+
+    @pytest.mark.req("XCUT-6")
+    def test_custom_error_not_advertising_retryable_is_terminal(self) -> None:
+        client = _ScriptedClient([_CustomTerminalError("nope"), Status.OK])
+        retry = RetryPolicy(clock=FakeClock())
+        with Pipeline(client, policies=[retry]) as p, pytest.raises(_CustomTerminalError):
+            p.run(_get(), DispatchContext(_instr("0" * 15 + "81")))
+        assert client.attempts == 1
+
+    @pytest.mark.req("XCUT-6")
+    def test_capability_retry_is_bounded_by_the_connect_budget(self) -> None:
+        # The capability path is charged to the connect sub-budget, so a
+        # never-clearing custom retryable error stops after connect_retries.
+        client = _ScriptedClient([_CustomRetryableError("boom")] * 6)
+        retry = RetryPolicy(connect_retries=2, clock=FakeClock())
+        with Pipeline(client, policies=[retry]) as p, pytest.raises(_CustomRetryableError):
+            p.run(_get(), DispatchContext(_instr("0" * 15 + "82")))
+        # 1 initial + 2 connect retries = 3 attempts before the budget is spent.
+        assert client.attempts == 3
+
+    @pytest.mark.req("XCUT-6", "XCUT-10")
+    def test_capability_retry_still_honours_the_uniform_safety_gate(self) -> None:
+        # A capability-retryable error on a bare POST is NOT retried: the
+        # method-idempotency safety gate applies uniformly to this path too.
+        client = _ScriptedClient([_CustomRetryableError("boom"), Status.OK])
+        retry = RetryPolicy(clock=FakeClock())
+        with Pipeline(client, policies=[retry]) as p, pytest.raises(_CustomRetryableError):
+            p.run(_post(), DispatchContext(_instr("0" * 15 + "83")))
+        assert client.attempts == 1
+
+
+class TestRetryConfigValidation:
+    """Scalar configuration is validated and rejected at construction (RECOV-34)."""
+
+    @pytest.mark.req("RECOV-34")
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"total_retries": -1}, "total_retries"),
+            ({"connect_retries": -1}, "connect_retries"),
+            ({"read_retries": -1}, "read_retries"),
+            ({"status_retries": -1}, "status_retries"),
+            ({"backoff_factor": -0.1}, "backoff_factor"),
+            ({"backoff_max": -1.0}, "backoff_max"),
+            ({"timeout": -1.0}, "timeout"),
+            ({"retry_after_max": -1.0}, "retry_after_max"),
+            ({"backoff_factor": float("nan")}, "backoff_factor"),
+            ({"backoff_max": float("inf")}, "backoff_max"),
+            ({"jitter": 1.5}, "jitter"),
+            ({"jitter": -0.1}, "jitter"),
+        ],
+    )
+    def test_rejects_invalid_scalar(self, kwargs: dict[str, Any], match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            RetryPolicy(**kwargs)
+
+    @pytest.mark.req("RECOV-34")
+    def test_boundary_values_are_accepted(self) -> None:
+        # Zero counts/durations disable an axis but are valid; jitter is valid at
+        # both ends of the closed interval [0.0, 1.0].
+        RetryPolicy(
+            total_retries=0,
+            connect_retries=0,
+            read_retries=0,
+            status_retries=0,
+            backoff_factor=0.0,
+            backoff_max=0.0,
+            timeout=0.0,
+            retry_after_max=0.0,
+            jitter=0.0,
+        )
+        RetryPolicy(jitter=1.0)
+
+    @pytest.mark.req("RECOV-34")
+    def test_collection_settings_are_defensively_copied(self) -> None:
+        # Later mutation of the caller's source collections cannot alter the
+        # already-constructed policy's behaviour.
+        statuses = {500, 503}
+        methods = {"GET", "PUT"}
+        retry = RetryPolicy(retry_on_status_codes=statuses, method_allowlist=methods)
+        statuses.add(418)
+        methods.add("POST")
+        assert 418 not in retry.retry_on_status_codes
+        assert "POST" not in retry.method_allowlist
+        assert retry.retry_on_status_codes == frozenset({500, 503})
+
+
+class TestFatalErrorPropagation:
+    """Non-SDK fatal errors surface unchanged, unretried, and untrailed (RETRY-25)."""
+
+    @pytest.mark.req("RETRY-25")
+    @pytest.mark.parametrize(
+        "fatal",
+        [MemoryError("out of memory"), RecursionError("stack overflow")],
+        ids=["MemoryError", "RecursionError"],
+    )
+    def test_non_sdk_fatal_propagates_unretried_untrailed(
+        self, fatal: BaseException, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = _ScriptedClient([fatal, Status.OK])
+        retry = RetryPolicy(clock=FakeClock())
+        with (
+            caplog.at_level(logging.DEBUG),
+            Pipeline(client, policies=[retry]) as p,
+            pytest.raises(type(fatal)) as excinfo,
+        ):
+            p.run(_get(), DispatchContext(_instr("0" * 15 + "90")))
+        # Surfaced unchanged (exact instance), never retried, and never
+        # classified as a retryable condition.
+        assert excinfo.value is fatal
+        assert client.attempts == 1
+        # No suppressed-trail attachment: neither the ``attempts`` count nor the
+        # per-attempt ``add_note`` trail is stamped onto a fatal error.
+        assert not hasattr(fatal, "attempts")
+        assert getattr(fatal, "__notes__", []) == []
+        # Not logged by the retry loop (the "retrying after ..." debug line only
+        # fires on the retry path, which a fatal error never takes).
+        assert not any(
+            record.name == "dexpace.sdk.core.pipeline.policies.retry" for record in caplog.records
+        )
+
+
+class _ConcurrentClient(HttpClient):
+    """Thread-safe client: fails a request ``fail_times`` then succeeds.
+
+    Keyed by request URL so each concurrent caller (distinct URL) has an
+    independent attempt tally — the shared counter is guarded by a lock.
+    """
+
+    def __init__(self, fail_times: int) -> None:
+        self._fail_times = fail_times
+        self._seen: dict[str, int] = {}
+        self._lock = threading.Lock()
+        self.total_attempts = 0
+
+    def execute(self, request: Request) -> Response:
+        key = str(request.url)
+        with self._lock:
+            seen = self._seen.get(key, 0)
+            self._seen[key] = seen + 1
+            self.total_attempts += 1
+        status = Status.OK if seen >= self._fail_times else Status.SERVICE_UNAVAILABLE
+        return Response(request=request, protocol=Protocol.HTTP_1_1, status=status)
+
+
+class TestRetryStatelessness:
+    """One policy instance is stateless and safe to invoke concurrently (RETRY-42)."""
+
+    @pytest.mark.req("RETRY-42")
+    def test_single_instance_safe_under_concurrent_calls(self) -> None:
+        # backoff_factor=0 keeps every delay zero, so no thread mutates the
+        # shared clock — the run isolates policy statelessness, not clock races.
+        retry = RetryPolicy(backoff_factor=0.0, clock=FakeClock())
+        client = _ConcurrentClient(fail_times=1)
+        results: dict[int, Status] = {}
+        failures: list[BaseException] = []
+        lock = threading.Lock()
+
+        with Pipeline(client, policies=[retry]) as pipeline:
+
+            def worker(index: int) -> None:
+                try:
+                    request = Request(
+                        method=Method.GET, url=Url.parse(f"https://example.com/{index}")
+                    )
+                    response = pipeline.run(request, DispatchContext(_instr(f"{index:032x}")))
+                    with lock:
+                        results[index] = response.status
+                except BaseException as error:  # surfaced to the assertion
+                    with lock:
+                        failures.append(error)
+
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(24)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        assert not failures
+        assert len(results) == 24
+        assert all(status is Status.OK for status in results.values())
+        # Each call: one 503 then one 200 = two transport attempts, independently.
+        assert client.total_attempts == 48
+        # The shared instance's frozen knobs are untouched by the concurrent run.
+        assert retry.total_retries == 10
+        assert retry.connect_retries == 3
+
+    @pytest.mark.req("RETRY-42")
+    def test_repeated_calls_on_one_instance_are_independent(self) -> None:
+        # Repeatedly invoking one policy instance (one pipeline) carries no
+        # per-call state — attempt count, deadline, and history — between
+        # sequential calls: each distinct URL fails once then succeeds cleanly.
+        retry = RetryPolicy(backoff_factor=0.0, clock=FakeClock())
+        client = _ConcurrentClient(fail_times=1)
+        with Pipeline(client, policies=[retry]) as pipeline:
+            for index in range(3):
+                request = Request(
+                    method=Method.GET, url=Url.parse(f"https://example.com/seq/{index}")
+                )
+                response = pipeline.run(request, DispatchContext(_instr(f"{index:032x}")))
+                assert response.is_success
+        # Three calls, each one 503 + one 200 = six independent attempts.
+        assert client.total_attempts == 6
+        assert retry.total_retries == 10
