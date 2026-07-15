@@ -6,6 +6,13 @@ with the conflict that forced the choice, the decision taken, and the rationale.
 Each entry is self-contained so a reader with no prior context understands why the
 code looks the way it does.
 
+For the complete, machine-generated record of how every normative requirement is
+met — test-covered, deviated, or not-applicable — see
+[`conformance-ledger.md`](conformance-ledger.md). The MUST-level deviations and
+not-applicable requirements it lists are projected into
+[`traceability-na-ids.txt`](traceability-na-ids.txt), which the blocking CI
+traceability gate reads.
+
 ## Async redirect policy is not wired into `default_async_pipeline()`
 
 **Conflict.** The sync `default_pipeline()` wires `RedirectPolicy` by default, and
