@@ -179,6 +179,102 @@ def test_mapper_throw_releases_resource_first() -> None:
     assert source.closes == 1  # released before the mapper error propagated
 
 
+# --- clean-terminal release-failure demotion (SSE-30) ----------------------
+
+
+class _CloseError(Exception):
+    """Raised by a source's close() to exercise release-failure handling."""
+
+
+class _FailingCloseSource:
+    """A sync SSE source whose close() always raises."""
+
+    def __init__(self, events: list[SseEvent]) -> None:
+        self._events = events
+        self.closes = 0
+
+    def __iter__(self) -> Iterator[SseEvent]:
+        yield from self._events
+
+    def close(self) -> None:
+        self.closes += 1
+        raise _CloseError("release failed")
+
+
+@pytest.mark.req("SSE-30")
+def test_clean_terminal_release_failure_is_swallowed() -> None:
+    # A DONE sentinel is an automatic clean-terminal path with no error in
+    # flight: a release failure must not be turned into a thrown result that
+    # discards already-delivered events, so it is swallowed (reported
+    # out-of-band), not raised.
+    source = _FailingCloseSource([_ev("1"), _ev("stop")])
+
+    def mapper(name: str, data: str) -> int | SseSignal:
+        return SseSignal.DONE if data == "stop" else int(data)
+
+    assert list(TypedSseConnection(source, mapper)) == [1]
+    assert source.closes >= 1  # close was attempted despite raising
+
+
+@pytest.mark.req("SSE-30")
+def test_clean_exhaustion_release_failure_is_swallowed() -> None:
+    # Natural end-of-stream is likewise a clean terminal: the release failure is
+    # swallowed and the delivered values survive.
+    source = _FailingCloseSource([_ev("a"), _ev("b")])
+    assert list(TypedSseConnection(source, lambda name, data: data)) == ["a", "b"]
+
+
+@pytest.mark.req("SSE-30")
+def test_explicit_close_propagates_release_failure() -> None:
+    # By contrast, a release failure during an EXPLICIT close() propagates to
+    # the caller rather than being swallowed.
+    source = _FailingCloseSource([])
+    typed = TypedSseConnection(source, lambda name, data: data)
+
+    with pytest.raises(_CloseError):
+        typed.close()
+
+
+class _AsyncFailingCloseSource:
+    """Async twin of `_FailingCloseSource`."""
+
+    def __init__(self, events: list[SseEvent]) -> None:
+        self._events = events
+        self.closes = 0
+
+    def __aiter__(self) -> AsyncIterator[SseEvent]:
+        return self._gen()
+
+    async def _gen(self) -> AsyncIterator[SseEvent]:
+        for event in self._events:
+            yield event
+
+    async def aclose(self) -> None:
+        self.closes += 1
+        raise _CloseError("release failed")
+
+
+@pytest.mark.req("SSE-30")
+async def test_async_clean_terminal_release_failure_is_swallowed() -> None:
+    source = _AsyncFailingCloseSource([_ev("1"), _ev("stop")])
+
+    def mapper(name: str, data: str) -> int | SseSignal:
+        return SseSignal.DONE if data == "stop" else int(data)
+
+    received = [value async for value in AsyncTypedSseConnection(source, mapper)]
+    assert received == [1]
+    assert source.closes >= 1
+
+
+@pytest.mark.req("SSE-30")
+async def test_async_explicit_close_propagates_release_failure() -> None:
+    source = _AsyncFailingCloseSource([])
+    typed = AsyncTypedSseConnection(source, lambda name, data: data)
+
+    with pytest.raises(_CloseError):
+        await typed.aclose()
+
+
 # --- integration with the real reconnecting facade -------------------------
 
 

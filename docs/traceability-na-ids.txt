@@ -70,7 +70,7 @@ TRANSPORT-8  # na: OkHttp's interceptor-driven internal cancel-all is a library-
 TRANSPORT-9  # na: The adaptation race is an artifact of OkHttp's Call.enqueue + CompletableFuture callback dispatch where a native response can arrive after the future already completed/cancelled; a
 XCUT-23  # na: This requirement is the pluggable I/O-provider SPI with classpath/ServiceLoader auto-discovery and zero/multiple-candidate resolution; that byte-stream provider (Io/IoProvider/Okio
 
-# --- Documented deviations (42 MUST) ---
+# --- Documented deviations (43 MUST) ---
 ASYNC-18  # deviation: The non-blocking async delay is provided by stdlib asyncio.sleep via AsyncClock.sleep (_AsyncSystemClock.sleep / async_http_client.asyncio_sleep) — an event-loop timer that holds n
 AUTH-1  # deviation: The port's resolver (codegen/auth.py) recognizes open scheme-name strings matched against an AuthRegistry rather than a fixed {OAUTH2,API_KEY,BASIC,DIGEST,NO_AUTH} enum, and models
 AUTH-10  # deviation: Additive grace-margin expiry evaluation is implemented and tested (needs_refresh/classify/is_expired), but AccessTokenInfo makes expires_on a mandatory int so there is no null-mean
@@ -111,5 +111,6 @@ RETRY-9  # deviation: compute_backoff implements base*multiplier**(attempt-1) cl
 SERDE-21  # deviation: The codec is deliberately validation-free (codec.py module docstring: 'performs no schema checks or scalar coercion'); cross-shape scalars pass through unchanged ('5'->str '5', 1.5
 SERDE-27  # deviation: The response-decode lifecycle/error contract is fully implemented and tested (closes the response on every path, surfaces a missing body as a DeserializationError naming the target
 SSE-20  # deviation: Confirmed: SseEvent is a frozen(slots) dataclass (immutable) whose payload is an immutable joined string rather than a defensively-copied data list (consequence of SSE-8), so there
+SSE-38  # deviation: The core parser conforms — it surfaces the server retry hint and each event's raw per-block id, no longer persists a last-event-id across events (SSE-16), and sets no request header. Reconnection and Last-Event-ID continuity are provided only by the separable, opt-in SseConnection/AsyncSseConnection value-add layer that a caller must explicitly choose, not by the core parse path.
 SSE-8  # deviation: Confirmed: _data_lines accumulates consecutive data lines in wire order but they are joined with a single '\n' into an immutable SseEvent.data string at dispatch rather than expose
 TRANSPORT-4  # deviation: The cancel-flag clause is honored and tested (read timeout maps to ServiceResponseTimeoutError, never RequestCancelledError, classified as timeout), but the port deliberately devia

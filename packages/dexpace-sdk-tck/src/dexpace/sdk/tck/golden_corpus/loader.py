@@ -146,15 +146,21 @@ class SseExpectedEvent:
 
     Attributes:
         data: The (possibly multi-line) payload.
-        event: The event name (``"message"`` by default).
-        id: The sticky last-event-id, or None.
+        event: The raw event name, or None when the block sent no ``event:``
+            field. The WHATWG-conformant parser surfaces an omitted event name
+            as absent rather than defaulting it to ``"message"``.
+        id: The id present in this block, or None. The parser is single-pass
+            and does not carry a last-event-id forward, so each event pins only
+            the id in its own block.
         retry: The reconnect hint in milliseconds, or None.
+        comment: The captured comment text for the block, or None.
     """
 
     data: str
-    event: str
+    event: str | None
     id: str | None
     retry: int | None
+    comment: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,6 +287,14 @@ def _s(entry: dict[str, object], key: str) -> str:
 
 def _opt_s(entry: dict[str, object], key: str) -> str | None:
     value = entry[key]
+    if value is None or isinstance(value, str):
+        return value
+    raise TypeError(f"{key!r} must be a string or null, got {type(value).__name__}")
+
+
+def _opt_s_default(entry: dict[str, object], key: str) -> str | None:
+    """Return the string value for ``key``, or None when absent or null."""
+    value = entry.get(key)
     if value is None or isinstance(value, str):
         return value
     raise TypeError(f"{key!r} must be a string or null, got {type(value).__name__}")
@@ -414,9 +428,10 @@ def _load_events(entry: dict[str, object]) -> tuple[SseExpectedEvent, ...]:
         out.append(
             SseExpectedEvent(
                 data=_s(ev, "data"),
-                event=_s(ev, "event"),
+                event=_opt_s(ev, "event"),
                 id=_opt_s(ev, "id"),
                 retry=_opt_int(ev, "retry"),
+                comment=_opt_s_default(ev, "comment"),
             )
         )
     return tuple(out)

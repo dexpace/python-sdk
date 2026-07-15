@@ -232,9 +232,13 @@ def test_sse_expected_events_are_well_formed() -> None:
     for vector in load_sse():
         assert vector.events, vector.id
         for event in vector.events:
-            assert isinstance(event.data, str) and isinstance(event.event, str)
+            assert isinstance(event.data, str)
+            # event is absent (None) when the block sent no event: field — the
+            # parser does not default it to "message".
+            assert event.event is None or isinstance(event.event, str)
             assert event.id is None or isinstance(event.id, str)
             assert event.retry is None or isinstance(event.retry, int)
+            assert event.comment is None or isinstance(event.comment, str)
 
 
 def test_sse_binary_sensitive_fixtures_are_byte_exact() -> None:

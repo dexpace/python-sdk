@@ -43,11 +43,15 @@ def test_event_field() -> None:
     assert events == [SseEvent(data="x", event="update")]
 
 
-def test_id_persists_across_events() -> None:
+@pytest.mark.req("SSE-16")
+def test_id_is_per_block_not_carried_forward() -> None:
+    # The parser is single-pass and MUST NOT persist a last-event-id: each event
+    # surfaces only the id present in its own block. The second block sent no
+    # id, so it is absent (None) rather than the sticky "1".
     stream = b"id: 1\ndata: a\n\ndata: b\n\n"
     events = _events(stream)
     assert events[0].id == "1"
-    assert events[1].id == "1"
+    assert events[1].id is None
 
 
 @pytest.mark.req("SSE-11")
@@ -97,10 +101,106 @@ def test_retry_non_ascii_decimal_digit_is_ignored() -> None:
     assert events[0].retry is None
 
 
-def test_comment_lines_ignored() -> None:
+@pytest.mark.req("SSE-6")
+def test_comment_text_is_captured_alongside_data() -> None:
+    # A ':'-led line is a comment: its text (after the single-space strip) is
+    # captured on the event rather than discarded.
     stream = b": keepalive\ndata: x\n\n"
     events = _events(stream)
-    assert events == [SseEvent(data="x")]
+    assert events == [SseEvent(data="x", comment="keepalive")]
+
+
+@pytest.mark.req("SSE-6", "SSE-13")
+def test_comment_only_block_dispatches() -> None:
+    # A comment counts as a "field seen", so a comment-only keep-alive block is
+    # still dispatched as a (non-empty) event with empty data.
+    stream = b": keep-alive\n\n"
+    events = _events(stream)
+    assert events == [SseEvent(data="", comment="keep-alive")]
+
+
+@pytest.mark.req("SSE-6")
+def test_comment_is_latest_wins_within_a_block() -> None:
+    stream = b": first\n: second\ndata: x\n\n"
+    events = _events(stream)
+    assert events == [SseEvent(data="x", comment="second")]
+
+
+@pytest.mark.req("SSE-10")
+def test_event_name_absent_is_none_not_message() -> None:
+    # An omitted event: field surfaces as None, never defaulted to "message".
+    stream = b"data: x\n\n"
+    assert _events(stream) == [SseEvent(data="x", event=None)]
+
+
+@pytest.mark.req("SSE-10")
+def test_event_name_stored_raw_latest_wins() -> None:
+    stream = b"event: first\nevent: second\ndata: x\n\n"
+    assert _events(stream) == [SseEvent(data="x", event="second")]
+
+
+@pytest.mark.req("SSE-4")
+def test_present_but_empty_event_is_recorded_and_dispatches() -> None:
+    # An 'event:' with nothing after it is a present-but-empty field: recorded
+    # as "" (distinct from absent None) and it counts as a field seen, so the
+    # block dispatches even without data.
+    stream = b"event:\n\n"
+    assert _events(stream) == [SseEvent(data="", event="")]
+
+
+@pytest.mark.req("SSE-4", "SSE-13")
+def test_present_but_empty_id_dispatches_id_only_block() -> None:
+    stream = b"id:\n\n"
+    assert _events(stream) == [SseEvent(data="", id="")]
+
+
+@pytest.mark.req("SSE-13")
+def test_id_only_block_dispatches() -> None:
+    stream = b"id: 5\n\n"
+    assert _events(stream) == [SseEvent(data="", id="5")]
+
+
+@pytest.mark.req("SSE-13")
+def test_retry_only_block_dispatches() -> None:
+    stream = b"retry: 4000\n\n"
+    assert _events(stream) == [SseEvent(data="", retry=4000)]
+
+
+@pytest.mark.req("SSE-13")
+def test_pure_blank_block_emits_nothing() -> None:
+    # A block in which no tracked field was set (only blank lines) is skipped.
+    stream = b"\n\n\ndata: x\n\n"
+    assert _events(stream) == [SseEvent(data="x")]
+
+
+@pytest.mark.req("SSE-13")
+def test_unknown_field_only_block_emits_nothing() -> None:
+    # An unknown field is not tracked, so an unknown-field-only block dispatches
+    # nothing (distinct from a comment-only block, which does).
+    stream = b"x-custom: thing\n\ndata: y\n\n"
+    assert _events(stream) == [SseEvent(data="y")]
+
+
+@pytest.mark.req("SSE-9")
+def test_id_containing_nul_is_ignored_entirely() -> None:
+    # An id whose value contains U+0000 is ignored: it does not set the id and
+    # does not, by itself, count as a field seen.
+    stream = b"id: a\x00b\ndata: x\n\n"
+    assert _events(stream) == [SseEvent(data="x", id=None)]
+
+
+@pytest.mark.req("SSE-9")
+def test_nul_id_does_not_overwrite_valid_id_in_same_block() -> None:
+    stream = b"id: good\nid: a\x00b\ndata: x\n\n"
+    assert _events(stream) == [SseEvent(data="x", id="good")]
+
+
+@pytest.mark.req("SSE-9", "SSE-13")
+def test_nul_id_only_block_emits_nothing() -> None:
+    # A NUL id is not a field seen, so an id-with-NUL-only block dispatches
+    # nothing rather than an id-less event.
+    stream = b"id: a\x00b\n\ndata: y\n\n"
+    assert _events(stream) == [SseEvent(data="y")]
 
 
 @pytest.mark.req("SSE-2")

@@ -223,6 +223,47 @@ def test_close_time_error_is_demoted_onto_context() -> None:
     assert isinstance(exc_info.value.__context__, _SecondaryError)
 
 
+class _CleanEofFailCloseBody(ResponseBody):
+    """Ends cleanly, then fails on close — to exercise the clean-terminal path."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+        self.closes = 0
+
+    def media_type(self) -> MediaType | None:
+        return MediaType.parse("text/event-stream")
+
+    def content_length(self) -> int:
+        return -1
+
+    def iter_bytes(self, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
+        yield from self._chunks
+
+    def close(self) -> None:
+        self.closes += 1
+        raise RuntimeError("release failed on clean EOF")
+
+
+@pytest.mark.req("SSE-30")
+def test_clean_eof_release_failure_is_swallowed_and_reconnect_continues() -> None:
+    # On the automatic clean-EOF rollover (no error in flight) a release failure
+    # must not be turned into a thrown result that discards already-delivered
+    # events: it is reported out-of-band and swallowed, and the connection rolls
+    # over to the next stream instead of aborting.
+    first = _CleanEofFailCloseBody([b"data: a\n\n"])
+    second = _LedgerBody([b"data: b\n\n"])
+    conn = _conn([_response(first), _response(second)])
+
+    seen: list[str] = []
+    for event in conn:
+        seen.append(event.data)
+        if len(seen) == 2:
+            break
+
+    assert seen == ["a", "b"]  # the swallowed release did not abort the stream
+    assert first.closes >= 1  # close was attempted despite raising
+
+
 # --- single-pass iteration -------------------------------------------------
 
 

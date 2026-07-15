@@ -39,7 +39,13 @@ _VECTOR_IDS: list[str] = [vector.id for vector in _SSE_VECTORS]
 def _expected(events: tuple[SseExpectedEvent, ...]) -> list[SseEvent]:
     """Map corpus expectations onto the parser's ``SseEvent`` shape."""
     return [
-        SseEvent(data=event.data, event=event.event, id=event.id, retry=event.retry)
+        SseEvent(
+            data=event.data,
+            event=event.event,
+            id=event.id,
+            retry=event.retry,
+            comment=event.comment,
+        )
         for event in events
     ]
 

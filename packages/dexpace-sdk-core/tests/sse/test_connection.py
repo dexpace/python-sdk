@@ -253,3 +253,18 @@ def test_budget_exhaustion_chains_last_transport_error() -> None:
         for _ in conn:
             pass
     assert exc_info.value.__cause__ is boom
+
+
+@pytest.mark.req("SSE-32")
+def test_success_response_without_body_fails_loudly() -> None:
+    # Opening a stream over a body-less (but successful) response is a protocol
+    # violation: the connection fails loudly rather than treating it as an
+    # immediately-empty stream that would silently reconnect forever.
+    script = _Script([_response(None, status=Status.OK)])
+    conn = SseConnection(script, _request(), clock=_RecordingClock(), rand=_LowJitter())
+
+    with pytest.raises(ServiceResponseError, match="no body"):
+        for _ in conn:
+            pass
+
+    assert len(script.requests) == 1  # no reconnect attempted

@@ -26,6 +26,7 @@ is entirely the mapper's decision.
 
 from __future__ import annotations
 
+import logging
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Protocol
 
@@ -35,6 +36,8 @@ if TYPE_CHECKING:
     from typing import Self
 
     from .parser import SseEvent
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class SseSignal(Enum):
@@ -102,21 +105,52 @@ class TypedSseConnection[T]:
     def __iter__(self) -> Iterator[T]:
         """Yield mapped values lazily, honouring SKIP/DONE per consumer demand.
 
+        An absent event name (the parser surfaces it as ``None``) is presented
+        to the mapper as ``"message"``, applying the ``EventSource`` default at
+        this consumer layer rather than in the parser.
+
         Yields:
             Each event mapped to a non-signal value, in stream order.
         """
         try:
             for event in self._source:
-                outcome = self._mapper(event.event, event.data)
+                outcome = self._mapper(event.event or "message", event.data)
                 if isinstance(outcome, SseSignal):
                     if outcome is SseSignal.DONE:
-                        return
+                        break
                     continue  # SseSignal.SKIP: discard and pull the next event.
                 yield outcome
-        finally:
-            # Runs before a mapper error propagates, so the resource is released
-            # first; also covers DONE, a caller break, and clean exhaustion.
+        except BaseException as primary:
+            # An error is in flight — a mapper failure or the consumer stopping
+            # via GeneratorExit. Release before propagating and demote a release
+            # failure onto __context__ rather than masking the primary error.
+            self._close_demoting(primary)
+            raise
+        # Clean terminal: natural exhaustion or a DONE sentinel with no error in
+        # flight. A release failure here must not be turned into a thrown result
+        # that discards already-delivered events, so it is reported out-of-band
+        # and swallowed. An explicit close() still propagates (see close()).
+        self._close_swallowing()
+
+    def _close_demoting(self, primary: BaseException) -> None:
+        """Release the source, demoting a failure onto ``primary``'s context."""
+        try:
             self._source.close()
+        except Exception as close_err:
+            # Demoted, not masked: the primary error re-raised by the caller
+            # carries this teardown failure on its __context__.
+            primary.__context__ = close_err
+
+    def _close_swallowing(self) -> None:
+        """Release the source on a clean terminal; report a failure out-of-band."""
+        try:
+            self._source.close()
+        except Exception:
+            _LOGGER.warning(
+                "SSE source release failed on a clean terminal path; swallowed "
+                "to preserve already-delivered events",
+                exc_info=True,
+            )
 
 
 class AsyncTypedSseConnection[T]:
@@ -152,19 +186,45 @@ class AsyncTypedSseConnection[T]:
     async def __aiter__(self) -> AsyncIterator[T]:
         """Yield mapped values lazily, honouring SKIP/DONE per consumer demand.
 
+        An absent event name (the parser surfaces it as ``None``) is presented
+        to the mapper as ``"message"``, applying the ``EventSource`` default at
+        this consumer layer rather than in the parser.
+
         Yields:
             Each event mapped to a non-signal value, in stream order.
         """
         try:
             async for event in self._source:
-                outcome = self._mapper(event.event, event.data)
+                outcome = self._mapper(event.event or "message", event.data)
                 if isinstance(outcome, SseSignal):
                     if outcome is SseSignal.DONE:
-                        return
+                        break
                     continue  # SseSignal.SKIP: discard and pull the next event.
                 yield outcome
-        finally:
+        except BaseException as primary:
+            await self._aclose_demoting(primary)
+            raise
+        await self._aclose_swallowing()
+
+    async def _aclose_demoting(self, primary: BaseException) -> None:
+        """Release the source, demoting a failure onto ``primary``'s context."""
+        try:
             await self._source.aclose()
+        except Exception as close_err:
+            # Demoted, not masked: the primary error re-raised by the caller
+            # carries this teardown failure on its __context__.
+            primary.__context__ = close_err
+
+    async def _aclose_swallowing(self) -> None:
+        """Release the source on a clean terminal; report a failure out-of-band."""
+        try:
+            await self._source.aclose()
+        except Exception:
+            _LOGGER.warning(
+                "SSE source release failed on a clean terminal path; swallowed "
+                "to preserve already-delivered events",
+                exc_info=True,
+            )
 
 
 __all__ = [

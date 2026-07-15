@@ -17,6 +17,7 @@ stream by breaking the loop (for example on a ``data: [DONE]`` sentinel).
 
 from __future__ import annotations
 
+import logging
 import random
 import threading
 from typing import TYPE_CHECKING, cast
@@ -42,6 +43,8 @@ if TYPE_CHECKING:
     from ..response.async_response import AsyncResponse
     from ..response.response import Response
     from .parser import SseEvent
+
+_LOGGER = logging.getLogger(__name__)
 
 _LAST_EVENT_ID: str = "Last-Event-ID"
 _DEFAULT_RETRY_SECONDS: float = 3.0
@@ -205,6 +208,25 @@ class SseConnection:
             # caller carries this teardown error on its ``__context__``.
             primary.__context__ = close_error
 
+    def _release_reporting(self) -> None:
+        """Release the finished response between reconnects, cleanly.
+
+        This runs on an automatic clean-terminal rollover (a natural
+        end-of-stream or an absorbed transient drop, with no error surfacing to
+        the caller). A release failure here must not be turned into a thrown
+        result that discards the events already delivered, so it is reported
+        out-of-band and swallowed. An explicit `close` still propagates its
+        release failure.
+        """
+        try:
+            self._release()
+        except Exception:
+            _LOGGER.warning(
+                "SSE response release failed on a clean reconnect rollover; "
+                "swallowed to preserve already-delivered events",
+                exc_info=True,
+            )
+
     def _is_closed(self) -> bool:
         with self._lock:
             return self._closed
@@ -255,7 +277,7 @@ class SseConnection:
                 progressed, error = yield from self._stream(response)
                 if error is not None:
                     last_error = error
-                self._release()
+                self._release_reporting()
                 if self._is_closed():
                     return
                 if progressed:
@@ -295,12 +317,18 @@ class SseConnection:
         cause if the reconnect budget is later exhausted; other exceptions
         propagate. A ``retry:`` hint that arrived without a data event is picked
         up from the parser's sticky state after iteration.
+
+        Raises:
+            ServiceResponseError: If the (successful) response carries no body.
+                An SSE stream opened over a body-less response is a protocol
+                violation and fails loudly rather than being treated as an
+                immediately-empty stream.
         """
         progressed = False
         error: BaseException | None = None
         body = response.body
         if body is None:
-            return progressed, error
+            raise ServiceResponseError("SSE response has no body")
         parser = SseParser()
         try:
             for chunk in body.iter_bytes():
@@ -433,6 +461,23 @@ class AsyncSseConnection:
             # caller carries this teardown error on its ``__context__``.
             primary.__context__ = close_error
 
+    async def _arelease_reporting(self) -> None:
+        """Release the finished response between reconnects, cleanly.
+
+        Async twin of `SseConnection._release_reporting`: on an automatic
+        clean-terminal rollover a release failure is reported out-of-band and
+        swallowed so it cannot discard already-delivered events. An explicit
+        `aclose` still propagates its release failure.
+        """
+        try:
+            await self._arelease()
+        except Exception:
+            _LOGGER.warning(
+                "SSE response release failed on a clean reconnect rollover; "
+                "swallowed to preserve already-delivered events",
+                exc_info=True,
+            )
+
     def _is_closed(self) -> bool:
         with self._lock:
             return self._closed
@@ -482,19 +527,23 @@ class AsyncSseConnection:
                 response = await self._connect(_resume_request(self._initial, self._last_event_id))
                 progressed = False
                 body = response.body
-                if body is not None:
-                    stream = parse_async_events(body.aiter_bytes())
-                    try:
-                        async with stream:
-                            async for event in stream:
-                                self._last_event_id = _last_event_id_of(event, self._last_event_id)
-                                progressed = True
-                                yield event
-                    except _TRANSIENT as exc:
-                        last_error = exc
-                    if stream.retry is not None:
-                        self._retry_base = stream.retry / 1000.0
-                await self._arelease()
+                if body is None:
+                    # A body-less (but successful) SSE response is a protocol
+                    # violation: fail loudly rather than treat it as an empty
+                    # stream. The outer handler releases before propagating.
+                    raise ServiceResponseError("SSE response has no body")
+                stream = parse_async_events(body.aiter_bytes())
+                try:
+                    async with stream:
+                        async for event in stream:
+                            self._last_event_id = _last_event_id_of(event, self._last_event_id)
+                            progressed = True
+                            yield event
+                except _TRANSIENT as exc:
+                    last_error = exc
+                if stream.retry is not None:
+                    self._retry_base = stream.retry / 1000.0
+                await self._arelease_reporting()
                 if self._is_closed():
                     return
                 if progressed:
