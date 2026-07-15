@@ -81,7 +81,7 @@ def test_continuation_token_propagates() -> None:
 
 def test_sdk_error_rejects_extra_positional_args() -> None:
     with pytest.raises(TypeError):
-        SdkError("msg", "extra")  # type: ignore[misc,arg-type]
+        SdkError("msg", "extra")  # type: ignore[call-arg,arg-type]
 
 
 @pytest.mark.req("XCUT-4")
