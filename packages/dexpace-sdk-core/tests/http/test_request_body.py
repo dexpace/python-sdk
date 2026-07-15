@@ -116,6 +116,7 @@ class TestLoggableRequestBody:
 
 
 class TestFileRequestBody:
+    @pytest.mark.req("BODY-11")
     def test_round_trip(self, tmp_path: Path) -> None:
         path = tmp_path / "payload.bin"
         path.write_bytes(b"file contents")
@@ -202,6 +203,7 @@ class TestFileRequestBody:
         with pytest.raises(ValueError, match="count must be -1"):
             FileRequestBody(path, count=0)
 
+    @pytest.mark.req("BODY-11")
     def test_concurrent_replays_are_independent(self, tmp_path: Path) -> None:
         # Each iter_bytes opens its own file handle, so two interleaved
         # iterators must not share a read cursor — both read the full content.
@@ -218,6 +220,53 @@ class TestFileRequestBody:
         rest_a = got_a + b"".join(it_a)
         rest_b = got_b + b"".join(it_b)
         assert rest_a == rest_b == b"0123456789"
+
+    @pytest.mark.req("BODY-11")
+    def test_construction_fail_fast_contract(self, tmp_path: Path) -> None:
+        # The full BODY-11 construction contract: the path must exist and be a
+        # regular file, offset must be non-negative, count must be -1 or
+        # positive, and offset+count must not exceed the captured file size.
+        path = tmp_path / "payload.bin"
+        path.write_bytes(b"0123456789")  # 10 bytes
+        with pytest.raises(ValueError, match="offset must be non-negative"):
+            FileRequestBody(path, offset=-1)
+        with pytest.raises(ValueError, match="count must be -1"):
+            FileRequestBody(path, count=0)
+        with pytest.raises(ValueError, match="does not exist or is not accessible"):
+            FileRequestBody(tmp_path / "missing.bin")
+        with pytest.raises(ValueError, match="not a regular file"):
+            FileRequestBody(tmp_path)
+        with pytest.raises(ValueError, match="exceeds the file size"):
+            FileRequestBody(path, offset=6, count=8)
+        # The 'rest of file' sentinel and an in-window explicit count are valid.
+        assert FileRequestBody(path).content_length() == 10
+        assert FileRequestBody(path, offset=6, count=4).content_length() == 4
+
+    @pytest.mark.req("BODY-13")
+    def test_short_read_raises_naming_transferred_of_total(self, tmp_path: Path) -> None:
+        # A file truncated AFTER construction (TOCTOU) would deliver fewer bytes
+        # than the declared content length; the transfer must not complete
+        # silently with a truncated body — it raises naming transferred-of-total.
+        path = tmp_path / "payload.bin"
+        path.write_bytes(b"0123456789")  # 10 bytes at construction
+        body = FileRequestBody(path)
+        assert body.content_length() == 10  # declared to the transport
+        path.write_bytes(b"012")  # shrink to 3 bytes before the transfer
+        with pytest.raises(OSError, match="transferred 3 of 10 bytes"):
+            _drain(body)
+
+    @pytest.mark.req("BODY-13")
+    def test_short_read_with_explicit_count_names_transferred_of_total(
+        self, tmp_path: Path
+    ) -> None:
+        # The same short-write detection applies to an explicit-count window.
+        path = tmp_path / "payload.bin"
+        path.write_bytes(b"0123456789")  # 10 bytes
+        body = FileRequestBody(path, offset=2, count=6)  # declares 6 bytes
+        assert body.content_length() == 6
+        path.write_bytes(b"0123")  # shrink so only 2 bytes remain past offset 2
+        with pytest.raises(OSError, match="transferred 2 of 6 bytes"):
+            _drain(body)
 
 
 def _make_file_body(tmp_path: Path) -> RequestBody:

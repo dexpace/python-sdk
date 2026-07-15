@@ -291,12 +291,14 @@ class TestFileRequestBodyOwnership:
     def test_fresh_handle_per_read_reflects_mutated_file(self, tmp_path: Path) -> None:
         # A fresh handle per read means the body caches no descriptor and no
         # bytes: rewriting the file between reads is visible on the next read.
+        # The rewrite keeps the same length so the declared content length
+        # (captured at construction) still matches — only the bytes change.
         path = tmp_path / "payload.bin"
         path.write_bytes(b"first")
         body = FileRequestBody(path)
         assert _drain(body) == b"first"
-        path.write_bytes(b"second-content")
-        assert _drain(body) == b"second-content"
+        path.write_bytes(b"third")  # same length, different content
+        assert _drain(body) == b"third"
 
     @pytest.mark.req("BODY-8")
     def test_holds_no_descriptor_open_across_reads(self, tmp_path: Path) -> None:

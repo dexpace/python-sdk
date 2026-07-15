@@ -20,9 +20,15 @@ class FileRequestBody(RequestBody):
     """Replayable body that streams from a file on disk.
 
     Each ``iter_bytes`` opens the file in binary mode, seeks to ``offset``,
-    and yields up to ``count`` bytes (or to EOF when ``count == -1``).
-    Because the file is re-opened every call, the body is safely replayable
-    under retries.
+    and yields exactly ``content_length()`` bytes — the count declared to the
+    transport as ``Content-Length``. Because the file is re-opened every call,
+    the body is safely replayable under retries.
+
+    The declared byte count is fixed at construction (from the stat-ed size),
+    so if the file is truncated between construction and a read the transfer
+    would deliver fewer bytes than declared. That short write is detected and
+    raised naming transferred-of-total rather than completing silently with a
+    truncated body.
 
     Transports that recognise this body type can fast-path with
     ``os.sendfile(2)`` via ``socket.sendfile`` for zero-copy delivery; the
@@ -112,20 +118,25 @@ class FileRequestBody(RequestBody):
         return self._iter(chunk_size)
 
     def _iter(self, chunk_size: int) -> Iterator[bytes]:
-        remaining = self._count
+        # Bound the transfer to the declared content length (fixed at
+        # construction). Hitting EOF before delivering it means the file was
+        # truncated under us: raise naming transferred-of-total rather than
+        # emitting a truncated body.
+        total = self.content_length()
+        remaining = total
         with self._path.open("rb") as stream:
             if self._offset:
                 stream.seek(self._offset)
-            while True:
-                if remaining == 0:
-                    return
-                read = chunk_size if remaining == -1 else min(chunk_size, remaining)
-                chunk = stream.read(read)
+            while remaining > 0:
+                chunk = stream.read(min(chunk_size, remaining))
                 if not chunk:
-                    return
+                    raise OSError(
+                        f"short read from {self._path}: transferred "
+                        f"{total - remaining} of {total} bytes before end of "
+                        f"file (was the file truncated after construction?)"
+                    )
+                remaining -= len(chunk)
                 yield chunk
-                if remaining != -1:
-                    remaining -= len(chunk)
 
 
 def _validate_file(path: Path) -> int:
