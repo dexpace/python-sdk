@@ -259,6 +259,62 @@ def _config(url: str) -> Configuration:
     return Configuration.builder().put(Configuration.HTTPS_PROXY, url).build()
 
 
+def _config_with_no_proxy(no_proxy: str) -> Configuration:
+    """Build a configuration with a valid proxy URL and a ``NO_PROXY`` value."""
+    return (
+        Configuration.builder()
+        .put(Configuration.HTTPS_PROXY, "http://proxy.corp:8080")
+        .put(Configuration.NO_PROXY, no_proxy)
+        .build()
+    )
+
+
+class TestNoProxyParsing:
+    """``NO_PROXY`` splitting: escape, drop-empty, unescape, trim ordering."""
+
+    def _hosts(self, no_proxy: str) -> tuple[str, ...]:
+        options = ProxyOptions.from_configuration(_config_with_no_proxy(no_proxy))
+        assert options is not None
+        return options.non_proxy_hosts
+
+    @pytest.mark.req("CFG-26")
+    def test_backslash_escaped_separator_becomes_literal(self) -> None:
+        # ``a\,b`` is one entry ``a,b`` (the escaped comma is a literal), while
+        # the unescaped comma still ends the token before ``c``.
+        assert self._hosts("a\\,b,c") == ("a,b", "c")
+
+    @pytest.mark.req("CFG-26")
+    def test_empty_fragments_are_dropped(self) -> None:
+        # Zero-length fragments (adjacent separators, leading/trailing) drop.
+        assert self._hosts("a,,b") == ("a", "b")
+        assert self._hosts(",a,b,") == ("a", "b")
+
+    @pytest.mark.req("CFG-26")
+    def test_whitespace_only_fragment_is_retained_as_empty_token(self) -> None:
+        # Because the empty-drop runs BEFORE the trim, a whitespace-only
+        # fragment survives the drop and is trimmed to an empty token rather
+        # than being removed — the observable split/drop/unescape/trim order.
+        assert self._hosts("a, ,b") == ("a", "", "b")
+        assert self._hosts("   ") == ("",)
+
+    @pytest.mark.req("CFG-26")
+    def test_tokens_are_trimmed(self) -> None:
+        assert self._hosts(" a , b ") == ("a", "b")
+
+    @pytest.mark.req("CFG-26")
+    def test_escaped_separator_survives_surrounding_whitespace(self) -> None:
+        # Trim happens after unescape, so surrounding whitespace is stripped
+        # while the escaped inner separator is preserved as a literal.
+        assert self._hosts("  a\\,b  ") == ("a,b",)
+
+    @pytest.mark.req("CFG-26")
+    def test_none_value_yields_empty_tuple(self) -> None:
+        config = Configuration.builder().put(Configuration.HTTPS_PROXY, "http://p:8080").build()
+        options = ProxyOptions.from_configuration(config)
+        assert options is not None
+        assert options.non_proxy_hosts == ()
+
+
 class TestFromConfigurationScheme:
     """The proxy URL scheme selects the transport flavour (L4)."""
 

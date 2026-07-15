@@ -22,6 +22,10 @@ curl, requests, and Go. Precedence and escaping rules:
   (``.example.com``) is treated identically.
 - A trailing ``:port`` on either the entry or the candidate host is ignored,
   so matching is host-only and case-insensitive over the full host string.
+- The comma-separated ``NO_PROXY`` list honours a backslash escape before a
+  literal comma (``a\\,b`` is one entry ``a,b``); parsing splits, drops
+  zero-length fragments, then unescapes and trims — so a whitespace-only
+  fragment is retained as an empty token rather than dropped.
 
 The ``ProxyOptions.from_configuration`` factory bridges the proxy value type
 to the layered ``Configuration`` lookup: it reads ``HTTPS_PROXY`` (preferred)
@@ -50,7 +54,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Self
+from typing import Final, Self
 from urllib.parse import SplitResult, unquote, urlsplit
 
 from ..config.configuration import Configuration, EnvSource
@@ -250,18 +254,72 @@ def _extract_credentials(split: SplitResult) -> tuple[str | None, str | None]:
     return username, password
 
 
+# The environment-variable ``NO_PROXY`` form is comma-separated. A backslash
+# immediately before a comma escapes it into a literal (rare, but honoured for
+# hosts whose label legitimately carries the separator).
+_NO_PROXY_SEPARATOR: Final = ","
+_ESCAPED_SEPARATOR: Final = "\\" + _NO_PROXY_SEPARATOR
+
+
+def _split_no_proxy(raw: str) -> list[str]:
+    """Split a ``NO_PROXY`` value on commas, honouring a backslash escape.
+
+    A backslash immediately preceding a comma escapes it: the comma stays
+    inside the current fragment (carried through as ``\\,``) instead of ending
+    it. The escape backslash is left in place here — ``_parse_no_proxy``
+    unescapes only after the empty-fragment drop, so the observable order stays
+    split -> drop empty -> unescape -> trim.
+
+    Args:
+        raw: The raw comma-separated ``NO_PROXY`` value.
+
+    Returns:
+        The raw fragments in order, still carrying their escape backslashes.
+    """
+    fragments: list[str] = []
+    buffer: list[str] = []
+    index = 0
+    length = len(raw)
+    while index < length:
+        char = raw[index]
+        if char == "\\" and index + 1 < length and raw[index + 1] == _NO_PROXY_SEPARATOR:
+            buffer.append(_ESCAPED_SEPARATOR)
+            index += 2
+        elif char == _NO_PROXY_SEPARATOR:
+            fragments.append("".join(buffer))
+            buffer.clear()
+            index += 1
+        else:
+            buffer.append(char)
+            index += 1
+    fragments.append("".join(buffer))
+    return fragments
+
+
 def _parse_no_proxy(raw: str | None) -> tuple[str, ...]:
-    """Split a ``NO_PROXY`` value into stripped, non-empty bypass entries.
+    """Resolve a ``NO_PROXY`` value into its ordered bypass entries.
+
+    The observable order is split -> drop empty (before unescape/trim) ->
+    unescape -> trim. A backslash escapes a literal comma so an escaped
+    separator survives as a literal in the emitted token. A zero-length
+    fragment is dropped, but a whitespace-only fragment survives the drop and
+    is trimmed to an empty token — retained, not removed — because the drop
+    happens before the trim.
 
     Args:
         raw: The raw comma-separated ``NO_PROXY`` value, or ``None``.
 
     Returns:
-        The bypass entries in order; empty when ``raw`` is absent or blank.
+        The bypass entries in order; empty when ``raw`` is ``None``.
     """
-    if raw is None or not raw.strip():
+    if raw is None:
         return ()
-    return tuple(entry.strip() for entry in raw.split(",") if entry.strip())
+    entries: list[str] = []
+    for fragment in _split_no_proxy(raw):
+        if not fragment:  # drop empty fragments before unescape/trim
+            continue
+        entries.append(fragment.replace(_ESCAPED_SEPARATOR, _NO_PROXY_SEPARATOR).strip())
+    return tuple(entries)
 
 
 @dataclass(frozen=True, slots=True)

@@ -402,6 +402,75 @@ def test_with_override_does_not_mutate_source_overrides() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Override removal (copy-on-write) — drops only the override layer
+
+
+@pytest.mark.req("CFG-10")
+def test_without_override_falls_through_to_env() -> None:
+    # Removing the override peels back only that layer; the lookup resolves via
+    # env exactly as if the override had never existed — it is NOT nulled.
+    cfg = Configuration(overrides={"KEY": "override"}, env=_env({"KEY": "env-value"}))
+    derived = cfg.without_override("KEY")
+    assert derived.get("KEY", "def") == "env-value"
+
+
+@pytest.mark.req("CFG-10")
+def test_without_override_falls_through_to_property_seam() -> None:
+    cfg = Configuration(
+        overrides={_MATRIX_KEY: "override"},
+        props=_props({_MATRIX_PROP_KEY: "prop-value"}),
+    )
+    derived = cfg.without_override(_MATRIX_KEY)
+    assert derived.get(_MATRIX_KEY, "def") == "prop-value"
+
+
+@pytest.mark.req("CFG-10")
+def test_without_override_falls_through_to_default() -> None:
+    # No env or property layer supplies the key, so removal falls through to
+    # the caller default — removal never forces a resolution to None.
+    cfg = Configuration(overrides={"KEY": "override"}, env=_env({}))
+    derived = cfg.without_override("KEY")
+    assert derived.get("KEY", "def") == "def"
+    assert derived.get("KEY") is None
+
+
+@pytest.mark.req("CFG-10")
+def test_without_override_absent_key_is_harmless_no_op() -> None:
+    # Removing a key that has no override does not raise and leaves the other
+    # layers resolving normally.
+    cfg = Configuration(overrides={"OTHER": "v"}, env=_env({"KEY": "env-value"}))
+    derived = cfg.without_override("KEY")
+    assert derived.get("KEY", "def") == "env-value"
+    assert derived.get("OTHER", "def") == "v"
+
+
+@pytest.mark.req("CFG-10")
+def test_without_override_is_copy_on_write() -> None:
+    base = Configuration(overrides={"KEY": "override"}, env=_env({"KEY": "env-value"}))
+    derived = base.without_override("KEY")
+    # Source is untouched — its override still wins.
+    assert base.get("KEY", "def") == "override"
+    assert derived.get("KEY", "def") == "env-value"
+
+
+@pytest.mark.req("CFG-10", "CFG-9")
+def test_without_override_shares_source_seams() -> None:
+    env = _env({})
+    props = _props({_MATRIX_PROP_KEY: "shared"})
+    base = Configuration(overrides={"K": "v"}, env=env, props=props)
+    derived = base.without_override("K")
+    assert derived.env is env
+    assert derived.props is props
+
+
+@pytest.mark.req("CFG-10", "CFG-37")
+def test_without_override_rejects_none_key() -> None:
+    cfg = Configuration()
+    with pytest.raises(TypeError):
+        cfg.without_override(None)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
 # None-rejection for required arguments
 
 

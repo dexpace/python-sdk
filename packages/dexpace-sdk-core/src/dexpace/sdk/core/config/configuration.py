@@ -29,7 +29,9 @@ degrade, not crash.
 Built configurations are immutable; the override map is copied at construction
 so a caller cannot mutate a live configuration. Derive a modified copy with
 ``with_override`` (copy-on-write — the derived configuration shares the
-source's env and property seams). A process-wide default slot is available via
+source's env and property seams); ``without_override`` peels a single key back
+off the override layer so lookups fall through to env / property / default
+again. A process-wide default slot is available via
 ``default_configuration`` / ``set_default_configuration`` with last-write-wins
 semantics. Environment and property sources are substitutable objects: tests
 inject fakes rather than mutating ``os.environ``.
@@ -310,6 +312,29 @@ class Configuration:
         _require_name(name)
         merged = dict(self.overrides)
         merged[name] = value
+        return Configuration(overrides=merged, env=self.env, props=self.props)
+
+    def without_override(self, name: str) -> Configuration:
+        """Return a copy with ``name`` dropped from the override layer.
+
+        Removing an override peels off only that one layer: a later lookup for
+        ``name`` falls through to env -> property -> default exactly as if the
+        override had never been set. Removal never forces the key to resolve to
+        ``None`` — a lower layer still supplies its value. Removing a key that
+        carries no override is a harmless no-op that returns an equivalent
+        copy. Copy-on-write, like ``with_override``: the source is left
+        untouched and the derived configuration shares the source's env and
+        property seams (same objects).
+
+        Args:
+            name: Override key to drop from the override layer.
+
+        Returns:
+            A new ``Configuration`` with ``name`` absent from the overrides.
+        """
+        _require_name(name)
+        merged = dict(self.overrides)
+        merged.pop(name, None)
         return Configuration(overrides=merged, env=self.env, props=self.props)
 
 
