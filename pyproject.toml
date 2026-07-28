@@ -28,8 +28,8 @@ dev = [
     "pytest>=9.1.0",
     "pytest-cov>=4.1",
     "pytest-asyncio>=1.4.0",
-    "hypothesis>=6.157.2",
-    "ruff>=0.15.22",
+    "hypothesis>=6.161.8",
+    "ruff>=0.16.0",
     "mypy>=1.10",
     "import-linter>=2.0",
 ]
